@@ -227,11 +227,11 @@ function DeckView({
 
         <div>
           <p className="deck-due">
-            {cards === 0 ? "No cards yet." : `${cards} ${cards === 1 ? "card" : "cards"} in total`}
+            {cards === 0 ? "No cards yet" : `${cards} ${cards === 1 ? "card" : "cards"} in total`}
           </p>
           <p className="deck-due">
             {due === 0
-              ? "No cards due right now."
+              ? "No cards due right now"
               : `${due} ${due === 1 ? "card" : "cards"} due`}
           </p>
         </div>
@@ -552,7 +552,8 @@ function CardItem({
       {confirming ? (
         <div className="card-item-confirm">
           <p ref={questionRef} className="notice" tabIndex={-1}>
-            Delete this card? It won't appear in reviews again.
+            Delete this card? It will leave this deck and won't appear in reviews again. Its review
+            history is kept, but it can't be restored.
           </p>
           <div className="deck-actions">
             <button
@@ -588,7 +589,7 @@ function CardItem({
             aria-describedby={frontId}
             onClick={onEdit}
           >
-            Edit
+            Edit card
           </button>
           <button
             ref={deleteRef}
@@ -597,7 +598,7 @@ function CardItem({
             aria-describedby={frontId}
             onClick={() => setConfirming(true)}
           >
-            Delete
+            Delete card
           </button>
         </div>
       )}

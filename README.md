@@ -80,9 +80,9 @@ line breaks inside a card are kept as you typed them.
 session ends when nothing in that deck is due. Closing the app mid-session is safe — reopening the
 deck resumes it.
 
-**Edit or delete a card.** On the deck screen, *Edit* changes the text and keeps the card's schedule
-and history. *Delete* asks for confirmation, then removes the card from lists, counts, and reviews.
-The card and its review log stay in the database, and there's no way to bring it back.
+**Edit or delete a card.** On the deck screen, *Edit card* changes the text and keeps the card's
+schedule and history. *Delete card* asks for confirmation, then removes the card from lists, counts,
+and reviews. The card and its review log stay in the database, and there's no way to bring it back.
 
 **Rename or archive a deck.** Also on the deck screen. Archiving asks for confirmation, then moves
 the deck to *Archived decks* on the dashboard: it can't be reviewed, changed, or given new cards, and
@@ -131,9 +131,9 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   remember the note it was written from.
 - **The dashboard is the way in.** *Notes*, *Export data*, and *Import data* sit below the deck list,
   so if the deck list can't load they aren't reachable until *Retry* succeeds.
-- **No sync, accounts, or cloud.** By design.
+- **No sync, accounts, cloud, or collaboration.** By design.
 - **Default FSRS parameters only.** The optimizer that re-fits weights to your own history is
-  documented as future work, not built.
+  future work and isn't built.
 - **One card type.** Front/back text only: no images, audio, cloze, or tags.
 - **No search, bulk actions, folders, or statistics.**
 - **No automated frontend tests.** The Rust core has unit tests (`cargo test`); React is checked by

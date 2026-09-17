@@ -181,7 +181,7 @@ function NoteList({
 
       {notes.length === 0 ? (
         <p className="message" role="status">
-          No notes yet.
+          No notes yet. Choose New note to write one.
         </p>
       ) : (
         <ul className="card-list">
@@ -620,7 +620,7 @@ function CardFromNote({
       <Message
         focus
         tone="status"
-        text="You don't have a deck to add cards to yet. Create one from the dashboard first; the sample deck can't take new cards."
+        text="You don't have a deck to add cards to yet. Create one from the dashboard first; the Sample deck can't take new cards."
       >
         <button type="button" className="button" onClick={onCancel}>
           Back to note

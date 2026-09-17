@@ -68,7 +68,7 @@ export function ReviewSession({
 
       {state.status === "loading" && (
         <p className="message" role="status">
-          Loading your flashcard…
+          Loading the next card…
         </p>
       )}
 

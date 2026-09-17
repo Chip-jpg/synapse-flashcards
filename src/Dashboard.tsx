@@ -227,7 +227,7 @@ function DeckList({
       </button>
       {decks.length === 0 ? (
         <p className="message" role="status">
-          No decks yet.
+          No decks yet. Choose Create deck to make one.
         </p>
       ) : (
         <ul className="deck-list">
@@ -608,7 +608,7 @@ function DeckCard({
 
       <p className="deck-due">
         {due === 0
-          ? "No cards due right now."
+          ? "No cards due right now"
           : `${due} ${due === 1 ? "card" : "cards"} due`}
       </p>
 
