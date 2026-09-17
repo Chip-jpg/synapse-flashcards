@@ -1,0 +1,44 @@
+[package]
+name = "synapse-scaffold"
+version = "0.1.0"
+description = "Local-first desktop flashcard app with FSRS spaced repetition."
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "synapse_scaffold_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+fsrs = "6.6"
+chrono = { version = "0.4", default-features = false, features = ["std", "now"] }
+# Export packaging (Slice 6). Only the one deflate backend is enabled: it
+# reuses the `flate2` already in the tree, and skips `zopfli`, the AES/bzip2/
+# lzma/zstd codecs, and the date/time integrations we never write or read.
+zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+# The native "save as" and "open" dialogs, so an export is only ever written
+# where the user chose, and an import only reads the file the user picked.
+# Called from Rust, so the frontend needs no dialog permission.
+tauri-plugin-dialog = "2"
+
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

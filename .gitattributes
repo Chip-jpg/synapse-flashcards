@@ -1,0 +1,4 @@
+* text=auto
+# sqlx embeds and checksums migrations byte-for-byte, and import compares
+# those checksums, so migrations must never be checked out with CRLF.
+src-tauri/migrations/*.sql text eol=lf

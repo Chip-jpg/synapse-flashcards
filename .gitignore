@@ -1,0 +1,115 @@
+# Dependencies and frontend build output
+node_modules/
+dist/
+dist-ssr/
+
+# Rust / Tauri build output
+src-tauri/target/
+
+# Local SQLite databases and SQLite sidecar files
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Synapse exports, backups, validation artifacts, and temporary files
+synapse-export-*.zip
+*.bak
+*.tmp
+*.temp
+*.log
+
+# Environment files and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Claude / agent workspace and local instructions
+.claude/
+.agents/
+
+# Private project brainstorming and planning files
+base idea.txt
+brainstorming_*.txt
+keep in mind.txt
+CONTEXT.md
+pasted_text_*.txt
+
+# Editor directories and files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Private project documentation and planning
+docs/
+
+# More private keys and certificates
+*.crt
+*.cer
+*.der
+*.p8
+*.jks
+*.keystore
+id_rsa*
+id_ecdsa*
+id_ed25519*
+
+# More logs and tool caches
+logs/
+npm-debug.log*
+*.tsbuildinfo
+*.local
+**/*.rs.bk
+
+# Export temp files, stray archives, and throwaway validation databases
+*.synapse-tmp-*
+/*.zip
+*.sqlite3
+*.db3
+import-workspace/
+smoke-db/
+smoke-target-db/
+scratch-db/
+test-dbs/
+
+# Agent transcripts and local prompts
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+.cursor/
+*.jsonl
+/prompts/
+/transcripts/
+
+# Root-level private notes, screenshots, and helper scripts
+/*.txt
+/*.png
+/*.jpg
+/*.jpeg
+/*.gif
+/*.webp
+/*.mp4
+/screenshots/
+/scratch/
+/*.ps1
+/*.bat
+/*.cmd
+/*.sh
+
+# Editor workspace state
+*.code-workspace
+.history/

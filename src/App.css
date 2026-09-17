@@ -1,0 +1,436 @@
+:root {
+  color-scheme: dark;
+
+  --bg: #0e1116;
+  --surface: #161b22;
+  --border: #2a313c;
+  --text: #e6e9ef;
+  --text-muted: #9aa4b2;
+  --accent: #8ab4ff;
+  --accent-hover: #a9c7ff;
+  --accent-ink: #0b1220;
+  --danger: #ff9b9b;
+  --focus: #ffd479;
+
+  font-family: system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--text);
+  background-color: var(--bg);
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background-color: var(--bg);
+}
+
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2rem;
+  padding: 2rem 1.5rem;
+}
+
+.app-title {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.stage {
+  flex: 1;
+  width: 100%;
+  max-width: 36rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  /* Separates a screen's top-level sections (the decks list and "Your data").
+     Screens with a single section are unaffected. */
+  gap: 2rem;
+}
+
+/* Screens */
+
+.decks,
+.session,
+.deck-detail,
+.cards,
+.notes {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.section-title {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+/* Deck dashboard */
+
+.deck-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.deck {
+  gap: 1rem;
+}
+
+.deck-name {
+  margin: 0;
+  font-size: 1.375rem;
+  font-weight: 600;
+}
+
+.deck-description {
+  margin: 0.25rem 0 0;
+  color: var(--text-muted);
+}
+
+.deck-due {
+  margin: 0;
+}
+
+.deck-actions,
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.notice {
+  margin: 0;
+}
+
+/* A heading, but sized like the body text around it. */
+.archived-deck-name,
+.note-item-title {
+  margin: 0;
+  font-size: inherit;
+  font-weight: 600;
+}
+
+/* A note's text */
+
+.note-body {
+  margin: 0;
+  /* Keep the line breaks and indentation typed into a note. */
+  white-space: pre-wrap;
+}
+
+/* The note shown beside the card being written from it. It sticks to the top
+   of the window, so it stays readable while the fields below it scroll. */
+.note-context {
+  position: sticky;
+  top: 0.5rem;
+  z-index: 1;
+  max-height: min(14rem, 30vh);
+  overflow-y: auto;
+  padding: 1rem 1.25rem;
+  background-color: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.note-context .side-label {
+  margin-bottom: 0.25rem;
+}
+
+.note-context:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* A field scrolled into view stops below the stuck note, not under it. */
+html:has(.note-context) {
+  scroll-padding-top: calc(min(14rem, 30vh) + 1.5rem);
+}
+
+/* A deck's card list */
+
+.card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.card-item,
+.card-item-confirm,
+.data-action {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.card-item {
+  padding: 1.25rem 1.5rem;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow-wrap: break-word;
+}
+
+.card-item .side-label {
+  margin-bottom: 0.25rem;
+}
+
+.card-item-text {
+  margin: 0;
+  /* Keep the line breaks typed into a card. */
+  white-space: pre-wrap;
+}
+
+/* Card */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding: 2rem;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.35);
+  /* Long words in names or card text wrap instead of overflowing. */
+  overflow-wrap: break-word;
+}
+
+.side-label {
+  margin: 0 0 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.card-text {
+  margin: 0;
+  /* Keep the line breaks typed into a card. */
+  white-space: pre-wrap;
+  font-size: 1.375rem;
+  line-height: 1.45;
+}
+
+.card-back {
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border);
+}
+
+.card-back .card-text {
+  font-size: 1.125rem;
+}
+
+/* Focus is moved to these programmatically; they aren't interactive controls.
+   Whole screens and card faces take focus only to put a screen reader in the
+   right place, so an outline around them would be noise. */
+.card-side:focus,
+.message p:focus,
+.decks:focus,
+.deck-detail:focus,
+.notes:focus {
+  outline: none;
+}
+
+/* A notice does get an outline: it's where focus lands when a confirmation
+   opens, so a sighted keyboard user has to be able to see it went there.
+   `:focus`, not `:focus-visible`, because the focus is moved programmatically
+   rather than by the keyboard; clicking a notice also shows it, which is a
+   fair price for never hiding where focus went. */
+.notice:focus {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+
+/* Rating */
+
+.rating {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.rating-prompt {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.rating-buttons {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(6rem, 1fr));
+  gap: 0.5rem;
+}
+
+.rating-status:empty {
+  display: none;
+}
+
+.rating-status {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+/* Forms */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.field-label {
+  font-weight: 600;
+}
+
+.field-hint {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+.field-input {
+  width: 100%;
+  padding: 0.625rem 0.75rem;
+  font: inherit;
+  color: var(--text);
+  background-color: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+textarea.field-input {
+  resize: vertical;
+}
+
+.field-input:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.field-input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.field-error {
+  margin: 0;
+  color: var(--danger);
+}
+
+.form-status:empty {
+  display: none;
+}
+
+.form-status {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+/* Buttons */
+
+.button {
+  align-self: flex-start;
+  padding: 0.625rem 1.25rem;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text);
+  background-color: transparent;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s;
+}
+
+.button:hover {
+  border-color: var(--text-muted);
+}
+
+.button-primary {
+  color: var(--accent-ink);
+  background-color: var(--accent);
+  border-color: var(--accent);
+}
+
+.button-primary:hover {
+  background-color: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.button[aria-disabled="true"] {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+.button:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+
+/* Loading / empty / error */
+
+.message {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  margin: 0;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.message-title {
+  color: var(--text);
+}
+
+.message-error {
+  margin: 0;
+  color: var(--danger);
+}
+
+.message p {
+  margin: 0;
+}
+
+.message .button {
+  align-self: center;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .button {
+    transition: none;
+  }
+}
