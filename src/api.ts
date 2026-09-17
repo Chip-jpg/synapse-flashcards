@@ -88,6 +88,20 @@ export type NoteSummary = {
   updatedAt: string;
 };
 
+/**
+ * Mirrors `DeletedNote` in `src-tauri/src/notes.rs`: history only. The body
+ * isn't sent, because a deleted note is listed, not opened. `updatedAt` is
+ * when its text was last saved, before it was deleted.
+ */
+export type DeletedNote = {
+  id: number;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  /** When it was deleted (ISO-8601 UTC). */
+  deletedAt: string;
+};
+
 /** Mirrors `Note` in `src-tauri/src/notes.rs`. `body` is plain text with its line breaks. */
 export type Note = {
   id: number;
@@ -216,12 +230,20 @@ export function cancelImport(token: number): Promise<void> {
   return invoke<void>("cancel_import", { token });
 }
 
-/** Every note, most recently saved first. */
+/** Every active (not deleted) note, most recently saved first. */
 export function getNotes(): Promise<NoteSummary[]> {
   return invoke<NoteSummary[]>("get_notes");
 }
 
-/** One whole note. Rejects with kind "invalid" if it doesn't exist. */
+/** Every deleted note, most recently deleted first. Read-only history. */
+export function getDeletedNotes(): Promise<DeletedNote[]> {
+  return invoke<DeletedNote[]>("get_deleted_notes");
+}
+
+/**
+ * One whole active note. Rejects with kind "invalid" if it doesn't exist, or
+ * kind "stale" if it has been deleted.
+ */
 export function getNote(noteId: number): Promise<Note> {
   return invoke<Note>("get_note", { noteId });
 }
@@ -234,6 +256,23 @@ export function createNote(title: string, body: string): Promise<Note> {
 /** Replaces a note's title and body (same rules as creating); resolves with the saved note. */
 export function updateNote(noteId: number, title: string, body: string): Promise<Note> {
   return invoke<Note>("update_note", { noteId, title, body });
+}
+
+/**
+ * Soft-deletes a note: it leaves the library but its text is kept, so it can
+ * be restored. No card changes, because no card is linked to a note. Rejects
+ * with kind "stale" if it was already deleted, having written nothing.
+ */
+export function deleteNote(noteId: number): Promise<void> {
+  return invoke<void>("delete_note", { noteId });
+}
+
+/**
+ * Restores a deleted note: it returns to the library exactly as it was.
+ * Rejects with kind "stale" if it isn't deleted, having written nothing.
+ */
+export function restoreNote(noteId: number): Promise<void> {
+  return invoke<void>("restore_note", { noteId });
 }
 
 /** Normalizes anything a command rejected with into a `CommandError`. */

@@ -851,8 +851,8 @@ mod tests {
     /// The backup's source: the sample deck and card, a normal deck with a
     /// reviewed card, a soft-deleted card, a multiline new card and its
     /// unfinished session, an archived deck with a reviewed card and a
-    /// finished session, and two typed notes, one of them edited. Every kind
-    /// of history an import must keep.
+    /// finished session, and three typed notes: one plain, one edited, and one
+    /// soft-deleted. Every kind of history an import must keep.
     async fn source_database(path: &Path) -> SqlitePool {
         let pool = open_file(path).await.unwrap();
         let biology = create_deck(&pool, "Biology", Some("Cells"), at(NOW))
@@ -892,6 +892,12 @@ mod tests {
             .await
             .unwrap();
         crate::notes::update_note(&pool, draft.id, "Lecture 2", "Proteins", at(LATER))
+            .await
+            .unwrap();
+        let removed = crate::notes::create_note(&pool, "Old lecture", "superseded", at(NOW))
+            .await
+            .unwrap();
+        crate::notes::delete_note(&pool, removed.id, at(LATER))
             .await
             .unwrap();
         pool
@@ -1121,7 +1127,30 @@ mod tests {
                 .fetch_all(&restored)
                 .await
                 .unwrap();
-            assert_eq!(titles, vec!["Lecture 1", "Lecture 2"]);
+            assert_eq!(titles, vec!["Lecture 1", "Lecture 2", "Old lecture"]);
+            // A restored library hides exactly the notes the backup hid: the
+            // deleted note is present but not in the library.
+            assert_eq!(
+                crate::notes::notes(&restored)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|note| note.title)
+                    .collect::<Vec<_>>(),
+                vec!["Lecture 2".to_string(), "Lecture 1".to_string()]
+            );
+            assert_eq!(
+                crate::notes::deleted_notes(&restored)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|note| (note.title, note.deleted_at))
+                    .collect::<Vec<_>>(),
+                vec![(
+                    "Old lecture".to_string(),
+                    "2026-09-16T10:00:00.000Z".to_string()
+                )]
+            );
             // Nothing is left in the workspace, which is removed, and SQLite
             // has nothing beside the database.
             assert!(!workspace.exists());

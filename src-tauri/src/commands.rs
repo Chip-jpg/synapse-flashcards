@@ -17,7 +17,7 @@ use crate::authoring::{self, ArchivedDeck, AuthoringError, DeckDetail, InvalidIn
 use crate::db::Database;
 use crate::export::{self, ExportError};
 use crate::import::{self, ImportError, ImportState, RestoreError};
-use crate::notes::{self, InvalidNote, Note, NoteError, NoteSummary};
+use crate::notes::{self, DeletedNote, InvalidNote, Note, NoteError, NoteSummary};
 use crate::scheduler::Rating;
 use crate::study::{self, DeckSummary, SessionCard, StartedSession, StudyError};
 
@@ -125,6 +125,8 @@ impl CommandError {
 
 const DECK_NOT_FOUND: &str = "That deck doesn't exist.";
 const NOTE_NOT_FOUND: &str = "That note doesn't exist.";
+const NOTE_DELETED: &str = "This note was already deleted.";
+const NOTE_NOT_DELETED: &str = "This note isn't deleted.";
 const DECK_ARCHIVED: &str = "This deck has been archived.";
 const CARD_NOT_FOUND: &str = "That card doesn't exist.";
 const SESSION_NOT_FOUND: &str = "That review session doesn't exist.";
@@ -178,6 +180,10 @@ fn note_error(err: NoteError, context: &str, failed: &'static str) -> CommandErr
     match err {
         NoteError::Invalid(problem) => CommandError::invalid_note(problem),
         NoteError::NotFound => CommandError::invalid(NOTE_NOT_FOUND),
+        // Both mean the screen is out of date rather than the request being
+        // wrong, so React reloads instead of retrying. Nothing was written.
+        NoteError::Deleted => CommandError::stale(NOTE_DELETED),
+        NoteError::NotDeleted => CommandError::stale(NOTE_NOT_DELETED),
         NoteError::Internal(detail) => {
             eprintln!("[synapse] {context} failed: {detail}");
             CommandError::failed(failed)
@@ -452,7 +458,7 @@ pub async fn archive_deck(
         })
 }
 
-/// The note library: every note, most recently saved first.
+/// The note library: every active (not deleted) note, most recently saved first.
 /// Returns `[{ id, title, createdAt, updatedAt }]`.
 #[tauri::command]
 pub async fn get_notes(
@@ -466,8 +472,23 @@ pub async fn get_notes(
     })
 }
 
-/// One whole note. Arguments: `{ noteId }`. Returns
-/// `{ id, title, body, createdAt, updatedAt }`.
+/// The library's history: every deleted note, most recently deleted first.
+/// Returns `[{ id, title, createdAt, updatedAt, deletedAt }]`.
+#[tauri::command]
+pub async fn get_deleted_notes(
+    app: AppHandle,
+    database: State<'_, Database>,
+) -> Result<Vec<DeletedNote>, CommandError> {
+    let pool = pool(&app, &database).await?;
+    notes::deleted_notes(&pool).await.map_err(|err| {
+        eprintln!("[synapse] loading deleted notes failed: {err}");
+        CommandError::failed("Synapse couldn't load your deleted notes.")
+    })
+}
+
+/// One whole active note. Arguments: `{ noteId }`. Returns
+/// `{ id, title, body, createdAt, updatedAt }`; rejects with kind "stale" if
+/// the note has been deleted.
 #[tauri::command]
 pub async fn get_note(
     app: AppHandle,
@@ -520,6 +541,49 @@ pub async fn update_note(
     notes::update_note(&pool, note_id, &title, &body, Utc::now())
         .await
         .map_err(|err| note_error(err, "editing a note", "Synapse couldn't save the note."))
+}
+
+/// Soft-deletes a note: it leaves the library, but its text is kept and it can
+/// be restored. No card is changed, because no card is linked to a note.
+///
+/// Arguments: `{ noteId }`. Returns `null` on success; rejects with kind
+/// "stale" if the note was already deleted, writing nothing either way.
+#[tauri::command]
+pub async fn delete_note(
+    app: AppHandle,
+    database: State<'_, Database>,
+    note_id: i64,
+) -> Result<(), CommandError> {
+    if note_id < 1 {
+        return Err(CommandError::invalid(NOTE_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    notes::delete_note(&pool, note_id, Utc::now())
+        .await
+        .map_err(|err| note_error(err, "deleting a note", "Synapse couldn't delete the note."))
+}
+
+/// Restores a deleted note: it returns to the library exactly as it was.
+///
+/// Arguments: `{ noteId }`. Returns `null` on success; rejects with kind
+/// "stale" if the note isn't deleted, writing nothing either way.
+#[tauri::command]
+pub async fn restore_note(
+    app: AppHandle,
+    database: State<'_, Database>,
+    note_id: i64,
+) -> Result<(), CommandError> {
+    if note_id < 1 {
+        return Err(CommandError::invalid(NOTE_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    notes::restore_note(&pool, note_id).await.map_err(|err| {
+        note_error(
+            err,
+            "restoring a note",
+            "Synapse couldn't restore the note.",
+        )
+    })
 }
 
 /// What an export attempt did: `{ "status": "saved", "fileName": "..." }` or
@@ -1079,6 +1143,43 @@ mod tests {
         assert_eq!(
             to_json(NoteError::Internal("no such table: notes".into())),
             json!({ "kind": "failed", "message": "failed" })
+        );
+    }
+
+    #[test]
+    fn deleted_note_errors_tell_react_to_reload() {
+        let to_json = |err| serde_json::to_value(note_error(err, "test", "failed")).unwrap();
+        // Both mean the screen is out of date, not that the request was wrong,
+        // so React reloads the library instead of retrying. Neither carries a
+        // `field`: nothing the user typed is at fault.
+        assert_eq!(
+            to_json(NoteError::Deleted),
+            json!({ "kind": "stale", "message": "This note was already deleted." })
+        );
+        assert_eq!(
+            to_json(NoteError::NotDeleted),
+            json!({ "kind": "stale", "message": "This note isn't deleted." })
+        );
+    }
+
+    #[test]
+    fn deleted_notes_serialize_to_the_shape_react_expects() {
+        assert_eq!(
+            serde_json::to_value(DeletedNote {
+                id: 1,
+                title: "Cells".to_string(),
+                created_at: "2026-09-16T12:00:00.000Z".to_string(),
+                updated_at: "2026-09-16T13:00:00.000Z".to_string(),
+                deleted_at: "2026-09-16T14:00:00.000Z".to_string(),
+            })
+            .unwrap(),
+            json!({
+                "id": 1,
+                "title": "Cells",
+                "createdAt": "2026-09-16T12:00:00.000Z",
+                "updatedAt": "2026-09-16T13:00:00.000Z",
+                "deletedAt": "2026-09-16T14:00:00.000Z"
+            })
         );
     }
 }

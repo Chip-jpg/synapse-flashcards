@@ -14,13 +14,15 @@ migrations, validation, scheduling, and every business rule; React only calls ty
 - **Cards** — add front/back cards, edit them (which never disturbs their schedule), and delete them.
 - **Study** — start a review session for a deck, reveal the answer, and rate it **Again / Hard /
   Good / Easy**. FSRS computes the next due date, and every rating is appended to `review_logs`.
-- **History is kept** — deleting a card and archiving a deck are both *soft*: the rows, their FSRS
-  state, and their review logs stay in the database. Neither can be undone from the app.
+- **History is kept** — deleting a card, archiving a deck, and deleting a note are all *soft*: the
+  rows stay in the database, a card keeps its FSRS state and review log, and a note keeps its text
+  and its times. A deleted note can be restored; a deleted card and an archived deck can't be, yet.
 - **Export** — save a `.zip` backup of all your study data wherever you choose.
 - **Import (restore)** — replace everything in Synapse with a backup made by Export, after Synapse
   has checked the whole file and you've confirmed. It never merges.
 - **Notes** — type up your own plain-text study notes, keep them in a local library, open and edit
-  them.
+  them, and delete ones you're done with. A deleted note leaves the library but is kept under
+  *Deleted notes*, where *Restore note* brings it back unchanged.
 - **Cards from notes** — with a note on screen, write a card yourself and add it to one of your
   decks. The card is an ordinary card; it isn't linked to the note.
 
@@ -107,6 +109,12 @@ restored; one from a newer version is refused.
 and indentation are kept, and only blank space at the very start and end is trimmed. *Open note*
 shows it, *Edit note* changes it. The library lists the most recently edited note first.
 
+**Delete or restore a note.** Open a note → *Delete note* asks for confirmation, then takes the note
+out of your library: it can't be opened, edited, or used to write a card. Nothing is lost — the note
+appears under *Deleted notes* at the bottom of the library, with when it was deleted, and *Restore
+note* puts it back exactly as it was, in the same place in the list. Deleting a note never touches
+cards you wrote from it, and a note is never removed from the database.
+
 **Write a card from a note.** Open a note → *Create card from note*. The note stays visible while you
 choose one of your own active decks and type the front and back yourself; nothing is filled in for
 you. The card is checked exactly like one added on the deck screen, is due straight away, and isn't
@@ -124,11 +132,12 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   (the process killed mid-swap) can leave a rollback copy in Synapse's data folder
   (`import-workspace/rollback.sqlite`, later renamed `rollback-kept-<time>.sqlite`); these are never
   deleted automatically.
-- **No undelete or unarchive.** Deleted cards and archived decks are kept in the database but can't
-  be brought back from the app.
-- **Notes are plain typed text.** No deleting notes, and no formatting, attachments, PDFs, OCR,
-  audio, web clips, search, tags, or folders. Nothing generates cards from a note, and a card doesn't
-  remember the note it was written from.
+- **No card undelete or deck unarchive.** Deleted cards and archived decks are kept in the database
+  but can't be brought back from the app. Only notes can be restored.
+- **Notes are plain typed text.** No formatting, attachments, PDFs, OCR, audio, web clips, search,
+  tags, or folders. Nothing generates cards from a note, and a card doesn't remember the note it was
+  written from — so deleting a note leaves its cards exactly where they are. A deleted note is
+  listed by title and dates only; there's no way to read its text again without restoring it.
 - **The dashboard is the way in.** *Notes*, *Export data*, and *Import data* sit below the deck list,
   so if the deck list can't load they aren't reachable until *Retry* succeeds.
 - **No sync, accounts, cloud, or collaboration.** By design.
@@ -150,7 +159,7 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   - `scheduler.rs` — FSRS scheduling via the `fsrs` crate, with no database access.
   - `study.rs` — the deck dashboard, review sessions, and recording reviews.
   - `authoring.rs` — creating, renaming, and archiving decks; adding, editing, and deleting cards.
-  - `notes.rs` — typed notes.
+  - `notes.rs` — typed notes: writing, editing, soft-deleting, and restoring them.
   - `export.rs` / `import.rs` — writing a `.zip` backup, and checking and restoring one.
-- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0007`), embedded in the
+- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0008`), embedded in the
   binary at compile time.

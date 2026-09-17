@@ -329,7 +329,8 @@ mod tests {
     }
 
     /// A database holding the sample content plus a normal deck with a
-    /// reviewed card, a soft-deleted card, an archived deck, and a session.
+    /// reviewed card, a soft-deleted card, an archived deck, a session, and
+    /// two typed notes, one of them soft-deleted.
     async fn populated(dir: &Path) -> SqlitePool {
         let pool = open_file(&dir.join("synapse.sqlite")).await.unwrap();
         let now = at(NOW);
@@ -377,6 +378,16 @@ mod tests {
         crate::authoring::archive_deck(&pool, chemistry, now)
             .await
             .unwrap();
+
+        crate::notes::create_note(&pool, "Kept note", "still in the library", now)
+            .await
+            .unwrap();
+        let removed = crate::notes::create_note(&pool, "Removed note", "deleted, not lost", now)
+            .await
+            .unwrap();
+        crate::notes::delete_note(&pool, removed.id, now)
+            .await
+            .unwrap();
         pool
     }
 
@@ -407,7 +418,7 @@ mod tests {
                     "format": "synapse-export",
                     "format_version": 1,
                     // Every migration in the repository is applied.
-                    "schema_version": 7,
+                    "schema_version": 8,
                     "app_version": "0.1.0",
                     "exported_at": "2026-09-16T09:30:00.000Z",
                     "contents": { "database": "db/synapse.sqlite" },
@@ -483,6 +494,29 @@ mod tests {
                     ("A".to_string(), None),
                     (
                         "B".to_string(),
+                        Some("2026-09-16T09:30:00.000Z".to_string())
+                    ),
+                ]
+            );
+            // Notes: the deleted one travels with its deletion time, so a
+            // restore brings back a library that hides exactly the same notes.
+            let notes: Vec<(String, String, Option<String>)> =
+                sqlx::query_as("SELECT title, body, deleted_at FROM notes ORDER BY id")
+                    .fetch_all(&restored)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                notes,
+                vec![
+                    (
+                        "Kept note".to_string(),
+                        "still in the library".to_string(),
+                        None
+                    ),
+                    (
+                        "Removed note".to_string(),
+                        // The text of a deleted note is kept in full.
+                        "deleted, not lost".to_string(),
                         Some("2026-09-16T09:30:00.000Z".to_string())
                     ),
                 ]
@@ -611,7 +645,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert_eq!(manifest_of(&archive).schema_version, 7);
+            assert_eq!(manifest_of(&archive).schema_version, 8);
             let restored = exported_database(&archive, &dir.join("restored.sqlite")).await;
             assert_eq!(count(&restored, "SELECT COUNT(*) FROM decks").await, 1);
             assert_eq!(count(&restored, "SELECT COUNT(*) FROM flashcards").await, 1);
