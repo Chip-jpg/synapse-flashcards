@@ -130,6 +130,7 @@ const NOTE_NOT_DELETED: &str = "This note isn't deleted.";
 const DECK_ARCHIVED: &str = "This deck has been archived.";
 const DECK_NOT_ARCHIVED: &str = "This deck isn't archived.";
 const CARD_NOT_FOUND: &str = "That card doesn't exist.";
+const CARD_NOT_DELETED: &str = "This card isn't deleted.";
 const SESSION_NOT_FOUND: &str = "That review session doesn't exist.";
 
 async fn pool(app: &AppHandle, database: &Database) -> Result<SqlitePool, CommandError> {
@@ -172,6 +173,10 @@ fn authoring_error(err: AuthoringError, context: &str, failed: &'static str) -> 
         AuthoringError::DeckNotArchived => CommandError::stale(DECK_NOT_ARCHIVED),
         AuthoringError::CardNotFound => CommandError::invalid(CARD_NOT_FOUND),
         AuthoringError::CardDeleted => CommandError::stale("This card was already deleted."),
+        // The other way round: the *Deleted cards* list this came from no
+        // longer holds this card. Nothing was written, so React reloads
+        // instead of retrying, as it does for a note that isn't deleted.
+        AuthoringError::CardNotDeleted => CommandError::stale(CARD_NOT_DELETED),
         AuthoringError::Internal(detail) => {
             eprintln!("[synapse] {context} failed: {detail}");
             CommandError::failed(failed)
@@ -398,10 +403,10 @@ pub async fn update_flashcard(
 }
 
 /// Soft-deletes a card: it leaves lists, counts, and reviews, but its row and
-/// review history are kept.
+/// review history are kept, and it can be restored.
 ///
-/// Arguments: `{ cardId }`. Returns the card's deck without it (same shape as
-/// `get_deck_detail`).
+/// Arguments: `{ cardId }`. Returns the card's deck without it, now listing it
+/// under `deletedCards` (same shape as `get_deck_detail`).
 #[tauri::command]
 pub async fn delete_flashcard(
     app: AppHandle,
@@ -415,6 +420,35 @@ pub async fn delete_flashcard(
     authoring::delete_flashcard(&pool, card_id, Utc::now())
         .await
         .map_err(|err| authoring_error(err, "deleting a card", "Synapse couldn't delete the card."))
+}
+
+/// Restores a soft-deleted card: it returns to its deck with its FSRS state,
+/// due date, counts, and review history exactly as they were. No review
+/// session is started, and the card is due again only if the due date it
+/// already had has passed.
+///
+/// Arguments: `{ cardId }`. Returns the card's deck with it back (same shape
+/// as `get_deck_detail`); rejects with kind "stale" if the card isn't deleted
+/// or its deck has since been archived, writing nothing either way.
+#[tauri::command]
+pub async fn restore_flashcard(
+    app: AppHandle,
+    database: State<'_, Database>,
+    card_id: i64,
+) -> Result<DeckDetail, CommandError> {
+    if card_id < 1 {
+        return Err(CommandError::invalid(CARD_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    authoring::restore_flashcard(&pool, card_id, Utc::now())
+        .await
+        .map_err(|err| {
+            authoring_error(
+                err,
+                "restoring a card",
+                "Synapse couldn't restore the card.",
+            )
+        })
 }
 
 /// Renames an active normal deck; its cards, schedule, and history are kept.
@@ -960,6 +994,12 @@ mod tests {
         assert_eq!(
             to_json(AuthoringError::CardDeleted),
             json!({ "kind": "stale", "message": "This card was already deleted." })
+        );
+        // The other way round: the *Deleted cards* list is out of date, so
+        // React reloads that instead of retrying the restore.
+        assert_eq!(
+            to_json(AuthoringError::CardNotDeleted),
+            json!({ "kind": "stale", "message": "This card isn't deleted." })
         );
         assert_eq!(
             to_json(AuthoringError::CardNotFound),

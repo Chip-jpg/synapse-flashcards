@@ -37,6 +37,11 @@ export type DeckDetail = {
   dueCount: number;
   /** The active cards, oldest first. */
   cards: DeckCard[];
+  /**
+   * The deck's soft-deleted cards, most recently deleted first. They are in
+   * neither count above and in no review; each can be restored.
+   */
+  deletedCards: DeletedCard[];
 };
 
 /** Mirrors `DeckCard` in `src-tauri/src/authoring.rs`. */
@@ -44,6 +49,20 @@ export type DeckCard = {
   id: number;
   front: string;
   back: string;
+};
+
+/**
+ * Mirrors `DeletedCard` in `src-tauri/src/authoring.rs`: a soft-deleted card,
+ * listed under its deck's *Deleted cards*. Its text is shown so the user can
+ * tell which card they would bring back; its schedule isn't sent, because a
+ * restore keeps whatever schedule the card already had.
+ */
+export type DeletedCard = {
+  id: number;
+  front: string;
+  back: string;
+  /** When it was deleted (ISO-8601 UTC). */
+  deletedAt: string;
 };
 
 /** Mirrors `Flashcard` in `src-tauri/src/study.rs`. */
@@ -181,11 +200,24 @@ export function updateFlashcard(cardId: number, front: string, back: string): Pr
 }
 
 /**
- * Soft-deletes a card (its history is kept); resolves with its deck without it.
- * Rejects with kind "stale" if the card was already deleted.
+ * Soft-deletes a card (its history is kept, and it can be restored); resolves
+ * with its deck without it, now listing it under `deletedCards`. Rejects with
+ * kind "stale" if the card was already deleted.
  */
 export function deleteFlashcard(cardId: number): Promise<DeckDetail> {
   return invoke<DeckDetail>("delete_flashcard", { cardId });
+}
+
+/**
+ * Restores a soft-deleted card: it returns to its deck with its FSRS state,
+ * due date, counts, and review history exactly as they were, and is due again
+ * only if the due date it already had has passed. No review session starts.
+ * Resolves with the deck, the card back among its `cards`. Rejects with kind
+ * "stale" if the card isn't deleted or its deck has been archived, having
+ * written nothing.
+ */
+export function restoreFlashcard(cardId: number): Promise<DeckDetail> {
+  return invoke<DeckDetail>("restore_flashcard", { cardId });
 }
 
 /** Renames an active normal deck (Rust trims and validates the name); resolves with the deck. */

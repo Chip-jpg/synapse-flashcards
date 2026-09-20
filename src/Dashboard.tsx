@@ -588,7 +588,7 @@ function ArchivedDeckList({
       <p className="field-hint">
         Kept for your history. An archived deck isn't in your deck list and can't be reviewed or
         changed, but unarchiving it brings it back with its cards and review history unchanged.
-        Cards you deleted stay deleted.
+        Cards you deleted stay deleted, and can be restored from the deck once it's back.
       </p>
       <ul className="card-list">
         {decks.map((deck) => (
@@ -683,7 +683,7 @@ function ArchivedDeckItem({
           <p ref={questionRef} id={`${nameId}-question`} className="notice" tabIndex={-1}>
             {`Unarchive ${deck.name}? It goes back in your deck list with the same cards and ` +
               "review history, and its cards become due again on the dates they already had. " +
-              "No review starts, and cards you deleted stay deleted."}
+              "No review starts, and cards you deleted stay deleted until you restore them."}
           </p>
           <div className="deck-actions">
             {/* Both buttons name the deck as well as the question: several

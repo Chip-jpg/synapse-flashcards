@@ -12,13 +12,14 @@ migrations, validation, scheduling, and every business rule; React only calls ty
 - **Decks** — create your own, rename them, archive ones you're done with, and unarchive them
   again when you want them back. A built-in read-only
   **Sample deck** is there from first launch so there's something to study immediately.
-- **Cards** — add front/back cards, edit them (which never disturbs their schedule), and delete them.
+- **Cards** — add front/back cards, edit them (which never disturbs their schedule), delete them, and
+  restore ones you deleted.
 - **Study** — start a review session for a deck, reveal the answer, and rate it **Again / Hard /
   Good / Easy**. FSRS computes the next due date, and every rating is appended to `review_logs`.
 - **History is kept** — deleting a card, archiving a deck, and deleting a note are all *soft*: the
   rows stay in the database, a card keeps its FSRS state and review log, and a note keeps its text
-  and its times. A deleted note can be restored, and an archived deck can be unarchived; a deleted
-  card can't be brought back, yet.
+  and its times. Every one of them can be brought back: a deleted card restored, an archived deck
+  unarchived, a deleted note restored — each exactly as it was.
 - **Export** — save a `.zip` backup of all your study data wherever you choose.
 - **Import (restore)** — replace everything in Synapse with a backup made by Export, after Synapse
   has checked the whole file and you've confirmed. It never merges.
@@ -85,8 +86,15 @@ session ends when nothing in that deck is due. Closing the app mid-session is sa
 deck resumes it.
 
 **Edit or delete a card.** On the deck screen, *Edit card* changes the text and keeps the card's
-schedule and history. *Delete card* asks for confirmation, then removes the card from lists, counts,
-and reviews. The card and its review log stay in the database, and there's no way to bring it back.
+schedule and history. *Delete card* asks for confirmation, then takes the card out of the deck's
+lists, counts, and reviews. The card and its review log stay in the database, and it appears under
+*Deleted cards* at the bottom of the deck screen.
+
+**Restore a card.** Under *Deleted cards*, *Restore card* asks for confirmation, then puts the card
+back in the deck exactly as it was: same text, FSRS state, due date, reps, lapses, and review log.
+It is not reset to a new card, so it becomes due again only on the date it already had, and no
+review session starts. Cards in an archived deck can't be restored until the deck is unarchived,
+and the Sample deck's cards stay out of this entirely.
 
 **Rename or archive a deck.** Also on the deck screen. Archiving asks for confirmation, then moves
 the deck to *Archived decks* on the dashboard: it can't be reviewed, changed, or given new cards, and
@@ -95,7 +103,8 @@ any unfinished session in it is closed. Its cards and history are kept, and its 
 **Unarchive a deck.** Under *Archived decks* on the dashboard, *Unarchive deck* asks for
 confirmation, then puts the deck back in your deck list exactly as it was: same name, description,
 cards, FSRS state, review log, and sessions. Its cards become due again only on the dates they
-already had, no review session starts, and cards you deleted before archiving stay deleted.
+already had, no review session starts, and cards you deleted before archiving come back still
+deleted — you can restore them from the deck once it's back.
 
 **Export your data.** On the dashboard, *Your data* → *Export data*. Pick where to save the `.zip`.
 It contains exactly two files: `manifest.json` (format, format version, schema version, app version,
@@ -138,8 +147,9 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   (the process killed mid-swap) can leave a rollback copy in Synapse's data folder
   (`import-workspace/rollback.sqlite`, later renamed `rollback-kept-<time>.sqlite`); these are never
   deleted automatically.
-- **No card undelete.** A deleted card is kept in the database with its review log, but can't be
-  brought back from the app. Decks and notes can be brought back; cards can't.
+- **Restoring is one card at a time.** *Deleted cards* lists a deck's deleted cards and restores
+  them one by one; there's no "restore all", no undo of a restore beyond deleting the card again,
+  and no way to move a card to a different deck on the way back.
 - **Notes are plain typed text.** No formatting, attachments, PDFs, OCR, audio, web clips, search,
   tags, or folders. Nothing generates cards from a note, and a card doesn't remember the note it was
   written from — so deleting a note leaves its cards exactly where they are. A deleted note is
@@ -164,9 +174,9 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   - `db.rs` — where the database lives, opening it, running migrations, and the one-time seed.
   - `scheduler.rs` — FSRS scheduling via the `fsrs` crate, with no database access.
   - `study.rs` — the deck dashboard, review sessions, and recording reviews.
-  - `authoring.rs` — creating, renaming, archiving, and unarchiving decks; adding, editing, and
-    deleting cards.
+  - `authoring.rs` — creating, renaming, archiving, and unarchiving decks; adding, editing,
+    deleting, and restoring cards.
   - `notes.rs` — typed notes: writing, editing, soft-deleting, and restoring them.
   - `export.rs` / `import.rs` — writing a `.zip` backup, and checking and restoring one.
-- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0009`), embedded in the
+- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0010`), embedded in the
   binary at compile time.

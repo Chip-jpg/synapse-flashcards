@@ -329,8 +329,9 @@ mod tests {
     }
 
     /// A database holding the sample content plus a normal deck with a
-    /// reviewed card, a soft-deleted card, an archived deck, a session, and
-    /// two typed notes, one of them soft-deleted.
+    /// reviewed card, a soft-deleted card, a card that was deleted and then
+    /// restored, an archived deck, a session, and two typed notes, one of them
+    /// soft-deleted.
     async fn populated(dir: &Path) -> SqlitePool {
         let pool = open_file(&dir.join("synapse.sqlite")).await.unwrap();
         let now = at(NOW);
@@ -338,7 +339,7 @@ mod tests {
             .await
             .unwrap()
             .id;
-        for (front, back) in [("A", "a"), ("B", "b")] {
+        for (front, back) in [("A", "a"), ("B", "b"), ("C", "c")] {
             crate::authoring::create_flashcard(&pool, biology, front, back, now)
                 .await
                 .unwrap();
@@ -367,7 +368,25 @@ mod tests {
         )
         .await
         .unwrap();
+        crate::study::record_review(
+            &pool,
+            session_id,
+            cards[2],
+            0,
+            crate::scheduler::Rating::Good,
+            now,
+        )
+        .await
+        .unwrap();
         crate::authoring::delete_flashcard(&pool, cards[1], now)
+            .await
+            .unwrap();
+        // Deleted and brought back: a backup must carry it as the active card
+        // it is now, with the schedule its review left.
+        crate::authoring::delete_flashcard(&pool, cards[2], now)
+            .await
+            .unwrap();
+        crate::authoring::restore_flashcard(&pool, cards[2], now)
             .await
             .unwrap();
 
@@ -417,8 +436,11 @@ mod tests {
                 serde_json::json!({
                     "format": "synapse-export",
                     "format_version": 1,
-                    // Every migration in the repository is applied.
-                    "schema_version": 9,
+                    // Every migration in the repository is applied. Taken from
+                    // the migrations themselves: it's the key names that are
+                    // the contract here, and pinning the number as a literal
+                    // would only break this test on every new migration.
+                    "schema_version": crate::db::latest_schema_version(),
                     "app_version": "0.1.0",
                     "exported_at": "2026-09-16T09:30:00.000Z",
                     "contents": { "database": "db/synapse.sqlite" },
@@ -481,21 +503,28 @@ mod tests {
                     ),
                 ]
             );
-            // Cards: the soft-deleted one is kept, still marked deleted.
-            let cards: Vec<(String, Option<String>)> =
-                sqlx::query_as("SELECT front, deleted_at FROM flashcards ORDER BY id")
-                    .fetch_all(&restored)
-                    .await
-                    .unwrap();
+            // Cards: the soft-deleted one is kept, still marked deleted, and
+            // the restored one travels as the active card it is again, with
+            // the FSRS state and reps its review left. Neither state is
+            // invented or lost by the round trip.
+            let cards: Vec<(String, Option<String>, String, i64)> = sqlx::query_as(
+                "SELECT front, deleted_at, fsrs_state, reps FROM flashcards ORDER BY id",
+            )
+            .fetch_all(&restored)
+            .await
+            .unwrap();
             assert_eq!(
                 cards,
                 vec![
-                    ("What is active recall?".to_string(), None),
-                    ("A".to_string(), None),
+                    ("What is active recall?".to_string(), None, "New".into(), 0),
+                    ("A".to_string(), None, "Review".into(), 1),
                     (
                         "B".to_string(),
-                        Some("2026-09-16T09:30:00.000Z".to_string())
+                        Some("2026-09-16T09:30:00.000Z".to_string()),
+                        "New".into(),
+                        0
                     ),
+                    ("C".to_string(), None, "Review".into(), 1),
                 ]
             );
             // Notes: the deleted one travels with its deletion time, so a
@@ -535,9 +564,11 @@ mod tests {
             assert!(scheduled.1.is_some() && scheduled.2.is_some());
             assert!(scheduled.3.is_some());
             assert_eq!(scheduled.4, 1);
+            // One log per review (cards A and C), and no more: deleting and
+            // restoring C wrote no history of its own, in the export or out.
             assert_eq!(
                 count(&restored, "SELECT COUNT(*) FROM review_logs").await,
-                1
+                2
             );
             assert_eq!(count(&restored, "SELECT COUNT(*) FROM sessions").await, 1);
             let markers: Vec<String> = sqlx::query_scalar("SELECT name FROM seed_markers")
@@ -724,7 +755,10 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert_eq!(manifest_of(&archive).schema_version, 9);
+            assert_eq!(
+                manifest_of(&archive).schema_version,
+                crate::db::latest_schema_version()
+            );
             let restored = exported_database(&archive, &dir.join("restored.sqlite")).await;
             assert_eq!(count(&restored, "SELECT COUNT(*) FROM decks").await, 1);
             assert_eq!(count(&restored, "SELECT COUNT(*) FROM flashcards").await, 1);

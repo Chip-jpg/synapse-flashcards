@@ -5,13 +5,15 @@ import {
   deleteFlashcard,
   getDeckDetail,
   renameDeck,
+  restoreFlashcard,
   toCommandError,
   updateFlashcard,
   type DeckCard,
   type DeckDetail as Deck,
+  type DeletedCard,
 } from "./api";
 import { FormActions, TextField, useFormSave } from "./forms";
-import { Message, useFocusOnMount } from "./ui";
+import { formatDateTime, Message, useFocusOnMount } from "./ui";
 import { useStartReview } from "./useStartReview";
 
 type DetailState =
@@ -101,9 +103,15 @@ export function DeckDetail({
     showView(notice, { to: "notice" });
   }
 
-  function reload() {
+  /**
+   * Reloads the deck, announcing `notice` and giving it focus if there is one.
+   * Goes back to "loading" first: until the fresh deck arrives the lists on
+   * screen are wrong, and leaving a just-restored card under *Deleted cards*
+   * with a live Restore button would invite a second, doomed press.
+   */
+  function reload(notice: string | null = null) {
     setState({ status: "loading" });
-    showView(null, { to: "screen" });
+    showView(notice, notice === null ? { to: "screen" } : { to: "notice" });
     setAttempt((n) => n + 1);
   }
 
@@ -120,7 +128,7 @@ export function DeckDetail({
     return (
       <Message focus tone="alert" text={state.message}>
         <div className="actions">
-          <button type="button" className="button" onClick={reload}>
+          <button type="button" className="button" onClick={() => reload()}>
             Retry
           </button>
           <button type="button" className="button" onClick={onBack}>
@@ -172,7 +180,18 @@ export function DeckDetail({
       focus={view.focus}
       onAdd={() => setMode({ kind: "add" })}
       onEdit={(card) => setMode({ kind: "edit", card })}
-      onDeleted={(deck) => showSaved(deck, "Card deleted.")}
+      onDeleted={(deck) =>
+        showSaved(deck, "Card deleted. It's kept under Deleted cards, where you can restore it.")
+      }
+      onRestored={(deck) =>
+        showSaved(deck, "Card restored. It's back in this deck, with its schedule unchanged.")
+      }
+      onRestoreStale={() =>
+        // The card wasn't deleted after all, or the deck was archived since
+        // this screen loaded. Say so, rather than reloading silently and
+        // leaving the press unexplained.
+        reload("That card couldn't be restored. Here's this deck as it is now.")
+      }
       onRename={() => setMode({ kind: "rename" })}
       onArchived={onArchived}
       onBack={onBack}
@@ -189,6 +208,8 @@ function DeckView({
   onAdd,
   onEdit,
   onDeleted,
+  onRestored,
+  onRestoreStale,
   onRename,
   onArchived,
   onBack,
@@ -201,6 +222,9 @@ function DeckView({
   onAdd: () => void;
   onEdit: (card: DeckCard) => void;
   onDeleted: (deck: Deck) => void;
+  onRestored: (deck: Deck) => void;
+  /** A restore was refused because this screen is out of date. */
+  onRestoreStale: () => void;
   onRename: () => void;
   onArchived: () => void;
   onBack: () => void;
@@ -290,6 +314,14 @@ function DeckView({
             ))}
           </ul>
         </section>
+      )}
+
+      {deck.deletedCards.length > 0 && (
+        <DeletedCardList
+          cards={deck.deletedCards}
+          onRestored={onRestored}
+          onStale={onRestoreStale}
+        />
       )}
 
       <ManageDeck
@@ -552,8 +584,8 @@ function CardItem({
       {confirming ? (
         <div className="card-item-confirm">
           <p ref={questionRef} className="notice" tabIndex={-1}>
-            Delete this card? It will leave this deck and won't appear in reviews again. Its review
-            history is kept, but it can't be restored.
+            Delete this card? It will leave this deck and won't appear in reviews. Its schedule and
+            review history are kept, and you can restore it from Deleted cards below.
           </p>
           <div className="deck-actions">
             <button
@@ -599,6 +631,166 @@ function CardItem({
             onClick={() => setConfirming(true)}
           >
             Delete card
+          </button>
+        </div>
+      )}
+
+      {error && (
+        <p className="message-error" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Deleted cards: this deck's history, and the only place they appear. They
+ * can't be edited or reviewed while they're deleted; *Restore card* puts one
+ * back in the deck above exactly as it was.
+ */
+function DeletedCardList({
+  cards,
+  onRestored,
+  onStale,
+}: {
+  cards: DeletedCard[];
+  onRestored: (deck: Deck) => void;
+  onStale: () => void;
+}) {
+  return (
+    <section className="cards" aria-labelledby="deleted-cards-heading">
+      <h3 id="deleted-cards-heading" className="section-title">
+        Deleted cards
+      </h3>
+      <p className="field-hint">
+        Kept for your history. A deleted card isn't in this deck's counts or reviews, but restoring
+        it brings it back with its text, schedule, and review history unchanged — it becomes due
+        again only on the date it already had.
+      </p>
+      <ul className="card-list">
+        {cards.map((card) => (
+          <li key={card.id}>
+            <DeletedCardItem card={card} onRestored={onRestored} onStale={onStale} />
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** One deleted card, with the one action it has: a two-step Restore. */
+function DeletedCardItem({
+  card,
+  onRestored,
+  onStale,
+}: {
+  card: DeletedCard;
+  onRestored: (deck: Deck) => void;
+  onStale: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Blocks a second restore immediately, before the re-render lands.
+  const restoringRef = useRef(false);
+  const restoreRef = useRef<HTMLButtonElement>(null);
+  const questionRef = useRef<HTMLParagraphElement>(null);
+  // Whether the question was ever opened, so only closing it moves focus.
+  const openedRef = useRef(false);
+  const frontId = `deleted-card-${card.id}-front`;
+
+  // As with deleting a card: focus moves to the question when it opens (so a
+  // repeated Enter can't restore), and back to Restore if the card is left
+  // deleted.
+  useEffect(() => {
+    if (confirming) {
+      openedRef.current = true;
+      questionRef.current?.focus();
+    } else if (openedRef.current) {
+      restoreRef.current?.focus();
+    }
+  }, [confirming]);
+
+  async function confirmRestore() {
+    if (restoringRef.current) return;
+    restoringRef.current = true;
+    setRestoring(true);
+    setError(null);
+
+    try {
+      onRestored(await restoreFlashcard(card.id));
+      return; // The list is replaced.
+    } catch (err) {
+      const failure = toCommandError(err);
+      if (failure.kind === "stale") {
+        // Not deleted after all, or the deck was archived meanwhile: reload
+        // to show what's really there.
+        onStale();
+        return;
+      }
+      setError(failure.message);
+    }
+
+    restoringRef.current = false;
+    setRestoring(false);
+  }
+
+  return (
+    <div className="card-item">
+      <div>
+        <p className="side-label">Front</p>
+        <p id={frontId} className="card-item-text">
+          {card.front}
+        </p>
+      </div>
+      <div>
+        <p className="side-label">Back</p>
+        <p className="card-item-text">{card.back}</p>
+      </div>
+      <p className="field-hint">{`Deleted ${formatDateTime(card.deletedAt)}`}</p>
+
+      {confirming ? (
+        <div className="card-item-confirm">
+          <p ref={questionRef} className="notice" tabIndex={-1}>
+            Restore this card? It goes back into this deck with the same schedule and review
+            history it had, and becomes due again only on the date it already had.
+          </p>
+          <div className="deck-actions">
+            <button
+              type="button"
+              className="button"
+              aria-describedby={frontId}
+              aria-disabled={restoring}
+              onClick={confirmRestore}
+            >
+              Restore card
+            </button>
+            <button
+              type="button"
+              className="button"
+              aria-disabled={restoring}
+              onClick={() => {
+                if (!restoring) setConfirming(false);
+              }}
+            >
+              Keep deleted
+            </button>
+          </div>
+          <p className="form-status" role="status">
+            {restoring ? "Restoring…" : ""}
+          </p>
+        </div>
+      ) : (
+        <div className="deck-actions">
+          <button
+            ref={restoreRef}
+            type="button"
+            className="button"
+            aria-describedby={frontId}
+            onClick={() => setConfirming(true)}
+          >
+            Restore card
           </button>
         </div>
       )}
