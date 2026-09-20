@@ -128,6 +128,7 @@ const NOTE_NOT_FOUND: &str = "That note doesn't exist.";
 const NOTE_DELETED: &str = "This note was already deleted.";
 const NOTE_NOT_DELETED: &str = "This note isn't deleted.";
 const DECK_ARCHIVED: &str = "This deck has been archived.";
+const DECK_NOT_ARCHIVED: &str = "This deck isn't archived.";
 const CARD_NOT_FOUND: &str = "That card doesn't exist.";
 const SESSION_NOT_FOUND: &str = "That review session doesn't exist.";
 
@@ -165,6 +166,10 @@ fn authoring_error(err: AuthoringError, context: &str, failed: &'static str) -> 
         AuthoringError::SampleDeck => CommandError::invalid("The sample deck can't be edited."),
         // The screen is out of date: the deck was archived since it was shown.
         AuthoringError::DeckArchived => CommandError::stale(DECK_ARCHIVED),
+        // Likewise, the other way round: the archived list this came from no
+        // longer holds this deck. Nothing was written, so React reloads
+        // instead of retrying, as it does for a note that isn't deleted.
+        AuthoringError::DeckNotArchived => CommandError::stale(DECK_NOT_ARCHIVED),
         AuthoringError::CardNotFound => CommandError::invalid(CARD_NOT_FOUND),
         AuthoringError::CardDeleted => CommandError::stale("This card was already deleted."),
         AuthoringError::Internal(detail) => {
@@ -433,7 +438,8 @@ pub async fn rename_deck(
 }
 
 /// Archives an active normal deck: it leaves the dashboard and reviews, and its
-/// unfinished session (if any) ends. Nothing is removed, and there's no restore.
+/// unfinished session (if any) ends. Nothing is removed, and *Unarchive deck*
+/// brings it back.
 ///
 /// Arguments: `{ deckId }`. Returns `null` on success; rejects with kind
 /// "stale" if the deck was already archived.
@@ -454,6 +460,33 @@ pub async fn archive_deck(
                 err,
                 "archiving a deck",
                 "Synapse couldn't archive the deck.",
+            )
+        })
+}
+
+/// Unarchives an archived normal deck: it returns to the dashboard exactly as
+/// it was, with its cards, their schedules, and its review history. No review
+/// session is started or resumed, and deleted cards stay deleted.
+///
+/// Arguments: `{ deckId }`. Returns `null` on success; rejects with kind
+/// "stale" if the deck isn't archived, writing nothing either way.
+#[tauri::command]
+pub async fn unarchive_deck(
+    app: AppHandle,
+    database: State<'_, Database>,
+    deck_id: i64,
+) -> Result<(), CommandError> {
+    if deck_id < 1 {
+        return Err(CommandError::invalid(DECK_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    authoring::unarchive_deck(&pool, deck_id)
+        .await
+        .map_err(|err| {
+            authoring_error(
+                err,
+                "unarchiving a deck",
+                "Synapse couldn't unarchive the deck.",
             )
         })
 }
@@ -965,6 +998,18 @@ mod tests {
             ))
             .unwrap(),
             archived
+        );
+        // The mirror image: unarchiving a deck that isn't archived means the
+        // archived list on screen is out of date, so React reloads that too
+        // rather than retrying. Nothing was written either way.
+        assert_eq!(
+            serde_json::to_value(authoring_error(
+                AuthoringError::DeckNotArchived,
+                "test",
+                "failed"
+            ))
+            .unwrap(),
+            json!({ "kind": "stale", "message": "This deck isn't archived." })
         );
     }
 

@@ -11,7 +11,11 @@ export type Deck = {
   dueCount: number;
 };
 
-/** Mirrors `ArchivedDeck` in `src-tauri/src/authoring.rs`: history only, never reviewed or changed. */
+/**
+ * Mirrors `ArchivedDeck` in `src-tauri/src/authoring.rs`: an archived deck,
+ * which can't be reviewed or changed while it is archived, but can be
+ * unarchived back into the deck list.
+ */
 export type ArchivedDeck = {
   id: number;
   name: string;
@@ -195,6 +199,16 @@ export function renameDeck(deckId: number, name: string): Promise<DeckDetail> {
  */
 export function archiveDeck(deckId: number): Promise<void> {
   return invoke<void>("archive_deck", { deckId });
+}
+
+/**
+ * Unarchives an archived normal deck: it returns to the deck list exactly as it
+ * was, with its cards, their schedules, and its review history. No review
+ * session is started, and deleted cards stay deleted. Rejects with kind "stale"
+ * if the deck isn't archived, having written nothing.
+ */
+export function unarchiveDeck(deckId: number): Promise<void> {
+  return invoke<void>("unarchive_deck", { deckId });
 }
 
 /**

@@ -9,14 +9,16 @@ migrations, validation, scheduling, and every business rule; React only calls ty
 
 ## What Synapse does today
 
-- **Decks** — create your own, rename them, and archive ones you're done with. A built-in read-only
+- **Decks** — create your own, rename them, archive ones you're done with, and unarchive them
+  again when you want them back. A built-in read-only
   **Sample deck** is there from first launch so there's something to study immediately.
 - **Cards** — add front/back cards, edit them (which never disturbs their schedule), and delete them.
 - **Study** — start a review session for a deck, reveal the answer, and rate it **Again / Hard /
   Good / Easy**. FSRS computes the next due date, and every rating is appended to `review_logs`.
 - **History is kept** — deleting a card, archiving a deck, and deleting a note are all *soft*: the
   rows stay in the database, a card keeps its FSRS state and review log, and a note keeps its text
-  and its times. A deleted note can be restored; a deleted card and an archived deck can't be, yet.
+  and its times. A deleted note can be restored, and an archived deck can be unarchived; a deleted
+  card can't be brought back, yet.
 - **Export** — save a `.zip` backup of all your study data wherever you choose.
 - **Import (restore)** — replace everything in Synapse with a backup made by Export, after Synapse
   has checked the whole file and you've confirmed. It never merges.
@@ -88,8 +90,12 @@ and reviews. The card and its review log stay in the database, and there's no wa
 
 **Rename or archive a deck.** Also on the deck screen. Archiving asks for confirmation, then moves
 the deck to *Archived decks* on the dashboard: it can't be reviewed, changed, or given new cards, and
-any unfinished session in it is closed. Its cards and history are kept. There's no restore yet, and
-an archived deck's name stays taken.
+any unfinished session in it is closed. Its cards and history are kept, and its name stays taken.
+
+**Unarchive a deck.** Under *Archived decks* on the dashboard, *Unarchive deck* asks for
+confirmation, then puts the deck back in your deck list exactly as it was: same name, description,
+cards, FSRS state, review log, and sessions. Its cards become due again only on the dates they
+already had, no review session starts, and cards you deleted before archiving stay deleted.
 
 **Export your data.** On the dashboard, *Your data* → *Export data*. Pick where to save the `.zip`.
 It contains exactly two files: `manifest.json` (format, format version, schema version, app version,
@@ -132,8 +138,8 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   (the process killed mid-swap) can leave a rollback copy in Synapse's data folder
   (`import-workspace/rollback.sqlite`, later renamed `rollback-kept-<time>.sqlite`); these are never
   deleted automatically.
-- **No card undelete or deck unarchive.** Deleted cards and archived decks are kept in the database
-  but can't be brought back from the app. Only notes can be restored.
+- **No card undelete.** A deleted card is kept in the database with its review log, but can't be
+  brought back from the app. Decks and notes can be brought back; cards can't.
 - **Notes are plain typed text.** No formatting, attachments, PDFs, OCR, audio, web clips, search,
   tags, or folders. Nothing generates cards from a note, and a card doesn't remember the note it was
   written from — so deleting a note leaves its cards exactly where they are. A deleted note is
@@ -158,8 +164,9 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   - `db.rs` — where the database lives, opening it, running migrations, and the one-time seed.
   - `scheduler.rs` — FSRS scheduling via the `fsrs` crate, with no database access.
   - `study.rs` — the deck dashboard, review sessions, and recording reviews.
-  - `authoring.rs` — creating, renaming, and archiving decks; adding, editing, and deleting cards.
+  - `authoring.rs` — creating, renaming, archiving, and unarchiving decks; adding, editing, and
+    deleting cards.
   - `notes.rs` — typed notes: writing, editing, soft-deleting, and restoring them.
   - `export.rs` / `import.rs` — writing a `.zip` backup, and checking and restoring one.
-- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0008`), embedded in the
+- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0009`), embedded in the
   binary at compile time.

@@ -65,7 +65,9 @@ function App() {
             onArchived={() =>
               show({
                 screen: "decks",
-                notice: "Deck archived. Its cards and review history are kept.",
+                notice:
+                  "Deck archived. Its cards and review history are kept under Archived decks, " +
+                  "where you can unarchive it.",
               })
             }
           />

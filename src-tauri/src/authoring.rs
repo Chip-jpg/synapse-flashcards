@@ -18,11 +18,22 @@
 //! reviews, but it and its review logs are kept. A deleted card is final.
 //!
 //! Renaming a deck changes only its name (same rules as creating one; its own
-//! current name doesn't count as taken). Archiving a deck is final, like
-//! deleting a card: the row gets an `archived_at` time and the deck leaves the
-//! dashboard, due counts, and reviews, and can't be opened, renamed, or given
-//! cards. Its cards, their FSRS state and review logs, and its sessions are all
-//! kept; an unfinished session is finished in the same transaction.
+//! current name doesn't count as taken). Archiving a deck puts it away: the
+//! row gets an `archived_at` time and the deck leaves the dashboard, due
+//! counts, and reviews, and can't be opened, renamed, or given cards. Its
+//! cards, their FSRS state and review logs, and its sessions are all kept; an
+//! unfinished session is finished in the same transaction.
+//!
+//! Unarchiving (migration 0009) is the exact reverse, and the only way back:
+//! `archived_at` is cleared and nothing else is written, so the deck returns
+//! as the active normal deck it was, with the same id, name, description,
+//! cards, card states, sessions, and review logs. It starts no review session
+//! — the deck simply appears on the dashboard again, where the user can start
+//! one — and its cards become due only according to the `due` dates they
+//! already had. A card soft-deleted before the deck was archived stays
+//! deleted: deleting a card is still final (there is no card undelete).
+//! Only an archived normal deck can be unarchived; the sample deck is never
+//! archived, so it can never be unarchived either.
 //!
 //! The sample deck is read-only here: it can't be opened for editing, renamed,
 //! or archived, and its cards can't be added to, edited, or deleted.
@@ -99,6 +110,8 @@ pub enum AuthoringError {
     SampleDeck,
     /// The deck (or the card's deck) has been archived, so it can't change.
     DeckArchived,
+    /// The deck isn't archived, so there's nothing to unarchive.
+    DeckNotArchived,
     /// No card has this id.
     CardNotFound,
     /// The card was deleted, so it can't be changed any more.
@@ -532,6 +545,71 @@ pub async fn archive_deck(
     // transaction, so never report an archive that didn't happen.
     if archived.rows_affected() != 1 {
         return Err(AuthoringError::DeckArchived);
+    }
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Checks that `deck_id` is a normal deck that is archived, so it can be
+/// unarchived. Reads only the two columns that decide it: a deck's name and
+/// description aren't needed to put it back, and `load_deck_detail` can't be
+/// reused here because it refuses archived decks by design.
+async fn unarchivable_deck(
+    conn: &mut SqliteConnection,
+    deck_id: i64,
+) -> Result<(), AuthoringError> {
+    let deck: Option<(bool, bool)> =
+        sqlx::query_as("SELECT is_sample, archived_at IS NOT NULL FROM decks WHERE id = ?1")
+            .bind(deck_id)
+            .fetch_optional(conn)
+            .await?;
+
+    match deck {
+        None => Err(AuthoringError::DeckNotFound),
+        // Unreachable in practice: the sample deck can never be archived
+        // (migration 0006), so it can never be archived *and* a sample deck.
+        // Checked anyway, so it's refused by name rather than by luck.
+        Some((true, _)) => Err(AuthoringError::SampleDeck),
+        Some((false, false)) => Err(AuthoringError::DeckNotArchived),
+        Some((false, true)) => Ok(()),
+    }
+}
+
+/// Unarchives an archived normal deck, returning it to the dashboard exactly
+/// as it was. Nothing else is written.
+///
+/// Only `archived_at` is cleared, so the deck keeps its id, name, description,
+/// cards, their FSRS state and review logs, and its sessions. No review
+/// session is created or resumed: the deck's cards are due again only
+/// according to the `due` dates they already had, and the user starts a review
+/// from the dashboard as for any other deck. Cards that were soft-deleted stay
+/// deleted. A deck that isn't archived is refused and nothing is written, so
+/// unarchiving twice changes nothing.
+///
+/// Takes no time: an unarchive records none. The deck's `created_at` is when
+/// it was created, and it keeps meaning that.
+pub async fn unarchive_deck(pool: &SqlitePool, deck_id: i64) -> Result<(), AuthoringError> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+
+    // Stops here, before writing anything, if the deck is missing, the sample
+    // deck, or not archived. Returning early drops `tx`, which rolls it back.
+    unarchivable_deck(&mut tx, deck_id).await?;
+
+    // The statement repeats the checks it relies on, as every conditional
+    // write here does, so it can only ever clear an archive that is really
+    // there, on a deck that is really a normal one.
+    let unarchived = sqlx::query(
+        "UPDATE decks SET archived_at = NULL
+         WHERE id = ?1 AND archived_at IS NOT NULL AND is_sample = 0",
+    )
+    .bind(deck_id)
+    .execute(&mut *tx)
+    .await?;
+    // As in `rename_deck`: the deck was checked above inside this same
+    // transaction, so never report an unarchive that didn't happen.
+    if unarchived.rows_affected() != 1 {
+        return Err(AuthoringError::DeckNotArchived);
     }
 
     tx.commit().await?;
@@ -2091,16 +2169,37 @@ mod tests {
             let decks_before = all_decks(&pool).await;
             let cards_before = all_card_rows(&pool).await;
             let sessions_before = all_sessions(&pool).await;
-            let writes: [(&'static str, i64, &str); 9] = [
+            let writes: [(&'static str, i64, &str); 12] = [
                 (
                     "UPDATE decks SET name = 'Renamed' WHERE id = ?1",
                     biology,
                     "deck is archived",
                 ),
                 (
-                    "UPDATE decks SET archived_at = NULL WHERE id = ?1",
+                    "UPDATE decks SET description = 'Rewritten' WHERE id = ?1",
                     biology,
                     "deck is archived",
+                ),
+                (
+                    "UPDATE decks SET created_at = '2000-01-01T00:00:00.000Z' WHERE id = ?1",
+                    biology,
+                    "deck is archived",
+                ),
+                // The freeze on `is_sample` is what keeps an archived deck
+                // from turning itself into the sample deck (or the reverse),
+                // so it is checked like the rest of the columns.
+                (
+                    "UPDATE decks SET is_sample = 1 WHERE id = ?1",
+                    biology,
+                    "deck is archived",
+                ),
+                // Clearing `archived_at` is the one allowed update (migration
+                // 0009), so what stays refused here is moving the archive time
+                // rather than clearing it.
+                (
+                    "UPDATE decks SET archived_at = '2026-09-16T12:00:00.000Z' WHERE id = ?1",
+                    biology,
+                    "deck is already archived",
                 ),
                 (
                     "DELETE FROM decks WHERE id = ?1",
@@ -2146,6 +2245,403 @@ mod tests {
             assert_eq!(all_decks(&pool).await, decks_before);
             assert_eq!(all_card_rows(&pool).await, cards_before);
             assert_eq!(all_sessions(&pool).await, sessions_before);
+
+            // A deck can't be born archived either, so nothing can appear
+            // straight into the archive history.
+            let born_archived = sqlx::query(
+                "INSERT INTO decks (name, is_sample, created_at, archived_at)
+                 VALUES ('Born archived', 0, '2026-09-15T12:00:00.000Z',
+                         '2026-09-15T12:00:00.000Z')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap_err();
+            assert!(
+                born_archived
+                    .to_string()
+                    .contains("a new deck cannot already be archived"),
+                "{born_archived}"
+            );
+
+            // Clearing `archived_at` is the single update an archived deck
+            // accepts, and it changes nothing else in the database: every
+            // other deck column is exactly what it was before.
+            let identity_sql = "SELECT id, name, description, is_sample, created_at
+                                FROM decks ORDER BY id";
+            type DeckIdentity = (i64, String, Option<String>, bool, String);
+            let identity_before: Vec<DeckIdentity> =
+                sqlx::query_as(identity_sql).fetch_all(&pool).await.unwrap();
+            sqlx::query("UPDATE decks SET archived_at = NULL WHERE id = ?1")
+                .bind(biology)
+                .execute(&pool)
+                .await
+                .unwrap();
+            assert_eq!(archived_at(&pool, biology).await, None);
+            let identity_after: Vec<DeckIdentity> =
+                sqlx::query_as(identity_sql).fetch_all(&pool).await.unwrap();
+            assert_eq!(identity_after, identity_before);
+            assert_eq!(all_card_rows(&pool).await, cards_before);
+            assert_eq!(all_sessions(&pool).await, sessions_before);
+        });
+    }
+
+    #[test]
+    fn archiving_a_deck_again_records_the_new_time_not_the_old_one() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let first = at(NOW);
+            let (biology, _) = deck_with_cards(&pool, "Biology", &[("A", "a")]).await;
+
+            archive_deck(&pool, biology, first).await.unwrap();
+            assert_eq!(
+                archived_at(&pool, biology).await.as_deref(),
+                Some("2026-09-15T12:00:00.000Z")
+            );
+
+            // While it stays archived the date is fixed: archiving again is
+            // refused outright and can't move it.
+            let later = first + TimeDelta::hours(3);
+            assert!(matches!(
+                archive_deck(&pool, biology, later).await,
+                Err(AuthoringError::DeckArchived)
+            ));
+            assert_eq!(
+                archived_at(&pool, biology).await.as_deref(),
+                Some("2026-09-15T12:00:00.000Z")
+            );
+
+            // Unarchiving and archiving again is a fresh archiving, so it
+            // records when that happened rather than keeping the old date.
+            unarchive_deck(&pool, biology).await.unwrap();
+            archive_deck(&pool, biology, later).await.unwrap();
+            assert_eq!(
+                archived_at(&pool, biology).await.as_deref(),
+                Some("2026-09-15T15:00:00.000Z")
+            );
+            // The history list shows that newer date, and the deck is listed
+            // once, not twice.
+            let listed: Vec<(i64, String)> = archived_decks(&pool)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|deck| (deck.id, deck.archived_at))
+                .collect();
+            assert_eq!(listed, vec![(biology, "2026-09-15T15:00:00.000Z".into())]);
+        });
+    }
+
+    #[test]
+    fn the_database_itself_enforces_the_unarchiving_rules() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let now = at(NOW);
+            let sample = sample_deck_id(&pool).await;
+            let (biology, _) = deck_with_cards(&pool, "Biology", &[("A", "a")]).await;
+            archive_deck(&pool, biology, now).await.unwrap();
+
+            // An unarchive must not resurrect an abandoned session. A deck can
+            // never be archived with one open, so this is only reachable by
+            // forcing a session open behind the triggers' back.
+            sqlx::query(
+                "INSERT INTO sessions (deck_id, started_at, ended_at)
+                 VALUES (?1, '2026-09-15T12:00:00.000Z', '2026-09-15T12:00:30.000Z')",
+            )
+            .bind(biology)
+            .execute(&pool)
+            .await
+            .unwrap();
+            let forced: i64 =
+                sqlx::query_scalar("SELECT id FROM sessions WHERE deck_id = ?1 ORDER BY id DESC")
+                    .bind(biology)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            sqlx::query("DROP TRIGGER sessions_archived_deck_update")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("UPDATE sessions SET ended_at = NULL WHERE id = ?1")
+                .bind(forced)
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            refused(
+                &pool,
+                "UPDATE decks SET archived_at = NULL WHERE id = ?1",
+                biology,
+                "deck has an unfinished session",
+            )
+            .await;
+            assert!(archived_at(&pool, biology).await.is_some());
+            assert!(matches!(
+                unarchive_deck(&pool, biology).await,
+                Err(AuthoringError::Internal(_))
+            ));
+            assert!(archived_at(&pool, biology).await.is_some());
+
+            // With the session closed again, the same write is accepted.
+            sqlx::query("UPDATE sessions SET ended_at = ?2 WHERE id = ?1")
+                .bind(forced)
+                .bind("2026-09-15T12:01:00.000Z")
+                .execute(&pool)
+                .await
+                .unwrap();
+            unarchive_deck(&pool, biology).await.unwrap();
+            assert_eq!(archived_at(&pool, biology).await, None);
+
+            // The sample deck can't be archived, so it is never unarchivable.
+            assert!(matches!(
+                unarchive_deck(&pool, sample).await,
+                Err(AuthoringError::SampleDeck)
+            ));
+        });
+    }
+
+    #[test]
+    fn unarchiving_restores_the_deck_with_every_record_intact() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let now = at(NOW);
+            let sample = sample_deck_id(&pool).await;
+            let (biology, cards) =
+                deck_with_cards(&pool, "Biology", &[("A", "a"), ("B", "b"), ("C", "c")]).await;
+
+            // A reviewed card (so it has FSRS state, a due date, and a log), a
+            // soft-deleted card, and an untouched new card.
+            let session = start(&pool, biology, now).await;
+            study::record_review(&pool, session, cards[0], 0, Rating::Good, now)
+                .await
+                .unwrap();
+            delete_flashcard(&pool, cards[1], now).await.unwrap();
+
+            archive_deck(&pool, biology, now + TimeDelta::minutes(1))
+                .await
+                .unwrap();
+            // Every deck column except `archived_at`, which is the one column
+            // an unarchive is allowed to change.
+            let identity_sql = "SELECT id, name, description, is_sample, created_at
+                                FROM decks ORDER BY id";
+            type DeckIdentity = (i64, String, Option<String>, bool, String);
+            let identity_before: Vec<DeckIdentity> =
+                sqlx::query_as(identity_sql).fetch_all(&pool).await.unwrap();
+            let cards_before = all_card_rows(&pool).await;
+            let sessions_before = all_sessions(&pool).await;
+            let logs_before = review_logs(&pool).await;
+
+            unarchive_deck(&pool, biology).await.unwrap();
+
+            // The deck is active again, with the same id, name, description,
+            // cards, card states, sessions, and review logs. Only
+            // `archived_at` differs from the archived snapshot.
+            assert_eq!(archived_at(&pool, biology).await, None);
+            let identity_after: Vec<DeckIdentity> =
+                sqlx::query_as(identity_sql).fetch_all(&pool).await.unwrap();
+            assert_eq!(identity_after, identity_before);
+            assert_eq!(all_card_rows(&pool).await, cards_before);
+            assert_eq!(all_sessions(&pool).await, sessions_before);
+            assert_eq!(review_logs(&pool).await, logs_before);
+
+            // It's back on the dashboard and can be opened and reviewed, and
+            // it no longer appears in the archive history.
+            assert_eq!(
+                dashboard_ids(study::decks(&pool, now).await.unwrap()),
+                vec![sample, biology]
+            );
+            assert!(archived_decks(&pool).await.unwrap().is_empty());
+            let detail = deck_detail(&pool, biology, now).await.unwrap();
+            assert_eq!(detail.name, "Biology");
+            // The deleted card is still deleted: two active cards, not three.
+            assert_eq!(detail.card_count, 2);
+            assert_eq!(
+                detail.cards.iter().map(|card| card.id).collect::<Vec<_>>(),
+                vec![cards[0], cards[2]]
+            );
+            assert!(deleted_at(&pool, cards[1]).await.is_some());
+
+            // Unarchiving started no session: the only one is the finished one
+            // from before the archive.
+            assert_eq!(
+                count(
+                    &pool,
+                    "SELECT COUNT(*) FROM sessions WHERE ended_at IS NULL"
+                )
+                .await,
+                0
+            );
+        });
+    }
+
+    #[test]
+    fn unarchived_cards_come_back_due_only_on_their_own_dates() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let now = at(NOW);
+            let (biology, cards) =
+                deck_with_cards(&pool, "Biology", &[("A", "a"), ("B", "b")]).await;
+
+            // Review one card so it is scheduled into the future; the other
+            // stays a new card, which is due immediately.
+            let session = start(&pool, biology, now).await;
+            study::record_review(&pool, session, cards[0], 0, Rating::Easy, now)
+                .await
+                .unwrap();
+            let due_after_review: Option<String> =
+                sqlx::query_scalar("SELECT due FROM flashcards WHERE id = ?1")
+                    .bind(cards[0])
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            let due_date = at(due_after_review.as_deref().unwrap());
+
+            archive_deck(&pool, biology, now + TimeDelta::minutes(1))
+                .await
+                .unwrap();
+            unarchive_deck(&pool, biology).await.unwrap();
+
+            // Straight after the unarchive only the new card is due; the
+            // reviewed one keeps the date FSRS gave it.
+            assert_eq!(deck_detail(&pool, biology, now).await.unwrap().due_count, 1);
+            let first = start(&pool, biology, now).await;
+            let SessionCard::Due { card } = study::session_card(&pool, first, now).await.unwrap()
+            else {
+                panic!("the new card should be due");
+            };
+            assert_eq!(card.id, cards[1]);
+
+            // Once its due date arrives, the reviewed card is offered too, with
+            // the repetition count it already had.
+            let later = due_date + TimeDelta::minutes(1);
+            assert_eq!(
+                deck_detail(&pool, biology, later).await.unwrap().due_count,
+                2
+            );
+            let due_ids: Vec<i64> = sqlx::query_scalar(
+                "SELECT id FROM flashcards
+                 WHERE deck_id = ?1 AND deleted_at IS NULL AND (due IS NULL OR due <= ?2)
+                 ORDER BY id",
+            )
+            .bind(biology)
+            .bind(to_db_time(later))
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(due_ids, vec![cards[0], cards[1]]);
+        });
+    }
+
+    #[test]
+    fn missing_active_and_sample_decks_cannot_be_unarchived() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let now = at(NOW);
+            let sample = sample_deck_id(&pool).await;
+            let biology = deck_id(&pool, "Biology").await;
+            let before = all_decks(&pool).await;
+
+            for id in [0, -1, 999, i64::MAX] {
+                assert!(
+                    matches!(
+                        unarchive_deck(&pool, id).await,
+                        Err(AuthoringError::DeckNotFound)
+                    ),
+                    "unarchive {id}"
+                );
+            }
+            // An active deck has nothing to unarchive, and the sample deck is
+            // refused as the sample deck rather than as an active one.
+            assert!(matches!(
+                unarchive_deck(&pool, biology).await,
+                Err(AuthoringError::DeckNotArchived)
+            ));
+            assert!(matches!(
+                unarchive_deck(&pool, sample).await,
+                Err(AuthoringError::SampleDeck)
+            ));
+            assert_eq!(all_decks(&pool).await, before);
+
+            // Unarchiving twice: the second is refused and writes nothing.
+            archive_deck(&pool, biology, now).await.unwrap();
+            unarchive_deck(&pool, biology).await.unwrap();
+            let after = all_decks(&pool).await;
+            assert!(matches!(
+                unarchive_deck(&pool, biology).await,
+                Err(AuthoringError::DeckNotArchived)
+            ));
+            assert_eq!(all_decks(&pool).await, after);
+        });
+    }
+
+    #[test]
+    fn an_archived_name_stays_reserved_and_unarchiving_never_clashes() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let now = at(NOW);
+            let biology = deck_id(&pool, "Biology").await;
+            archive_deck(&pool, biology, now).await.unwrap();
+
+            // An archived deck's name is still taken, so nothing can be
+            // created that the unarchive would then collide with.
+            assert_eq!(
+                problem(create_deck(&pool, "biology", None, now).await),
+                InvalidInput::NameTaken
+            );
+            unarchive_deck(&pool, biology).await.unwrap();
+            assert_eq!(
+                deck_detail(&pool, biology, now).await.unwrap().name,
+                "Biology"
+            );
+
+            // Back to an ordinary active deck: it can be renamed, which frees
+            // the old name, and archived and unarchived again.
+            rename_deck(&pool, biology, "Cell biology", now)
+                .await
+                .unwrap();
+            let chemistry = create_deck(&pool, "Biology", None, now).await.unwrap().id;
+            archive_deck(&pool, biology, now).await.unwrap();
+            unarchive_deck(&pool, biology).await.unwrap();
+            assert_eq!(
+                deck_detail(&pool, biology, now).await.unwrap().name,
+                "Cell biology"
+            );
+            assert_eq!(
+                deck_detail(&pool, chemistry, now).await.unwrap().name,
+                "Biology"
+            );
+        });
+    }
+
+    #[test]
+    fn a_failed_unarchive_changes_nothing() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let now = at(NOW);
+            let (biology, _) = deck_with_cards(&pool, "Biology", &[("A", "a")]).await;
+            archive_deck(&pool, biology, now).await.unwrap();
+            let before = all_decks(&pool).await;
+
+            sqlx::query(
+                "CREATE TRIGGER fail_unarchive BEFORE UPDATE OF archived_at ON decks
+                 WHEN NEW.archived_at IS NULL
+                 BEGIN SELECT RAISE(ABORT, 'simulated failure'); END",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            assert!(matches!(
+                unarchive_deck(&pool, biology).await,
+                Err(AuthoringError::Internal(_))
+            ));
+            assert_eq!(all_decks(&pool).await, before);
+            assert!(archived_at(&pool, biology).await.is_some());
+
+            sqlx::query("DROP TRIGGER fail_unarchive")
+                .execute(&pool)
+                .await
+                .unwrap();
+            unarchive_deck(&pool, biology).await.unwrap();
+            assert_eq!(archived_at(&pool, biology).await, None);
         });
     }
 
@@ -2203,6 +2699,98 @@ mod tests {
                     1
                 );
                 assert_eq!(card_ids(&pool, sample).await.len(), 1);
+                assert_eq!(count(&pool, "SELECT COUNT(*) FROM seed_markers").await, 1);
+                pool.close().await;
+            }
+
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    #[test]
+    fn unarchives_survive_reopening_the_database_file() {
+        tauri::async_runtime::block_on(async {
+            let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target")
+                .join("test-dbs")
+                .join("deck-unarchive");
+            let _ = std::fs::remove_dir_all(&dir);
+            let path = dir.join("synapse.sqlite");
+            let now = at(NOW);
+
+            let pool = open_file(&path).await.unwrap();
+            let sample = sample_deck_id(&pool).await;
+            let (biology, biology_cards) =
+                deck_with_cards(&pool, "Biology", &[("A", "a"), ("B", "b")]).await;
+            let (chemistry, _) = deck_with_cards(&pool, "Chemistry", &[("C", "c")]).await;
+
+            // History worth keeping across the round trip: one reviewed card,
+            // one deleted card, and a finished session.
+            let session = start(&pool, biology, now).await;
+            study::record_review(&pool, session, biology_cards[0], 0, Rating::Good, now)
+                .await
+                .unwrap();
+            delete_flashcard(&pool, biology_cards[1], now)
+                .await
+                .unwrap();
+
+            // Biology goes away and comes back; Chemistry stays archived.
+            archive_deck(&pool, biology, now + TimeDelta::minutes(1))
+                .await
+                .unwrap();
+            archive_deck(&pool, chemistry, now + TimeDelta::minutes(2))
+                .await
+                .unwrap();
+            unarchive_deck(&pool, biology).await.unwrap();
+
+            let decks_before = all_decks(&pool).await;
+            let cards_before = all_card_rows(&pool).await;
+            let sessions_before = all_sessions(&pool).await;
+            let logs_before = review_logs(&pool).await;
+            pool.close().await;
+
+            // Reopen twice: each open migrates and seeds again, which must be a no-op.
+            for _ in 0..2 {
+                let pool = open_file(&path).await.unwrap();
+                assert_eq!(all_decks(&pool).await, decks_before);
+                assert_eq!(all_card_rows(&pool).await, cards_before);
+                assert_eq!(all_sessions(&pool).await, sessions_before);
+                assert_eq!(review_logs(&pool).await, logs_before);
+
+                // The unarchived deck is an ordinary active deck again, and
+                // the one still archived is still history.
+                assert_eq!(
+                    dashboard_ids(study::decks(&pool, now).await.unwrap()),
+                    vec![sample, biology]
+                );
+                let archived: Vec<i64> = archived_decks(&pool)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|deck| deck.id)
+                    .collect();
+                assert_eq!(archived, vec![chemistry]);
+                assert!(matches!(
+                    study::start_session(&pool, chemistry, now).await,
+                    Err(StudyError::DeckArchived)
+                ));
+
+                // The deleted card stayed deleted, and nothing reopened a session.
+                let detail = deck_detail(&pool, biology, now).await.unwrap();
+                assert_eq!(detail.card_count, 1);
+                assert_eq!(
+                    count(
+                        &pool,
+                        "SELECT COUNT(*) FROM sessions WHERE ended_at IS NULL"
+                    )
+                    .await,
+                    0
+                );
+                // No duplicate sample content.
+                assert_eq!(
+                    count(&pool, "SELECT COUNT(*) FROM decks WHERE is_sample = 1").await,
+                    1
+                );
                 assert_eq!(count(&pool, "SELECT COUNT(*) FROM seed_markers").await, 1);
                 pool.close().await;
             }

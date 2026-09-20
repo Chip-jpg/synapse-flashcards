@@ -1184,6 +1184,56 @@ mod tests {
                 .collect();
             assert_eq!(names, vec!["Sample deck", "Biology"]);
 
+            // The archived deck came back as archived, not as active, and is
+            // unarchivable from here like any other — with its card and its
+            // review history, and without opening a session.
+            let chemistry: i64 =
+                sqlx::query_scalar("SELECT id FROM decks WHERE name = 'Chemistry'")
+                    .fetch_one(&restored)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                crate::authoring::archived_decks(&restored)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|deck| (deck.id, deck.card_count))
+                    .collect::<Vec<_>>(),
+                vec![(chemistry, 1)]
+            );
+            crate::authoring::unarchive_deck(&restored, chemistry)
+                .await
+                .unwrap();
+            let names: Vec<String> = study::decks(&restored, at(LATER))
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|deck| deck.name)
+                .collect();
+            assert_eq!(names, vec!["Sample deck", "Biology", "Chemistry"]);
+            assert_eq!(
+                count(
+                    &restored,
+                    "SELECT COUNT(*) FROM review_logs l
+                     JOIN flashcards f ON f.id = l.card_id
+                     JOIN decks d ON d.id = f.deck_id
+                     WHERE d.name = 'Chemistry'"
+                )
+                .await,
+                1
+            );
+            // Unarchiving opened nothing: the only session still running is
+            // Biology's, which was already open in the backup.
+            assert_eq!(
+                count(
+                    &restored,
+                    "SELECT COUNT(*) FROM sessions s JOIN decks d ON d.id = s.deck_id
+                     WHERE s.ended_at IS NULL AND d.name = 'Chemistry'"
+                )
+                .await,
+                0
+            );
+
             // Reopening it, as a relaunch does, finds the same data and seeds
             // nothing.
             let rows = dump(&restored).await;

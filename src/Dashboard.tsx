@@ -7,6 +7,7 @@ import {
   getDecks,
   prepareImport,
   toCommandError,
+  unarchiveDeck,
   type ArchivedDeck,
   type Deck,
   type DeckDetail,
@@ -75,10 +76,16 @@ export function Dashboard({
     };
   }, [attempt]);
 
-  function reload() {
+  /**
+   * Reloads both deck lists, announcing `notice` and giving it focus if there
+   * is one. Goes back to "loading" first: until the fresh lists arrive the old
+   * ones are wrong, and leaving a just-unarchived deck under *Archived decks*
+   * with a live Unarchive button would invite a second, doomed press.
+   */
+  function reload(notice: string | null = null) {
     setState({ status: "loading" });
     setCancelledCreate(false);
-    setNotice(null);
+    setNotice(notice);
     setAttempt((n) => n + 1);
   }
 
@@ -104,7 +111,7 @@ export function Dashboard({
   if (state.status === "error") {
     return (
       <Message focus={moveFocus} tone="alert" text={state.message}>
-        <button type="button" className="button" onClick={reload}>
+        <button type="button" className="button" onClick={() => reload()}>
           Retry
         </button>
       </Message>
@@ -137,7 +144,15 @@ export function Dashboard({
         }}
         onStart={onStart}
         onOpen={onOpen}
-        onChanged={reload}
+        onChanged={() => reload()}
+        onUnarchived={(name) =>
+          reload(`${name} unarchived. It's back in your decks with its cards and review history.`)
+        }
+        onStale={() =>
+          // Unarchiving failed because the deck isn't archived after all. Say
+          // so, rather than reloading silently and leaving the press unexplained.
+          reload("That deck wasn't archived after all. Here are your decks as they are now.")
+        }
       />
       <NotesLink focus={focus === "notes"} inert={importing} onOpen={onOpenNotes} />
       {/* Its own section: exporting and restoring are about all your data, not about decks. */}
@@ -189,6 +204,8 @@ function DeckList({
   onStart,
   onOpen,
   onChanged,
+  onUnarchived,
+  onStale,
 }: {
   decks: Deck[];
   archived: ArchivedDeck[];
@@ -201,6 +218,8 @@ function DeckList({
   onStart: (sessionId: number, deckName: string) => void;
   onOpen: (deckId: number) => void;
   onChanged: () => void;
+  onUnarchived: (deckName: string) => void;
+  onStale: () => void;
 }) {
   const ref = useFocusOnMount<HTMLElement>(focus === "list");
   const createRef = useFocusOnMount<HTMLButtonElement>(focus === "create");
@@ -238,7 +257,9 @@ function DeckList({
           ))}
         </ul>
       )}
-      {archived.length > 0 && <ArchivedDeckList decks={archived} />}
+      {archived.length > 0 && (
+        <ArchivedDeckList decks={archived} onUnarchived={onUnarchived} onStale={onStale} />
+      )}
     </section>
   );
 }
@@ -545,38 +566,174 @@ function ImportData({
   );
 }
 
-/** Archived decks, listed only as history: they have no actions. */
-function ArchivedDeckList({ decks }: { decks: ArchivedDeck[] }) {
+/**
+ * Archived decks: history, and the only place they appear. They can't be
+ * reviewed or changed while archived; Unarchive puts one back in the deck list
+ * exactly as it was.
+ */
+function ArchivedDeckList({
+  decks,
+  onUnarchived,
+  onStale,
+}: {
+  decks: ArchivedDeck[];
+  onUnarchived: (deckName: string) => void;
+  onStale: () => void;
+}) {
   return (
     <section className="cards" aria-labelledby="archived-heading">
       <h3 id="archived-heading" className="section-title">
         Archived decks
       </h3>
-      <p className="field-hint">Kept for your history. Archived decks can't be reviewed or changed.</p>
+      <p className="field-hint">
+        Kept for your history. An archived deck isn't in your deck list and can't be reviewed or
+        changed, but unarchiving it brings it back with its cards and review history unchanged.
+        Cards you deleted stay deleted.
+      </p>
       <ul className="card-list">
-        {decks.map((deck) => {
-          const cards = deck.cardCount;
-          const archivedOn = new Date(deck.archivedAt).toLocaleDateString(undefined, {
-            year: "numeric",
-            month: "short",
-            day: "numeric",
-          });
-          return (
-            <li key={deck.id} className="card-item">
-              <div>
-                {/* A heading, like an active deck's name, so screen-reader
-                    users can reach archived decks by heading navigation. */}
-                <h4 className="archived-deck-name">{deck.name}</h4>
-                {deck.description && <p className="deck-description">{deck.description}</p>}
-              </div>
-              <p className="field-hint">
-                {`Archived ${archivedOn} · ${cards} ${cards === 1 ? "card" : "cards"} kept`}
-              </p>
-            </li>
-          );
-        })}
+        {decks.map((deck) => (
+          <li key={deck.id}>
+            <ArchivedDeckItem deck={deck} onUnarchived={onUnarchived} onStale={onStale} />
+          </li>
+        ))}
       </ul>
     </section>
+  );
+}
+
+/** One archived deck, with the one action it has: a two-step Unarchive. */
+function ArchivedDeckItem({
+  deck,
+  onUnarchived,
+  onStale,
+}: {
+  deck: ArchivedDeck;
+  onUnarchived: (deckName: string) => void;
+  onStale: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [unarchiving, setUnarchiving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Blocks a second unarchive immediately, before the re-render lands.
+  const unarchivingRef = useRef(false);
+  const unarchiveRef = useRef<HTMLButtonElement>(null);
+  const questionRef = useRef<HTMLParagraphElement>(null);
+  // Whether the question was ever opened, so only closing it moves focus.
+  const openedRef = useRef(false);
+  const nameId = `archived-deck-${deck.id}-name`;
+  const cards = deck.cardCount;
+  const archivedOn = new Date(deck.archivedAt).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+
+  // As with archiving a deck: the pressed button disappears either way, so
+  // focus follows — to the question when it opens (reading it, and keeping a
+  // repeated Enter from unarchiving), and back to Unarchive if it's kept.
+  useEffect(() => {
+    if (confirming) {
+      openedRef.current = true;
+      questionRef.current?.focus();
+    } else if (openedRef.current) {
+      unarchiveRef.current?.focus();
+    }
+  }, [confirming]);
+
+  async function confirmUnarchive() {
+    if (unarchivingRef.current) return;
+    unarchivingRef.current = true;
+    setUnarchiving(true);
+    setError(null);
+
+    try {
+      await unarchiveDeck(deck.id);
+      onUnarchived(deck.name);
+      return; // Both lists are replaced.
+    } catch (err) {
+      const failure = toCommandError(err);
+      if (failure.kind === "stale") {
+        // Not archived after all: reload to show what's really there.
+        onStale();
+        return;
+      }
+      setError(failure.message);
+    }
+
+    unarchivingRef.current = false;
+    setUnarchiving(false);
+  }
+
+  return (
+    <div className="card-item">
+      <div>
+        {/* A heading, like an active deck's name, so screen-reader
+            users can reach archived decks by heading navigation. */}
+        <h4 id={nameId} className="archived-deck-name">
+          {deck.name}
+        </h4>
+        {deck.description && <p className="deck-description">{deck.description}</p>}
+      </div>
+      <p className="field-hint">
+        {`Archived ${archivedOn} · ${cards} ${cards === 1 ? "card" : "cards"} kept`}
+      </p>
+
+      {confirming ? (
+        <div className="card-item-confirm">
+          <p ref={questionRef} id={`${nameId}-question`} className="notice" tabIndex={-1}>
+            {`Unarchive ${deck.name}? It goes back in your deck list with the same cards and ` +
+              "review history, and its cards become due again on the dates they already had. " +
+              "No review starts, and cards you deleted stay deleted."}
+          </p>
+          <div className="deck-actions">
+            {/* Both buttons name the deck as well as the question: several
+                archived decks can have their question open at once, and
+                otherwise every one of these reads identically. */}
+            <button
+              type="button"
+              className="button"
+              aria-describedby={`${nameId} ${nameId}-question`}
+              aria-disabled={unarchiving}
+              onClick={confirmUnarchive}
+            >
+              Unarchive deck
+            </button>
+            <button
+              type="button"
+              className="button"
+              aria-describedby={nameId}
+              aria-disabled={unarchiving}
+              onClick={() => {
+                if (!unarchiving) setConfirming(false);
+              }}
+            >
+              Keep archived
+            </button>
+          </div>
+          <p className="form-status" role="status">
+            {unarchiving ? "Unarchiving…" : ""}
+          </p>
+        </div>
+      ) : (
+        <div className="deck-actions">
+          <button
+            ref={unarchiveRef}
+            type="button"
+            className="button"
+            aria-describedby={nameId}
+            onClick={() => setConfirming(true)}
+          >
+            Unarchive deck
+          </button>
+        </div>
+      )}
+
+      {error && (
+        <p className="message-error" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 

@@ -41,6 +41,7 @@ pub fn run() {
             commands::delete_flashcard,
             commands::rename_deck,
             commands::archive_deck,
+            commands::unarchive_deck,
             commands::export_data,
             commands::prepare_import,
             commands::confirm_import,

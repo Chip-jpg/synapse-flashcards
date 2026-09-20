@@ -374,7 +374,7 @@ function ManageDeck({
         <div className="card-item-confirm">
           <p ref={questionRef} className="notice" tabIndex={-1}>
             Archive this deck? It will leave your deck list and can't be reviewed or changed. Its
-            cards and review history are kept, but it can't be restored yet.
+            cards and review history are kept, and you can unarchive it from your deck list later.
           </p>
           <div className="deck-actions">
             <button

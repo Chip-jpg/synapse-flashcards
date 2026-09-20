@@ -418,7 +418,7 @@ mod tests {
                     "format": "synapse-export",
                     "format_version": 1,
                     // Every migration in the repository is applied.
-                    "schema_version": 8,
+                    "schema_version": 9,
                     "app_version": "0.1.0",
                     "exported_at": "2026-09-16T09:30:00.000Z",
                     "contents": { "database": "db/synapse.sqlite" },
@@ -553,6 +553,85 @@ mod tests {
     }
 
     #[test]
+    fn an_export_keeps_whether_each_deck_is_archived_or_unarchived() {
+        tauri::async_runtime::block_on(async {
+            let dir = scratch("export-unarchived");
+            let pool = open_file(&dir.join("synapse.sqlite")).await.unwrap();
+            let now = at(NOW);
+
+            // One deck archived and left that way, one archived and brought
+            // back, one that was never archived at all.
+            let mut ids = Vec::new();
+            for name in ["Archived", "Unarchived", "Active"] {
+                let deck = crate::authoring::create_deck(&pool, name, None, now)
+                    .await
+                    .unwrap()
+                    .id;
+                crate::authoring::create_flashcard(&pool, deck, name, "answer", now)
+                    .await
+                    .unwrap();
+                ids.push(deck);
+            }
+            crate::authoring::archive_deck(&pool, ids[0], now)
+                .await
+                .unwrap();
+            crate::authoring::archive_deck(&pool, ids[1], now)
+                .await
+                .unwrap();
+            crate::authoring::unarchive_deck(&pool, ids[1])
+                .await
+                .unwrap();
+
+            let archive = dir.join("backup.zip");
+            write_package(&pool, &archive, now, APP_VERSION)
+                .await
+                .unwrap();
+            let restored = exported_database(&archive, &dir.join("restored.sqlite")).await;
+
+            // Each deck travels in the state it was in, and the unarchived one
+            // keeps its card rather than coming back empty.
+            let decks: Vec<(String, Option<String>)> = sqlx::query_as(
+                "SELECT name, archived_at FROM decks WHERE is_sample = 0 ORDER BY id",
+            )
+            .fetch_all(&restored)
+            .await
+            .unwrap();
+            assert_eq!(
+                decks,
+                vec![
+                    (
+                        "Archived".to_string(),
+                        Some("2026-09-16T09:30:00.000Z".to_string())
+                    ),
+                    ("Unarchived".to_string(), None),
+                    ("Active".to_string(), None),
+                ]
+            );
+            assert_eq!(
+                count(
+                    &restored,
+                    "SELECT COUNT(*) FROM flashcards WHERE front = 'Unarchived'"
+                )
+                .await,
+                1
+            );
+            // Nothing opened a session on the way through.
+            assert_eq!(
+                count(
+                    &restored,
+                    "SELECT COUNT(*) FROM sessions WHERE ended_at IS NULL"
+                )
+                .await,
+                0
+            );
+
+            restored.close().await;
+            pool.close().await;
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    #[test]
     fn exporting_again_replaces_the_file_only_once_the_new_one_is_complete() {
         tauri::async_runtime::block_on(async {
             let dir = scratch("export-replace");
@@ -645,7 +724,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert_eq!(manifest_of(&archive).schema_version, 8);
+            assert_eq!(manifest_of(&archive).schema_version, 9);
             let restored = exported_database(&archive, &dir.join("restored.sqlite")).await;
             assert_eq!(count(&restored, "SELECT COUNT(*) FROM decks").await, 1);
             assert_eq!(count(&restored, "SELECT COUNT(*) FROM flashcards").await, 1);

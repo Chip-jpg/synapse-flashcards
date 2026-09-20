@@ -832,6 +832,126 @@ mod tests {
     }
 
     #[test]
+    fn migrates_forward_from_a_slice_8_database_without_data_loss() {
+        tauri::async_runtime::block_on(async {
+            let pool = memory_pool().await;
+
+            // What V1.3 left behind: migrations 0001–0008 and the seed marker,
+            // the reviewed seed card, an active deck with a reviewed card, a
+            // soft-deleted card, and a new card, an archived deck with its card
+            // and finished session, and two notes, one of them deleted.
+            migrations_up_to(8).run(&pool).await.unwrap();
+            insert_reviewed_seed_card(&pool).await;
+            for sql in [
+                "INSERT INTO seed_markers (name, recorded_at)
+                 VALUES ('sample_card', '2026-09-15T11:59:00.000Z')",
+                "INSERT INTO decks (name, description, is_sample, created_at)
+                 VALUES ('Biology', 'Cells', 0, '2026-09-15T12:01:00.000Z')",
+                "INSERT INTO flashcards (deck_id, front, back, fsrs_state, fsrs_stability,
+                                         fsrs_difficulty, due, last_review, reps, lapses,
+                                         created_at, updated_at)
+                 VALUES (2, 'Q1', 'A1', 'Review', 8.2956, 1.0, '2026-09-23T19:06:00.000Z',
+                         '2026-09-15T12:03:00.000Z', 1, 0, '2026-09-15T12:02:00.000Z',
+                         '2026-09-15T12:03:00.000Z')",
+                "INSERT INTO flashcards (deck_id, front, back, created_at, updated_at, deleted_at)
+                 VALUES (2, 'Gone', 'gone', '2026-09-15T12:02:10.000Z',
+                         '2026-09-15T12:04:00.000Z', '2026-09-15T12:04:00.000Z')",
+                "INSERT INTO flashcards (deck_id, front, back, created_at, updated_at)
+                 VALUES (2, 'Q3', 'A3', '2026-09-15T12:02:30.000Z', '2026-09-15T12:02:30.000Z')",
+                "INSERT INTO review_logs (card_id, rating, state_before, scheduled_days,
+                                          elapsed_days, stability_after, difficulty_after, reviewed_at)
+                 VALUES (2, 4, 'New', 8.2956, 0, 8.2956, 1.0, '2026-09-15T12:03:00.000Z')",
+                "INSERT INTO decks (name, is_sample, created_at)
+                 VALUES ('Chemistry', 0, '2026-09-15T12:05:00.000Z')",
+                "INSERT INTO flashcards (deck_id, front, back, created_at, updated_at)
+                 VALUES (3, 'X', 'x', '2026-09-15T12:05:10.000Z', '2026-09-15T12:05:10.000Z')",
+                "INSERT INTO sessions (deck_id, started_at, ended_at, cards_reviewed)
+                 VALUES (3, '2026-09-15T12:05:20.000Z', '2026-09-15T12:05:30.000Z', 1)",
+                "UPDATE decks SET archived_at = '2026-09-15T12:06:00.000Z' WHERE id = 3",
+                "INSERT INTO notes (title, body, created_at, updated_at)
+                 VALUES ('Kept', 'text', '2026-09-16T09:00:00.000Z', '2026-09-16T09:00:00.000Z')",
+                // A note is always written active (0008), so the deleted one
+                // is inserted and then deleted, as the app does.
+                "INSERT INTO notes (title, body, created_at, updated_at)
+                 VALUES ('Binned', 'text', '2026-09-16T09:01:00.000Z',
+                         '2026-09-16T09:01:00.000Z')",
+                "UPDATE notes SET deleted_at = '2026-09-16T09:02:00.000Z' WHERE title = 'Binned'",
+            ] {
+                sqlx::query(sql).execute(&pool).await.unwrap();
+            }
+            let notes_sql =
+                "SELECT quote(id) || '|' || quote(title) || '|' || quote(body) || '|' ||
+                                    quote(created_at) || '|' || quote(updated_at) || '|' ||
+                                    quote(deleted_at)
+                             FROM notes ORDER BY id";
+            let before = study_history(&pool).await;
+            let notes_before: Vec<String> = sqlx::query_scalar(notes_sql)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+
+            migrate_and_seed(&pool).await.unwrap();
+            migrate_and_seed(&pool).await.unwrap();
+
+            assert_eq!(
+                count(&pool, "SELECT COUNT(*) FROM _sqlx_migrations").await,
+                latest_schema_version()
+            );
+            // Every deck, card, log, session, marker, and note is kept exactly,
+            // the archived deck included, and nothing is seeded again.
+            assert_eq!(study_history(&pool).await, before);
+            let notes_after: Vec<String> = sqlx::query_scalar(notes_sql)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+            assert_eq!(notes_after, notes_before);
+            assert_eq!(
+                count(
+                    &pool,
+                    "SELECT COUNT(*) FROM decks WHERE archived_at IS NOT NULL"
+                )
+                .await,
+                1
+            );
+
+            // The deck archived before the upgrade can now be unarchived, and
+            // comes back with its card, session, and history untouched.
+            crate::authoring::unarchive_deck(&pool, 3).await.unwrap();
+            assert_eq!(
+                count(
+                    &pool,
+                    "SELECT COUNT(*) FROM decks WHERE archived_at IS NOT NULL"
+                )
+                .await,
+                0
+            );
+            assert_eq!(
+                count(&pool, "SELECT COUNT(*) FROM flashcards WHERE deck_id = 3").await,
+                1
+            );
+            assert_eq!(
+                count(
+                    &pool,
+                    "SELECT COUNT(*) FROM sessions WHERE ended_at IS NULL"
+                )
+                .await,
+                0
+            );
+
+            // The older rules still apply to the upgraded database.
+            let err = sqlx::query("DELETE FROM decks WHERE id = 3")
+                .execute(&pool)
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("decks are archived, never removed"),
+                "{err}"
+            );
+        });
+    }
+
+    #[test]
     fn the_sample_card_never_returns_after_every_card_is_deleted() {
         tauri::async_runtime::block_on(async {
             // A real file (under the build's `target/` folder), reopened like restarts.
