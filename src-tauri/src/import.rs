@@ -849,10 +849,10 @@ mod tests {
     }
 
     /// The backup's source: the sample deck and card, a normal deck with a
-    /// reviewed card, a soft-deleted card, a multiline new card and its
-    /// unfinished session, an archived deck with a reviewed card and a
-    /// finished session, and three typed notes: one plain, one edited, and one
-    /// soft-deleted. Every kind of history an import must keep.
+    /// reviewed card, a card reviewed and then soft-deleted, a multiline new
+    /// card and its unfinished session, an archived deck with a reviewed card
+    /// and a finished session, and three typed notes: one plain, one edited,
+    /// and one soft-deleted. Every kind of history an import must keep.
     async fn source_database(path: &Path) -> SqlitePool {
         let pool = open_file(path).await.unwrap();
         let biology = create_deck(&pool, "Biology", Some("Cells"), at(NOW))
@@ -867,6 +867,10 @@ mod tests {
         let cards = card_ids(&pool, biology).await;
         let session = start(&pool, biology, NOW).await;
         study::record_review(&pool, session, cards[0], 0, Rating::Good, at(NOW))
+            .await
+            .unwrap();
+        // Reviewed first, so the deleted card carries a schedule to keep.
+        study::record_review(&pool, session, cards[1], 0, Rating::Easy, at(NOW))
             .await
             .unwrap();
         delete_flashcard(&pool, cards[1], at(NOW)).await.unwrap();
@@ -1232,6 +1236,50 @@ mod tests {
                 )
                 .await,
                 0
+            );
+
+            // The deleted card and note travelled as deleted, and restore here
+            // as they would have before the backup: the card back into its
+            // deck with the schedule its review gave it, the note back into
+            // its old place in the library.
+            let card_b: i64 = sqlx::query_scalar("SELECT id FROM flashcards WHERE front = 'B'")
+                .fetch_one(&restored)
+                .await
+                .unwrap();
+            let schedule_sql = "SELECT quote(fsrs_state) || ' ' || quote(fsrs_stability) || ' '
+                                    || quote(fsrs_difficulty) || ' ' || quote(due) || ' '
+                                    || quote(last_review) || ' ' || quote(reps) || ' '
+                                    || quote(lapses)
+                                FROM flashcards WHERE id = ?1";
+            let schedule: String = sqlx::query_scalar(schedule_sql)
+                .bind(card_b)
+                .fetch_one(&restored)
+                .await
+                .unwrap();
+            assert!(schedule.starts_with("'Review'"), "{schedule}");
+            let detail = crate::authoring::restore_flashcard(&restored, card_b, at(LATER))
+                .await
+                .unwrap();
+            assert_eq!((detail.id, detail.card_count), (biology, 3));
+            assert!(detail.deleted_cards.is_empty());
+            let restored_schedule: String = sqlx::query_scalar(schedule_sql)
+                .bind(card_b)
+                .fetch_one(&restored)
+                .await
+                .unwrap();
+            assert_eq!(restored_schedule, schedule);
+            let old_lecture = crate::notes::deleted_notes(&restored).await.unwrap()[0].id;
+            crate::notes::restore_note(&restored, old_lecture)
+                .await
+                .unwrap();
+            assert_eq!(
+                crate::notes::notes(&restored)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|note| note.title)
+                    .collect::<Vec<_>>(),
+                vec!["Lecture 2", "Old lecture", "Lecture 1"]
             );
 
             // Reopening it, as a relaunch does, finds the same data and seeds
@@ -1808,6 +1856,157 @@ mod tests {
 
             discard_staged(&workspace);
             assert!(!workspace.exists());
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    #[test]
+    fn a_v0_1_0_backup_is_restored_and_what_it_put_away_can_be_brought_back() {
+        tauri::async_runtime::block_on(async {
+            let dir = scratch("import-v0-1-0");
+            // A backup from v0.1.0, the first public release: schema 7, when
+            // nothing put away could come back yet. An archived deck holding a
+            // reviewed card (1) and a card that lapsed and was deleted before
+            // the deck was archived (2), their review logs and finished
+            // session, and a note.
+            let source_path = dir.join("source").join("synapse.sqlite");
+            std::fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+            let source =
+                sqlx::SqlitePool::connect(&format!("sqlite:{}?mode=rwc", source_path.display()))
+                    .await
+                    .unwrap();
+            migrations_up_to(7).run(&source).await.unwrap();
+            for sql in [
+                "INSERT INTO seed_markers (name) VALUES ('sample_card')",
+                "INSERT INTO decks (name, created_at) VALUES ('Chemistry', '2026-09-15T12:00:00.000Z')",
+                "INSERT INTO flashcards (deck_id, front, back, fsrs_state, fsrs_stability,
+                                         fsrs_difficulty, due, last_review, reps, lapses,
+                                         created_at, updated_at)
+                 VALUES (2, 'X', 'x', 'Review', 2.5, 5.0, '2026-09-20T12:00:00.000Z',
+                         '2026-09-15T12:01:00.000Z', 1, 0, '2026-09-15T12:00:30.000Z',
+                         '2026-09-15T12:01:00.000Z')",
+                "INSERT INTO flashcards (deck_id, front, back, fsrs_state, fsrs_stability,
+                                         fsrs_difficulty, due, last_review, reps, lapses,
+                                         created_at, updated_at, deleted_at)
+                 VALUES (2, 'Y', 'y', 'Relearning', 0.4, 7.2, '2026-09-15T12:12:00.000Z',
+                         '2026-09-15T12:02:00.000Z', 2, 1, '2026-09-15T12:00:30.000Z',
+                         '2026-09-15T12:03:00.000Z', '2026-09-15T12:03:00.000Z')",
+                "INSERT INTO review_logs (card_id, rating, state_before, scheduled_days,
+                                          elapsed_days, stability_after, difficulty_after, reviewed_at)
+                 VALUES (1, 3, 'New', 2.5, 0, 2.5, 5.0, '2026-09-15T12:01:00.000Z'),
+                        (2, 3, 'New', 2.3, 0, 2.3, 2.1, '2026-09-15T12:01:30.000Z'),
+                        (2, 1, 'Review', 0.0, 0.0, 0.4, 7.2, '2026-09-15T12:02:00.000Z')",
+                "INSERT INTO sessions (deck_id, started_at, ended_at, cards_reviewed)
+                 VALUES (2, '2026-09-15T12:00:45.000Z', '2026-09-15T12:04:00.000Z', 3)",
+                "UPDATE decks SET archived_at = '2026-09-15T12:04:00.000Z' WHERE id = 2",
+                "INSERT INTO notes (title, body, created_at, updated_at)
+                 VALUES ('Lecture 1', 'Cells', '2026-09-16T09:00:00.000Z',
+                         '2026-09-16T09:00:00.000Z')",
+            ] {
+                sqlx::query(sql).execute(&source).await.unwrap();
+            }
+            let archive = dir.join("backup.zip");
+            write_package(&source, &archive, at(NOW), "0.1.0")
+                .await
+                .unwrap();
+            let source_rows = dump(&source).await;
+            source.close().await;
+
+            let target_path = dir.join("target").join("synapse.sqlite");
+            let database = Database::default();
+            *database.slot().lock().await = Some(target_database(&target_path).await);
+            let workspace = dir.join("target").join("import-workspace");
+            let staged = stage_package(&archive, &workspace).await.unwrap();
+            assert_eq!(
+                (
+                    staged.manifest.schema_version,
+                    staged.manifest.app_version.as_str()
+                ),
+                (7, "0.1.0")
+            );
+            replace_database(&database, &target_path, &staged.database, &workspace)
+                .await
+                .unwrap();
+            let restored = installed(&database).await;
+
+            // Every deck, card, log, session, and marker is exactly the
+            // backup's: the deck still archived, the card still deleted, with
+            // its FSRS state and history. The note gained only its (empty)
+            // deletion column.
+            fn table(rows: &[(String, Vec<String>)], name: &str) -> Vec<String> {
+                rows.iter()
+                    .find(|(table, _)| table == name)
+                    .map(|(_, rows)| rows.clone())
+                    .unwrap()
+            }
+            let imported = dump(&restored).await;
+            for name in [
+                "decks",
+                "flashcards",
+                "review_logs",
+                "sessions",
+                "seed_markers",
+            ] {
+                assert_eq!(table(&imported, name), table(&source_rows, name), "{name}");
+            }
+            let notes: Vec<String> = table(&source_rows, "notes")
+                .into_iter()
+                .map(|row| format!("{row} | NULL"))
+                .collect();
+            assert_eq!(table(&imported, "notes"), notes);
+
+            // What v0.1.0 could only put away comes back here: the deck, then
+            // its card, and a note deleted and restored after the import.
+            crate::authoring::unarchive_deck(&restored, 2)
+                .await
+                .unwrap();
+            let detail = crate::authoring::restore_flashcard(&restored, 2, at(LATER))
+                .await
+                .unwrap();
+            let listed: Vec<i64> = detail.cards.iter().map(|card| card.id).collect();
+            assert_eq!(listed, vec![1, 2]);
+            crate::notes::delete_note(&restored, 1, at(LATER))
+                .await
+                .unwrap();
+            crate::notes::restore_note(&restored, 1).await.unwrap();
+
+            // Each wrote only its state column, which is the last column of
+            // decks and cards: set aside, every row is still the backup's.
+            // Nothing else moved, and no session was opened.
+            fn without_state(rows: Vec<String>) -> Vec<String> {
+                rows.into_iter()
+                    .map(|row| row.rsplit_once(" | ").unwrap().0.to_string())
+                    .collect()
+            }
+            let after = dump(&restored).await;
+            for name in ["decks", "flashcards"] {
+                assert_eq!(
+                    without_state(table(&after, name)),
+                    without_state(table(&imported, name)),
+                    "{name}"
+                );
+            }
+            for name in ["review_logs", "sessions", "seed_markers", "notes"] {
+                assert_eq!(table(&after, name), table(&imported, name), "{name}");
+            }
+            assert_eq!(
+                count(
+                    &restored,
+                    "SELECT COUNT(*) FROM decks WHERE archived_at IS NOT NULL"
+                )
+                .await,
+                0
+            );
+            assert_eq!(
+                count(
+                    &restored,
+                    "SELECT COUNT(*) FROM flashcards WHERE deleted_at IS NOT NULL"
+                )
+                .await,
+                0
+            );
+
+            restored.close().await;
             let _ = std::fs::remove_dir_all(&dir);
         });
     }

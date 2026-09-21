@@ -952,6 +952,194 @@ mod tests {
     }
 
     #[test]
+    fn migrates_forward_from_a_v0_1_0_database_and_everything_can_be_brought_back() {
+        tauri::async_runtime::block_on(async {
+            let pool = memory_pool().await;
+
+            // What v0.1.0, the first public release, left behind: migrations
+            // 0001–0007, when nothing put away could come back yet. The seed
+            // marker and reviewed seed card (id 1); an active deck with a
+            // reviewed card (2) and a reviewed card deleted later (3); an
+            // archived deck with a reviewed card (4) and a card that lapsed
+            // and was deleted before the deck was archived (5), and its
+            // finished session; and two notes.
+            migrations_up_to(7).run(&pool).await.unwrap();
+            insert_reviewed_seed_card(&pool).await;
+            for sql in [
+                "INSERT INTO seed_markers (name, recorded_at)
+                 VALUES ('sample_card', '2026-09-15T11:59:00.000Z')",
+                "INSERT INTO decks (name, description, is_sample, created_at)
+                 VALUES ('Biology', 'Cells', 0, '2026-09-15T12:01:00.000Z')",
+                "INSERT INTO flashcards (deck_id, front, back, fsrs_state, fsrs_stability,
+                                         fsrs_difficulty, due, last_review, reps, lapses,
+                                         created_at, updated_at)
+                 VALUES (2, 'Q1', 'A1', 'Review', 8.2956, 1.0, '2026-09-23T19:06:00.000Z',
+                         '2026-09-15T12:03:00.000Z', 1, 0, '2026-09-15T12:02:00.000Z',
+                         '2026-09-15T12:03:00.000Z')",
+                "INSERT INTO flashcards (deck_id, front, back, fsrs_state, fsrs_stability,
+                                         fsrs_difficulty, due, last_review, reps, lapses,
+                                         created_at, updated_at, deleted_at)
+                 VALUES (2, 'Gone', 'gone', 'Review', 2.3065, 2.1181,
+                         '2026-09-17T19:24:00.000Z', '2026-09-15T12:03:30.000Z', 1, 0,
+                         '2026-09-15T12:02:10.000Z', '2026-09-15T12:04:00.000Z',
+                         '2026-09-15T12:04:00.000Z')",
+                "INSERT INTO decks (name, is_sample, created_at)
+                 VALUES ('Chemistry', 0, '2026-09-15T12:05:00.000Z')",
+                "INSERT INTO flashcards (deck_id, front, back, fsrs_state, fsrs_stability,
+                                         fsrs_difficulty, due, last_review, reps, lapses,
+                                         created_at, updated_at)
+                 VALUES (3, 'X', 'x', 'Review', 2.3065, 2.1181, '2026-09-17T19:25:20.000Z',
+                         '2026-09-15T12:05:20.000Z', 1, 0, '2026-09-15T12:05:10.000Z',
+                         '2026-09-15T12:05:20.000Z')",
+                "INSERT INTO flashcards (deck_id, front, back, fsrs_state, fsrs_stability,
+                                         fsrs_difficulty, due, last_review, reps, lapses,
+                                         created_at, updated_at, deleted_at)
+                 VALUES (3, 'Y', 'y', 'Relearning', 0.4, 7.2, '2026-09-15T12:15:25.000Z',
+                         '2026-09-15T12:05:25.000Z', 2, 1, '2026-09-15T12:05:10.000Z',
+                         '2026-09-15T12:05:40.000Z', '2026-09-15T12:05:40.000Z')",
+                "INSERT INTO review_logs (card_id, rating, state_before, scheduled_days,
+                                          elapsed_days, stability_after, difficulty_after, reviewed_at)
+                 VALUES (2, 4, 'New', 8.2956, 0, 8.2956, 1.0, '2026-09-15T12:03:00.000Z'),
+                        (3, 3, 'New', 2.3065, 0, 2.3065, 2.1181, '2026-09-15T12:03:30.000Z'),
+                        (4, 3, 'New', 2.3065, 0, 2.3065, 2.1181, '2026-09-15T12:05:20.000Z'),
+                        (5, 3, 'New', 2.3065, 0, 2.3065, 2.1181, '2026-09-15T12:05:12.000Z'),
+                        (5, 1, 'Review', 0.0069, 0.0001, 0.4, 7.2, '2026-09-15T12:05:25.000Z')",
+                "INSERT INTO sessions (deck_id, started_at, ended_at, cards_reviewed)
+                 VALUES (3, '2026-09-15T12:05:11.000Z', '2026-09-15T12:06:00.000Z', 3)",
+                "UPDATE decks SET archived_at = '2026-09-15T12:06:00.000Z' WHERE id = 3",
+                "INSERT INTO notes (title, body, created_at, updated_at)
+                 VALUES ('Lecture 1', 'Cells' || char(10) || char(10) || '  Genes',
+                         '2026-09-16T09:00:00.000Z', '2026-09-16T09:00:00.000Z')",
+                "INSERT INTO notes (title, body, created_at, updated_at)
+                 VALUES ('Lecture 2', 'Proteins', '2026-09-16T09:01:00.000Z',
+                         '2026-09-16T09:30:00.000Z')",
+            ] {
+                sqlx::query(sql).execute(&pool).await.unwrap();
+            }
+            let notes_sql =
+                "SELECT quote(id) || '|' || quote(title) || '|' || quote(body) || '|' ||
+                        quote(created_at) || '|' || quote(updated_at)
+                 FROM notes ORDER BY id";
+            let before = study_history(&pool).await;
+            let notes_before: Vec<String> = sqlx::query_scalar(notes_sql)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+
+            migrate_and_seed(&pool).await.unwrap();
+            migrate_and_seed(&pool).await.unwrap();
+
+            assert_eq!(
+                count(&pool, "SELECT COUNT(*) FROM _sqlx_migrations").await,
+                latest_schema_version()
+            );
+            // Every deck, card, log, session, and marker is kept exactly — the
+            // archived deck still archived, both deleted cards still deleted —
+            // every note word for word and active, and nothing is seeded again.
+            assert_eq!(study_history(&pool).await, before);
+            let active_notes = "SELECT COUNT(*) FROM notes WHERE deleted_at IS NULL";
+            assert_eq!(count(&pool, active_notes).await, 2);
+
+            // Everything v0.1.0 could only put away now comes back. A card in
+            // the archived deck waits for its deck, as any card there does.
+            let now = at("2026-09-21T12:00:00Z");
+            assert!(matches!(
+                crate::authoring::restore_flashcard(&pool, 5, now).await,
+                Err(crate::authoring::AuthoringError::DeckArchived)
+            ));
+            crate::authoring::unarchive_deck(&pool, 3).await.unwrap();
+            for card in [3, 5] {
+                crate::authoring::restore_flashcard(&pool, card, now)
+                    .await
+                    .unwrap();
+            }
+            crate::notes::delete_note(&pool, 1, now).await.unwrap();
+            crate::notes::restore_note(&pool, 1).await.unwrap();
+
+            // Each of those wrote only the column saying the row was put
+            // away, which `study_history` renders last for decks and cards:
+            // set that aside, and every row is exactly what v0.1.0 left, FSRS
+            // state included. Review logs, sessions, markers, and migration
+            // history weren't touched at all.
+            fn without_state(rows: &[String]) -> Vec<&str> {
+                rows.iter()
+                    .map(|row| row.rsplit_once('|').unwrap().0)
+                    .collect()
+            }
+            let after = study_history(&pool).await;
+            for table in 0..2 {
+                assert_eq!(without_state(&after[table]), without_state(&before[table]));
+            }
+            assert_eq!(after[2..], before[2..]);
+            assert_eq!(
+                count(
+                    &pool,
+                    "SELECT COUNT(*) FROM decks WHERE archived_at IS NOT NULL"
+                )
+                .await,
+                0
+            );
+            assert_eq!(
+                count(
+                    &pool,
+                    "SELECT COUNT(*) FROM flashcards WHERE deleted_at IS NOT NULL"
+                )
+                .await,
+                0
+            );
+            let notes_after: Vec<String> = sqlx::query_scalar(notes_sql)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+            assert_eq!(notes_after, notes_before);
+            assert_eq!(count(&pool, active_notes).await, 2);
+        });
+    }
+
+    #[test]
+    fn a_deleted_or_archived_row_freezes_every_column_but_its_state() {
+        tauri::async_runtime::block_on(async {
+            let pool = memory_pool().await;
+            migrate_and_seed(&pool).await.unwrap();
+
+            // Migrations 0008–0010 freeze a put-away row by listing its
+            // columns, so that a restore gives back exactly what was put
+            // away, and each says a column added later belongs in its list.
+            // This is what notices if one is forgotten: every column of the
+            // table as it is now must be frozen, except the state column the
+            // restore clears.
+            for (table, trigger, state) in [
+                (
+                    "flashcards",
+                    "flashcards_deleted_are_read_only",
+                    "deleted_at",
+                ),
+                ("decks", "decks_archived_are_read_only", "archived_at"),
+                ("notes", "notes_deleted_are_read_only", "deleted_at"),
+            ] {
+                let sql: String = sqlx::query_scalar(
+                    "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?1",
+                )
+                .bind(trigger)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                let columns: Vec<String> =
+                    sqlx::query_scalar("SELECT name FROM pragma_table_info(?1) ORDER BY cid")
+                        .bind(table)
+                        .fetch_all(&pool)
+                        .await
+                        .unwrap();
+                assert!(columns.iter().any(|column| column == state), "{table}");
+                for column in &columns {
+                    let frozen = sql.contains(&format!("NEW.{column} IS NOT OLD.{column}"));
+                    assert_eq!(frozen, column != state, "{trigger}: {column}");
+                }
+            }
+        });
+    }
+
+    #[test]
     fn the_sample_card_never_returns_after_every_card_is_deleted() {
         tauri::async_runtime::block_on(async {
             // A real file (under the build's `target/` folder), reopened like restarts.

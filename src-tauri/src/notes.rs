@@ -1205,6 +1205,45 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_restore_changes_nothing() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let note = create_note(&pool, "Lecture", "Cells\n  Genes", at(NOW))
+                .await
+                .unwrap();
+            delete_note(&pool, note.id, at(DELETED)).await.unwrap();
+            let before = all_notes(&pool).await;
+            let history = deleted_notes(&pool).await.unwrap();
+
+            sqlx::query(
+                "CREATE TRIGGER fail_restore BEFORE UPDATE OF deleted_at ON notes
+                 WHEN NEW.deleted_at IS NULL
+                 BEGIN SELECT RAISE(ABORT, 'simulated failure'); END",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            // The note stays deleted, with the same deletion time, still
+            // listed under *Deleted notes* and still out of the library.
+            assert!(matches!(
+                failure(restore_note(&pool, note.id).await),
+                NoteError::Internal(_)
+            ));
+            assert_eq!(all_notes(&pool).await, before);
+            assert_eq!(deleted_notes(&pool).await.unwrap(), history);
+            assert!(library(&pool).await.is_empty());
+
+            sqlx::query("DROP TRIGGER fail_restore")
+                .execute(&pool)
+                .await
+                .unwrap();
+            restore_note(&pool, note.id).await.unwrap();
+            assert_eq!(super::note(&pool, note.id).await.unwrap(), note);
+        });
+    }
+
+    #[test]
     fn deleting_a_note_never_changes_a_card_written_from_it_or_any_study_data() {
         tauri::async_runtime::block_on(async {
             let pool = seeded().await;
