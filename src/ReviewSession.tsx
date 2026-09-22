@@ -5,20 +5,22 @@ import {
   toCommandError,
   type Flashcard,
   type Rating,
+  type SessionProgress,
 } from "./api";
 import { Message, useFocusOnMount } from "./ui";
 
 type SessionState =
   | { status: "loading" }
   | { status: "error"; message: string }
-  | { status: "due"; card: Flashcard }
+  | { status: "due"; card: Flashcard; progress: SessionProgress }
   | { status: "completed"; cardsReviewed: number };
 
-const RATINGS: { value: Rating; label: string }[] = [
-  { value: 1, label: "Again" },
-  { value: 2, label: "Hard" },
-  { value: 3, label: "Good" },
-  { value: 4, label: "Easy" },
+/** The four answer buttons, with the number key that presses each one. */
+const RATINGS: { value: Rating; label: string; key: string }[] = [
+  { value: 1, label: "Again", key: "1" },
+  { value: 2, label: "Hard", key: "2" },
+  { value: 3, label: "Good", key: "3" },
+  { value: 4, label: "Easy", key: "4" },
 ];
 
 /** Fetches the session's next card and describes the outcome; never rejects. */
@@ -28,6 +30,21 @@ async function loadCard(sessionId: number): Promise<SessionState> {
   } catch (err) {
     return { status: "error", message: toCommandError(err).message };
   }
+}
+
+/**
+ * Whether a key press is someone typing rather than answering a card. The
+ * review screen has no such fields today; the guard keeps the shortcuts from
+ * eating keystrokes if one is ever added to it.
+ */
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  return target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT";
+}
+
+function isButton(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && target.tagName === "BUTTON";
 }
 
 export function ReviewSession({
@@ -86,12 +103,15 @@ export function ReviewSession({
       )}
 
       {state.status === "due" && (
-        <Card
-          key={`${state.card.id}:${state.card.reps}`}
-          sessionId={sessionId}
-          card={state.card}
-          onReviewed={reload}
-        />
+        <>
+          <Progress progress={state.progress} />
+          <Card
+            key={`${state.card.id}:${state.card.reps}`}
+            sessionId={sessionId}
+            card={state.card}
+            onReviewed={reload}
+          />
+        </>
       )}
 
       {state.status === "completed" && (
@@ -111,6 +131,35 @@ export function ReviewSession({
         </Message>
       )}
     </section>
+  );
+}
+
+/**
+ * How far the session has got. The card being shown is counted as remaining,
+ * so the first card of three reads "Card 1 of 3" while the bar is still empty;
+ * it fills as cards are rated and is full only once the session completes.
+ *
+ * The label has no live region: focus moves to the card face on every new
+ * card, and that face is labelled by this text (`aria-labelledby` in `Card`),
+ * so a screen reader reads the position with the question instead of
+ * announcing it separately.
+ */
+function Progress({ progress }: { progress: SessionProgress }) {
+  const total = progress.reviewed + progress.remaining;
+  const position = progress.reviewed + 1;
+
+  return (
+    <div className="progress">
+      <p id="session-progress" className="progress-label">
+        Card {position} of {total}
+      </p>
+      <progress
+        className="progress-bar"
+        value={progress.reviewed}
+        max={total}
+        aria-label={`${progress.reviewed} of ${total} cards reviewed`}
+      />
+    </div>
   );
 }
 
@@ -161,13 +210,55 @@ function Card({
     setSaving(false);
   }
 
+  // Keyboard answering: Space or Enter reveals, then 1–4 rate. The listener
+  // is on the document because focus sits on the card face, which isn't a
+  // control, so the keys have to work wherever focus happens to be. The
+  // parent keys this component by card and reps, so every card gets a fresh
+  // listener and a stale one can never rate the card after it.
+  //
+  // `rate` is called rather than duplicated, so a key and a click take exactly
+  // the same path, including the `savingRef` guard and the `expectedReps`
+  // check that makes a double submission stale. It reads only refs and props,
+  // so the copy captured here stays correct for this card.
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      // A modified key press is a browser or OS shortcut, not an answer, and
+      // a held-down key shouldn't answer twice.
+      if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return;
+      if (event.repeat || isTypingTarget(event.target)) return;
+
+      if (!revealed) {
+        if (event.key !== " " && event.key !== "Enter") return;
+        // Space and Enter on the focused Reveal button already press it;
+        // revealing again here would be pointless, and on any other control
+        // it would fight the browser's own handling.
+        if (isButton(event.target)) return;
+        event.preventDefault();
+        setRevealed(true);
+        return;
+      }
+
+      // Digits don't activate a focused button on their own, so unlike Space
+      // and Enter they stay live wherever focus is — otherwise tabbing to a
+      // rating button would silently kill the number keys. `rate` ignores the
+      // press while a rating is saving.
+      const rating = RATINGS.find((option) => option.key === event.key);
+      if (!rating) return;
+      event.preventDefault();
+      void rate(rating.value);
+    }
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [revealed]);
+
   return (
     <article className="card">
       <section
         ref={questionRef}
         className="card-side"
         tabIndex={-1}
-        aria-labelledby="card-front-label"
+        aria-labelledby="session-progress card-front-label"
       >
         <h3 id="card-front-label" className="side-label">
           Question
@@ -199,7 +290,7 @@ function Card({
               How well did you remember it?
             </p>
             <div className="rating-buttons">
-              {RATINGS.map(({ value, label }) => (
+              {RATINGS.map(({ value, label, key }) => (
                 // `aria-disabled` rather than `disabled`: a disabled button
                 // drops keyboard focus, which would strand keyboard users.
                 <button
@@ -207,9 +298,15 @@ function Card({
                   type="button"
                   className="button"
                   aria-disabled={saving}
+                  aria-keyshortcuts={key}
                   onClick={() => rate(value)}
                 >
                   {label}
+                  {/* The shortcut is on `aria-keyshortcuts` already, so this
+                      copy of it is decorative. */}
+                  <span className="rating-key" aria-hidden="true">
+                    {key}
+                  </span>
                 </button>
               ))}
             </div>
@@ -224,13 +321,19 @@ function Card({
           </div>
         </>
       ) : (
-        <button
-          type="button"
-          className="button button-primary"
-          onClick={() => setRevealed(true)}
-        >
-          Reveal answer
-        </button>
+        <div className="reveal">
+          <button
+            type="button"
+            className="button button-primary"
+            aria-keyshortcuts="Space Enter"
+            onClick={() => setRevealed(true)}
+          >
+            Reveal answer
+          </button>
+          <p className="shortcut-hint" aria-hidden="true">
+            or press Space
+          </p>
+        </div>
       )}
     </article>
   );

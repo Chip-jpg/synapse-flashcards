@@ -77,9 +77,23 @@ export type Flashcard = {
 /** Mirrors `StartedSession` in `src-tauri/src/study.rs`. */
 export type StartedSession = { status: "started"; sessionId: number } | { status: "noneDue" };
 
+/**
+ * Mirrors `SessionProgress` in `src-tauri/src/study.rs`: how far the session
+ * has got, as read when the card was handed out. `remaining` counts the card
+ * being shown, so it is card `reviewed + 1` of `reviewed + remaining`. The
+ * total can rise while a session is open (a card falls due, or one is added),
+ * which is why the bar fills only once the session completes.
+ */
+export type SessionProgress = {
+  /** Cards rated in this session so far. */
+  reviewed: number;
+  /** Cards still due in the deck, counting the one being shown. */
+  remaining: number;
+};
+
 /** Mirrors `SessionCard` in `src-tauri/src/study.rs`. */
 export type SessionCard =
-  | { status: "due"; card: Flashcard }
+  | { status: "due"; card: Flashcard; progress: SessionProgress }
   | { status: "completed"; cardsReviewed: number };
 
 /** 1 = Again, 2 = Hard, 3 = Good, 4 = Easy (matches `review_logs.rating`). */

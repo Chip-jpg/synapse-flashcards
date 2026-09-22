@@ -4,7 +4,8 @@
 //! deck. Session lifecycle:
 //! 1. `start_session` creates a session, but only when the deck has due cards
 //!    (or resumes the deck's unfinished session).
-//! 2. `session_card` hands out the deck's next due card, one at a time.
+//! 2. `session_card` hands out the deck's next due card, one at a time, with
+//!    the session's progress so far (see [`SessionProgress`]).
 //! 3. `record_review` saves a rating and counts it towards the session.
 //! 4. When no due cards remain, the session gets its `ended_at`, exactly once.
 //!
@@ -64,8 +65,28 @@ pub enum StartedSession {
     NoneDue,
 }
 
+/// How far a session has got, sent out with each card so the review screen can
+/// show "Card 2 of 5" and fill a progress bar.
+///
+/// `remaining` counts the cards due right now, *including* the one being handed
+/// out, so the card's position is `reviewed + 1` and the session's total is
+/// `reviewed + remaining`. Both are read at the moment the card is handed out,
+/// which is the only honest answer: a card that falls due (or is added) while
+/// the session is open raises the total, and deleting a due card lowers it.
+/// The bar therefore reaches full only once the queue is empty and the session
+/// is completed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionProgress {
+    /// Cards rated in this session so far (the session's `cards_reviewed`).
+    pub reviewed: i64,
+    /// Cards in the deck still due now, counting the one being shown.
+    pub remaining: i64,
+}
+
 /// What a session shows next:
-/// `{ "status": "due", "card": {...} }` or `{ "status": "completed", "cardsReviewed": 3 }`.
+/// `{ "status": "due", "card": {...}, "progress": {...} }` or
+/// `{ "status": "completed", "cardsReviewed": 3 }`.
 #[derive(Debug, serde::Serialize)]
 #[serde(
     tag = "status",
@@ -73,8 +94,13 @@ pub enum StartedSession {
     rename_all_fields = "camelCase"
 )]
 pub enum SessionCard {
-    Due { card: Flashcard },
-    Completed { cards_reviewed: i64 },
+    Due {
+        card: Flashcard,
+        progress: SessionProgress,
+    },
+    Completed {
+        cards_reviewed: i64,
+    },
 }
 
 /// Why a study operation didn't happen.
@@ -138,6 +164,24 @@ async fn next_due_card(
     .bind(deck_id)
     .bind(now)
     .fetch_optional(conn)
+    .await
+}
+
+/// How many of the deck's cards are due at `now`: the same cards
+/// [`next_due_card`] hands out, counted rather than fetched. Called in the same
+/// transaction as the card itself, so the count can't disagree with it.
+async fn count_due_cards(
+    conn: &mut SqliteConnection,
+    deck_id: i64,
+    now: &str,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM flashcards
+         WHERE deck_id = ?1 AND deleted_at IS NULL AND (due IS NULL OR due <= ?2)",
+    )
+    .bind(deck_id)
+    .bind(now)
+    .fetch_one(conn)
     .await
 }
 
@@ -245,8 +289,9 @@ pub async fn start_session(
     Ok(result)
 }
 
-/// The session's next due card, or its completed state. If the session is
-/// still open but its deck has no due cards left, this finishes it.
+/// The session's next due card and its progress, or its completed state. If
+/// the session is still open but its deck has no due cards left, this
+/// finishes it.
 pub async fn session_card(
     pool: &SqlitePool,
     session_id: i64,
@@ -266,8 +311,15 @@ pub async fn session_card(
 
     if ended_at.is_none() {
         if let Some(card) = next_due_card(&mut tx, deck_id, &now).await? {
+            let remaining = count_due_cards(&mut tx, deck_id, &now).await?;
             tx.commit().await?;
-            return Ok(SessionCard::Due { card });
+            return Ok(SessionCard::Due {
+                card,
+                progress: SessionProgress {
+                    reviewed: cards_reviewed,
+                    remaining,
+                },
+            });
         }
         finish_session(&mut tx, session_id, &now).await?;
     }
@@ -468,8 +520,23 @@ mod tests {
 
     async fn due_card(pool: &SqlitePool, session: i64, now: DateTime<Utc>) -> Option<Flashcard> {
         match session_card(pool, session, now).await.unwrap() {
-            SessionCard::Due { card } => Some(card),
+            SessionCard::Due { card, .. } => Some(card),
             SessionCard::Completed { .. } => None,
+        }
+    }
+
+    /// The progress sent with the session's next card. Panics if it's finished.
+    async fn progress(pool: &SqlitePool, session: i64, now: DateTime<Utc>) -> SessionProgress {
+        match session_card(pool, session, now).await.unwrap() {
+            SessionCard::Due { progress, .. } => progress,
+            SessionCard::Completed { .. } => panic!("expected a due card"),
+        }
+    }
+
+    fn at_card(reviewed: i64, remaining: i64) -> SessionProgress {
+        SessionProgress {
+            reviewed,
+            remaining,
         }
     }
 
@@ -732,6 +799,98 @@ mod tests {
                     .unwrap();
             }
             assert!(due_card(&pool, session, now).await.is_none());
+        });
+    }
+
+    #[test]
+    fn progress_counts_the_card_being_shown_and_counts_down_to_completion() {
+        tauri::async_runtime::block_on(async {
+            let (pool, sample) = seeded().await;
+            let now = at(NOW);
+            add_card(&pool, sample, None).await; // card 2
+            add_card(&pool, sample, None).await; // card 3
+
+            let session = start(&pool, sample, now).await;
+
+            // The card being shown is part of `remaining`, so the first card of
+            // three reads "Card 1 of 3" and the bar sits at 0 of 3 — it fills
+            // only once the last rating completes the session.
+            for (position, expected) in [at_card(0, 3), at_card(1, 2), at_card(2, 1)]
+                .into_iter()
+                .enumerate()
+            {
+                assert_eq!(
+                    progress(&pool, session, now).await,
+                    expected,
+                    "card {}",
+                    position + 1
+                );
+                let card = due_card(&pool, session, now).await.unwrap();
+                record_review(&pool, session, card.id, card.reps, Rating::Good, now)
+                    .await
+                    .unwrap();
+            }
+
+            assert!(matches!(
+                session_card(&pool, session, now).await.unwrap(),
+                SessionCard::Completed { cards_reviewed: 3 }
+            ));
+        });
+    }
+
+    #[test]
+    fn progress_total_grows_when_another_card_falls_due_mid_session() {
+        tauri::async_runtime::block_on(async {
+            let (pool, sample) = seeded().await;
+            let now = at(NOW);
+            add_card(&pool, sample, None).await; // card 2, keeps the session open
+            let later = add_card(&pool, sample, Some(now + TimeDelta::hours(2))).await;
+
+            let session = start(&pool, sample, now).await;
+            assert_eq!(progress(&pool, session, now).await, at_card(0, 2));
+
+            record_review(&pool, session, 1, 0, Rating::Good, now)
+                .await
+                .unwrap();
+            assert_eq!(progress(&pool, session, now).await, at_card(1, 1));
+
+            // Three hours on, the third card is due as well. The total rises
+            // from 2 to 3 rather than the progress bar going backwards.
+            let soon = now + TimeDelta::hours(3);
+            assert_eq!(progress(&pool, session, soon).await, at_card(1, 2));
+
+            record_review(&pool, session, 2, 0, Rating::Good, soon)
+                .await
+                .unwrap();
+            assert_eq!(progress(&pool, session, soon).await, at_card(2, 1));
+            assert_eq!(due_card(&pool, session, soon).await.unwrap().id, later);
+        });
+    }
+
+    #[test]
+    fn progress_ignores_other_decks_and_future_and_deleted_cards() {
+        tauri::async_runtime::block_on(async {
+            let (pool, sample) = seeded().await; // card 1: new, in the sample deck
+            let now = at(NOW);
+            let overdue = add_card(&pool, sample, Some(now - TimeDelta::days(1))).await;
+            let deleted = add_card(&pool, sample, None).await;
+            add_card(&pool, sample, Some(now + TimeDelta::days(1))).await;
+            let other = add_deck(&pool, "Other").await;
+            add_card(&pool, other, None).await;
+            add_card(&pool, other, None).await;
+
+            sqlx::query("UPDATE flashcards SET deleted_at = ?1 WHERE id = ?2")
+                .bind(to_db_time(now))
+                .bind(deleted)
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            let session = start(&pool, sample, now).await;
+            // Only card 1 and `overdue` count: the same cards the session will
+            // actually hand out.
+            assert_eq!(progress(&pool, session, now).await, at_card(0, 2));
+            assert_eq!(due_card(&pool, session, now).await.unwrap().id, overdue);
         });
     }
 

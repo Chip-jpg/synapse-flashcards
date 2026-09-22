@@ -254,8 +254,11 @@ pub async fn start_session(
 }
 
 /// The next card for `{ sessionId }`, or its completed state.
-/// Returns `{ status: "due", card: { id, front, back, reps } }` or
-/// `{ status: "completed", cardsReviewed }`.
+/// Returns `{ status: "due", card: { id, front, back, reps },
+/// progress: { reviewed, remaining } }` or `{ status: "completed", cardsReviewed }`.
+///
+/// `progress.remaining` includes the card being returned, so the review screen
+/// shows card `reviewed + 1` of `reviewed + remaining`.
 #[tauri::command]
 pub async fn get_session_card(
     app: AppHandle,

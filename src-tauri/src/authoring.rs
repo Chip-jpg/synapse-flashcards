@@ -1305,7 +1305,7 @@ mod tests {
             ));
 
             let mut offered = Vec::new();
-            while let SessionCard::Due { card } =
+            while let SessionCard::Due { card, .. } =
                 study::session_card(&pool, session_id, now).await.unwrap()
             {
                 assert!(
@@ -1380,7 +1380,7 @@ mod tests {
             else {
                 panic!("new cards should be due");
             };
-            let SessionCard::Due { card } =
+            let SessionCard::Due { card, .. } =
                 study::session_card(&pool, session_id, now).await.unwrap()
             else {
                 panic!("a card should be due");
@@ -1542,7 +1542,8 @@ mod tests {
 
             // Delete the card on screen: rating it afterwards writes nothing.
             let session = start(&pool, biology, now).await;
-            let SessionCard::Due { card } = study::session_card(&pool, session, now).await.unwrap()
+            let SessionCard::Due { card, .. } =
+                study::session_card(&pool, session, now).await.unwrap()
             else {
                 panic!("a card should be due");
             };
@@ -1558,7 +1559,8 @@ mod tests {
             assert_eq!(session_row(&pool, session).await, (biology, None, 0));
 
             // The session skips both deleted cards and ends after the last active one.
-            let SessionCard::Due { card } = study::session_card(&pool, session, now).await.unwrap()
+            let SessionCard::Due { card, .. } =
+                study::session_card(&pool, session, now).await.unwrap()
             else {
                 panic!("card B should be due");
             };
@@ -2726,7 +2728,8 @@ mod tests {
             // reviewed one keeps the date FSRS gave it.
             assert_eq!(deck_detail(&pool, biology, now).await.unwrap().due_count, 1);
             let first = start(&pool, biology, now).await;
-            let SessionCard::Due { card } = study::session_card(&pool, first, now).await.unwrap()
+            let SessionCard::Due { card, .. } =
+                study::session_card(&pool, first, now).await.unwrap()
             else {
                 panic!("the new card should be due");
             };
@@ -3161,7 +3164,7 @@ mod tests {
             let soon = now + TimeDelta::minutes(3);
             let detail = deck_detail(&pool, deck, soon).await.unwrap();
             assert_eq!((detail.card_count, detail.due_count), (2, 1));
-            let SessionCard::Due { card } =
+            let SessionCard::Due { card, .. } =
                 study::session_card(&pool, session, soon).await.unwrap()
             else {
                 panic!("only card B should be due");
@@ -3179,7 +3182,8 @@ mod tests {
                     session_id: session
                 }
             );
-            let SessionCard::Due { card } = study::session_card(&pool, session, due).await.unwrap()
+            let SessionCard::Due { card, .. } =
+                study::session_card(&pool, session, due).await.unwrap()
             else {
                 panic!("the restored card should be offered");
             };
@@ -3231,7 +3235,7 @@ mod tests {
                 panic!("the restored card should be due");
             };
             assert_ne!(resumed, session);
-            let SessionCard::Due { card } =
+            let SessionCard::Due { card, .. } =
                 study::session_card(&pool, resumed, later).await.unwrap()
             else {
                 panic!("the restored card should be offered");

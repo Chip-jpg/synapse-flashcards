@@ -703,7 +703,7 @@ mod tests {
             else {
                 panic!("new cards should be due");
             };
-            let SessionCard::Due { card } = study::session_card(&pool, session_id, at(NOW))
+            let SessionCard::Due { card, .. } = study::session_card(&pool, session_id, at(NOW))
                 .await
                 .unwrap()
             else {
@@ -840,9 +840,10 @@ mod tests {
             else {
                 panic!("the new card should be due");
             };
-            let SessionCard::Due { card: due } = study::session_card(&pool, session_id, at(NOW))
-                .await
-                .unwrap()
+            let SessionCard::Due { card: due, .. } =
+                study::session_card(&pool, session_id, at(NOW))
+                    .await
+                    .unwrap()
             else {
                 panic!("the new card should be offered");
             };

@@ -206,6 +206,42 @@ html:has(.note-context) {
   white-space: pre-wrap;
 }
 
+/* Session progress */
+
+.progress {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.progress-label {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+/* The empty track needs its own border: at the start of a session the bar has
+   no filled part at all, and `--surface` alone is nearly the page colour. */
+.progress-bar {
+  appearance: none;
+  width: 100%;
+  height: 0.625rem;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.progress-bar::-webkit-progress-bar {
+  background-color: transparent;
+  border-radius: 999px;
+}
+
+.progress-bar::-webkit-progress-value {
+  background-color: var(--accent);
+  border-radius: 999px;
+}
+
 /* Card */
 
 .card {
@@ -285,6 +321,30 @@ html:has(.note-context) {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(6rem, 1fr));
   gap: 0.5rem;
+}
+
+/* The number key that presses this button. Decorative (the real one is on
+   `aria-keyshortcuts`), so it stays quiet next to the label. */
+.rating-key {
+  margin-left: 0.5rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+/* Reveal, with its keyboard hint under it */
+
+.reveal {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.shortcut-hint {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
 }
 
 .rating-status:empty {

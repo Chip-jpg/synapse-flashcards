@@ -15,7 +15,9 @@ migrations, validation, scheduling, and every business rule; React only calls ty
 - **Cards** — add front/back cards, edit them (which never disturbs their schedule), delete them, and
   restore ones you deleted.
 - **Study** — start a review session for a deck, reveal the answer, and rate it **Again / Hard /
-  Good / Easy**. FSRS computes the next due date, and every rating is appended to `review_logs`.
+  Good / Easy**, with **Card 2 of 5** and a progress bar as you go. The whole session can be
+  answered from the keyboard: **Space** reveals, **1–4** rate. FSRS computes the next due date, and
+  every rating is appended to `review_logs`.
 - **History is kept** — deleting a card, archiving a deck, and deleting a note are all *soft*: the
   rows stay in the database, a card keeps its FSRS state and review log, and a note keeps its text
   and its times. Every one of them can be brought back: a deleted card restored, an archived deck
@@ -84,6 +86,16 @@ line breaks inside a card are kept as you typed them.
 **Study.** Press *Start review* on any deck with cards due. Reveal the answer, then rate it. The
 session ends when nothing in that deck is due. Closing the app mid-session is safe — reopening the
 deck resumes it.
+
+Above the card, *Card 2 of 5* and a bar show how far you've got. The card you're looking at counts
+towards the total, so the bar fills only once you finish the session. The total is read fresh with
+each card rather than fixed when the session starts: if another card falls due while you're
+studying, the total goes up instead of the bar sliding backwards.
+
+**Study from the keyboard.** **Space** or **Enter** reveals the answer, then **1** = Again,
+**2** = Hard, **3** = Good, **4** = Easy. The number keys do nothing until the answer is revealed,
+and nothing while a rating is saving, so a stray press can't rate the card twice or rate the next
+card by accident. The buttons are always there too — a key and a click do exactly the same thing.
 
 **Edit or delete a card.** On the deck screen, *Edit card* changes the text and keeps the card's
 schedule and history. *Delete card* asks for confirmation, then takes the card out of the deck's
