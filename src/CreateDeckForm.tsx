@@ -20,7 +20,7 @@ export function CreateDeckForm({
 
   return (
     <form className="card" aria-labelledby="create-deck-heading" noValidate onSubmit={submit}>
-      <h2 id="create-deck-heading" className="section-title">
+      <h2 id="create-deck-heading" className="form-title">
         Create a deck
       </h2>
 

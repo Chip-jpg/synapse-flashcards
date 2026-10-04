@@ -18,6 +18,15 @@ import {
   type NoteSummary,
 } from "./api";
 import { FormActions, SelectField, TextField, useFormSave } from "./forms";
+import {
+  ArrowLeftIcon,
+  ArrowRightIcon,
+  NoteIcon,
+  PencilIcon,
+  PlusIcon,
+  RestoreIcon,
+  TrashIcon,
+} from "./icons";
 import { formatDateTime, Message, useFocusOnMount } from "./ui";
 
 /** What takes focus when the library appears. */
@@ -164,7 +173,7 @@ function NoteLibrary({
 
   if (state.status === "loading") {
     return (
-      <p className="message" role="status">
+      <p className="loading" role="status">
         Loading your notes…
       </p>
     );
@@ -241,23 +250,34 @@ function NoteList({
 
   return (
     <section ref={screenRef} className="notes" tabIndex={-1} aria-labelledby="notes-heading">
-      <h2 id="notes-heading" className="section-title">
-        Notes
-      </h2>
-      <p className="field-hint">
-        Your own typed study notes, kept on this computer. The most recently edited note comes first.
-      </p>
+      <button type="button" className="button button-quiet back-button" onClick={onBack}>
+        <ArrowLeftIcon />
+        Back to decks
+      </button>
+
+      <div className="page-header">
+        <div className="page-heading">
+          <h2 id="notes-heading" className="page-title">
+            Notes
+          </h2>
+          <p className="page-intro">
+            Your own typed study notes, kept on this computer. The most recently edited note comes
+            first.
+          </p>
+        </div>
+        <button ref={newRef} type="button" className="button button-primary" onClick={onNew}>
+          <PlusIcon />
+          New note
+        </button>
+      </div>
       {notice && (
         <p ref={noticeRef} className="notice" role="status" tabIndex={-1}>
           {notice}
         </p>
       )}
-      <button ref={newRef} type="button" className="button" onClick={onNew}>
-        New note
-      </button>
 
       {notes.length === 0 ? (
-        <p className="message" role="status">
+        <p className="empty" role="status">
           {deleted.length === 0
             ? "No notes yet. Choose New note to write one."
             : "No notes in your library. Choose New note to write one, or restore a deleted note below."}
@@ -279,10 +299,6 @@ function NoteList({
       {deleted.length > 0 && (
         <DeletedNoteList notes={deleted} onRestored={onRestored} onStale={onStale} />
       )}
-
-      <button type="button" className="button" onClick={onBack}>
-        Back to decks
-      </button>
     </section>
   );
 }
@@ -302,10 +318,15 @@ function DeletedNoteList({
   onStale: () => void;
 }) {
   return (
-    <section className="cards" aria-labelledby="deleted-notes-heading">
-      <h3 id="deleted-notes-heading" className="section-title">
-        Deleted notes
-      </h3>
+    <section className="cards section-quiet" aria-labelledby="deleted-notes-heading">
+      <div className="section-heading">
+        <span className="section-icon section-icon-quiet" aria-hidden="true">
+          <RestoreIcon />
+        </span>
+        <h3 id="deleted-notes-heading" className="section-title section-title-quiet">
+          Deleted notes
+        </h3>
+      </div>
       <p className="field-hint">
         Kept for your history. A deleted note isn't in your library and can't be opened or edited,
         but restoring it brings it back with its text unchanged. Cards you wrote from a note are
@@ -363,27 +384,28 @@ function DeletedNoteItem({
   }
 
   return (
-    <div className="card-item">
+    <div className="card-item card-item-recovery">
       <div>
         {/* A heading, like an active note's title, so screen-reader users can
             reach deleted notes by heading navigation. */}
         <h4 id={titleId} className="note-item-title">
           {note.title}
         </h4>
-        <p className="field-hint">
+        <p className="item-meta">
           {`Deleted ${formatDateTime(note.deletedAt)} · last edited ${formatDateTime(
             note.updatedAt
           )}`}
         </p>
       </div>
-      <div className="deck-actions">
+      <div className="deck-actions item-actions">
         <button
           type="button"
-          className="button"
+          className="button button-small"
           aria-describedby={titleId}
           aria-disabled={restoring}
           onClick={restore}
         >
+          <RestoreIcon />
           Restore note
         </button>
       </div>
@@ -412,29 +434,33 @@ function NoteItem({
   const titleId = `note-${note.id}-title`;
 
   return (
-    <article className="card-item" aria-labelledby={titleId}>
-      <div>
-        {/* A heading, so screen-reader users can move between notes by heading. */}
-        <h3 id={titleId} className="note-item-title">
-          {note.title}
-        </h3>
-        <p className="field-hint">
-          {note.updatedAt === note.createdAt
-            ? `Created ${formatDateTime(note.createdAt)}`
-            : `Edited ${formatDateTime(note.updatedAt)}`}
-        </p>
+    <article className="card-item note-item" aria-labelledby={titleId}>
+      <div className="note-item-main">
+        <span className="section-icon section-icon-quiet" aria-hidden="true">
+          <NoteIcon />
+        </span>
+        <div>
+          {/* A heading, so screen-reader users can move between notes by heading. */}
+          <h3 id={titleId} className="note-item-title">
+            {note.title}
+          </h3>
+          <p className="item-meta">
+            {note.updatedAt === note.createdAt
+              ? `Created ${formatDateTime(note.createdAt)}`
+              : `Edited ${formatDateTime(note.updatedAt)}`}
+          </p>
+        </div>
       </div>
-      <div className="deck-actions">
-        <button
-          ref={openRef}
-          type="button"
-          className="button"
-          aria-describedby={titleId}
-          onClick={onOpen}
-        >
-          Open note
-        </button>
-      </div>
+      <button
+        ref={openRef}
+        type="button"
+        className="button button-small"
+        aria-describedby={titleId}
+        onClick={onOpen}
+      >
+        Open note
+        <ArrowRightIcon />
+      </button>
     </article>
   );
 }
@@ -515,7 +541,7 @@ function NoteScreen({
 
   if (state.status === "loading") {
     return (
-      <p className="message" role="status">
+      <p className="loading" role="status">
         Loading the note…
       </p>
     );
@@ -661,13 +687,23 @@ function NoteView({
   }
 
   return (
-    <section ref={screenRef} className="deck-detail" tabIndex={-1} aria-labelledby="note-heading">
+    <section
+      ref={screenRef}
+      className="deck-detail note-detail"
+      tabIndex={-1}
+      aria-labelledby="note-heading"
+    >
+      <button type="button" className="button button-quiet back-button" onClick={onBack}>
+        <ArrowLeftIcon />
+        Back to notes
+      </button>
+
       <article className="card">
         <div>
-          <h2 id="note-heading" className="deck-name">
+          <h2 id="note-heading" className="page-title">
             {note.title}
           </h2>
-          <p className="field-hint">
+          <p className="item-meta">
             {`Created ${formatDateTime(note.createdAt)}`}
             {edited && ` · Edited ${formatDateTime(note.updatedAt)}`}
           </p>
@@ -682,20 +718,21 @@ function NoteView({
           <div className="deck-actions">
             <button
               type="button"
-              className="button"
+              className="button button-small"
               aria-describedby="note-notice"
               onClick={() => onOpenDeck(cardDeck.id)}
             >
               {`Open ${cardDeck.name}`}
+              <ArrowRightIcon />
             </button>
           </div>
         )}
 
-        <p className="note-body">{note.body}</p>
-
+        {/* The note's actions sit above its text, so they stay in reach
+            however long the note is. */}
         {confirming ? (
-          <div className="card-item-confirm">
-            <p ref={questionRef} className="notice" tabIndex={-1}>
+          <div className="confirm">
+            <p ref={questionRef} className="confirm-question" tabIndex={-1}>
               Delete this note? It will leave your notes and can't be opened or edited. Its text is
               kept under Deleted notes, where you can restore it. Cards you wrote from it aren't
               changed.
@@ -703,7 +740,7 @@ function NoteView({
             <div className="deck-actions">
               <button
                 type="button"
-                className="button"
+                className="button button-danger-soft button-small"
                 aria-describedby="note-heading"
                 aria-disabled={deleting}
                 onClick={confirmDelete}
@@ -712,7 +749,7 @@ function NoteView({
               </button>
               <button
                 type="button"
-                className="button"
+                className="button button-small"
                 aria-disabled={deleting}
                 onClick={() => {
                   if (!deleting) setConfirming(false);
@@ -734,24 +771,27 @@ function NoteView({
               aria-describedby="note-heading"
               onClick={onEdit}
             >
+              <PencilIcon />
               Edit note
             </button>
             <button
               ref={cardRef}
               type="button"
-              className="button"
+              className="button button-primary"
               aria-describedby="note-heading"
               onClick={onCreateCard}
             >
+              <PlusIcon />
               Create card from note
             </button>
             <button
               ref={deleteRef}
               type="button"
-              className="button"
+              className="button button-quiet"
               aria-describedby="note-heading"
               onClick={() => setConfirming(true)}
             >
+              <TrashIcon />
               Delete note
             </button>
           </div>
@@ -762,11 +802,9 @@ function NoteView({
             {deleteError}
           </p>
         )}
-      </article>
 
-      <button type="button" className="button" onClick={onBack}>
-        Back to notes
-      </button>
+        <p className="note-body">{note.body}</p>
+      </article>
     </section>
   );
 }
@@ -791,7 +829,7 @@ function NoteForm({
 
   return (
     <form className="card" aria-labelledby="note-form-heading" noValidate onSubmit={submit}>
-      <h2 id="note-form-heading" className="section-title">
+      <h2 id="note-form-heading" className="form-title">
         {note ? "Edit note" : "New note"}
       </h2>
 
@@ -882,7 +920,7 @@ function CardFromNote({
 
   if (choices.status === "loading") {
     return (
-      <p className="message" role="status">
+      <p className="loading" role="status">
         Loading your decks…
       </p>
     );
@@ -1002,7 +1040,7 @@ function CardFromNoteForm({
 
   return (
     <form className="card" aria-labelledby="note-card-heading" noValidate onSubmit={submit}>
-      <h2 id="note-card-heading" className="section-title">
+      <h2 id="note-card-heading" className="form-title">
         {`Create a card from ${note.title}`}
       </h2>
 

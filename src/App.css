@@ -1,20 +1,82 @@
+/* Synapse — a calm, light study room.
+
+   The palette, type, radii, and shadows are defined once as tokens here and
+   reused below. Text colours are chosen to meet WCAG AA contrast on the
+   surfaces they sit on; the brighter accent shades are used only for
+   decoration (dots, bars). */
+
 :root {
-  color-scheme: dark;
+  color-scheme: light;
 
-  --bg: #0e1116;
-  --surface: #161b22;
-  --border: #2a313c;
-  --text: #e6e9ef;
-  --text-muted: #9aa4b2;
-  --accent: #8ab4ff;
-  --accent-hover: #a9c7ff;
-  --accent-ink: #0b1220;
-  --danger: #ff9b9b;
-  --focus: #ffd479;
+  /* Surfaces: warm paper, from the desk up to the cards on it. */
+  --bg: #faf8f5;
+  --surface: #ffffff;
+  --surface-low: #f5f2eb;
+  --surface-sunken: #efebe2;
 
-  font-family: system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  /* Lines. `--border-control` outlines form fields, which need 3:1 contrast. */
+  --border: #e2dcd2;
+  --border-soft: #ece6dc;
+  --border-strong: #d3cbbd;
+  --border-control: #958e83;
+
+  /* Ink */
+  --text: #2d2b28;
+  --text-muted: #6e6a63;
+
+  /* Periwinkle: the one primary action on a screen, and focus. */
+  --primary: #5e66b4;
+  --primary-hover: #4f57a4;
+  --primary-soft: #eef0fc;
+  --primary-soft-hover: #e2e5fa;
+  --primary-line: #d9ddf6;
+  --primary-ink: #343b80;
+  --on-primary: #ffffff;
+
+  /* Sage: cards due, things saved, things done. */
+  --sage: #537c68;
+  --sage-soft: #e8f3ed;
+  --sage-line: #cbe2d5;
+  --sage-ink: #234937;
+
+  /* Amber: questions to confirm. */
+  --amber: #c07d48;
+  --amber-soft: #fdf1e8;
+  --amber-line: #f0d6c0;
+  --amber-ink: #7a4318;
+
+  /* Rose: errors, and the one irreversible action. */
+  --rose: #c85a5a;
+  --danger: #a33f3f;
+  --danger-hover: #8c3434;
+  --danger-soft: #fdf0f0;
+  --danger-line: #ecc5c5;
+
+  --focus: #343b80;
+
+  /* Type */
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system, Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+
+  /* Shape and depth */
+  --radius-sm: 6px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-2xl: 28px;
+  --radius-full: 999px;
+  --shadow-card: 0 10px 30px -12px rgb(50 48 45 / 0.08), 0 4px 12px -6px rgb(50 48 45 / 0.06);
+  --shadow-primary: 0 2px 8px rgb(94 102 180 / 0.28);
+
+  /* Space */
+  --gutter: clamp(1rem, 4vw, 2rem);
+
+  font-family: var(--font-sans);
   font-size: 16px;
-  line-height: 1.5;
+  line-height: 1.55;
   color: var(--text);
   background-color: var(--bg);
 
@@ -36,52 +98,260 @@ body {
   background-color: var(--bg);
 }
 
+::selection {
+  background-color: rgb(94 102 180 / 0.2);
+}
+
+/* App shell */
+
 .app {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+}
+
+.topbar {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 2rem;
-  padding: 2rem 1.5rem;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding: 0.75rem var(--gutter);
+  background-color: rgb(255 255 255 / 0.7);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  color: var(--primary);
+  background-color: var(--primary-soft);
+  border: 1px solid var(--primary-line);
+  border-radius: var(--radius-md);
+}
+
+.brand-mark .icon {
+  width: 1.25rem;
+  height: 1.25rem;
 }
 
 .app-title {
   margin: 0;
   font-size: 0.875rem;
-  font-weight: 600;
-  letter-spacing: 0.12em;
+  font-weight: 700;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
+  color: var(--text);
+}
+
+.local-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0.1875rem 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 500;
   color: var(--text-muted);
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
 }
 
 .stage {
   flex: 1;
   width: 100%;
-  max-width: 36rem;
+  max-width: calc(44rem + 2 * var(--gutter));
+  margin: 0 auto;
+  padding: 2rem var(--gutter) 3rem;
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  /* Separates a screen's top-level sections (the decks list and "Your data").
-     Screens with a single section are unaffected. */
+  /* Separates a screen's top-level sections (the decks list, notes, and
+     "Your data"). Screens with a single section are unaffected. */
   gap: 2rem;
 }
 
-/* Screens */
+/* Screens and sections */
+
+/* Sections set aside while a backup is checked or restored: they can't be
+   used, so they shouldn't look usable either. */
+[inert] {
+  opacity: 0.6;
+}
 
 .decks,
 .session,
 .deck-detail,
-.cards,
 .notes {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.cards {
   display: flex;
   flex-direction: column;
   gap: 1rem;
 }
 
+/* The heading of a whole screen, with its main action beside it. */
+.page-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem 1.5rem;
+}
+
+.page-heading {
+  flex: 1 1 18rem;
+  min-width: 0;
+}
+
+.page-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 2rem;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.015em;
+  overflow-wrap: anywhere;
+}
+
+.page-intro {
+  margin: 0.375rem 0 0;
+  color: var(--text-muted);
+}
+
+/* A little air between a large title and the line under it. */
+.page-title + .deck-description,
+.page-title + .item-meta {
+  margin-top: 0.5rem;
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+}
+
 .section-title {
   margin: 0;
-  font-size: 1.125rem;
+  font-family: var(--font-display);
+  font-size: 1.1875rem;
   font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+/* The quieter heading of a recovery list (archived decks, deleted cards and notes). */
+.section-title-quiet {
+  font-size: 1.0625rem;
+  color: var(--text-muted);
+}
+
+.section-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  color: var(--primary-ink);
+  background-color: var(--primary-soft);
+  border-radius: var(--radius-md);
+}
+
+.section-icon-quiet {
+  width: 2rem;
+  height: 2rem;
+  color: var(--text-muted);
+  background-color: var(--surface-sunken);
+}
+
+/* A section held back below the main flow: recovery lists and deck management. */
+.section-quiet {
+  gap: 0.875rem;
+  padding-top: 1.5rem;
+  border-top: 1px dashed var(--border-strong);
+}
+
+.icon {
+  flex: none;
+  width: 1.125rem;
+  height: 1.125rem;
+}
+
+.section-icon .icon {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+/* Surfaces */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding: 1.75rem;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-2xl);
+  box-shadow: var(--shadow-card);
+  /* Long words in names or card text wrap instead of overflowing. */
+  overflow-wrap: anywhere;
+}
+
+.side-label {
+  margin: 0 0 0.375rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* A count or state, such as "3 cards due". */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4375rem;
+  margin: 0;
+  padding: 0.1875rem 0.75rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text-muted);
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+}
+
+.pill-due {
+  color: var(--sage-ink);
+  background-color: var(--sage-soft);
+  border-color: var(--sage-line);
+}
+
+.dot {
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  background-color: var(--sage);
+  border-radius: 50%;
+}
+
+.stat-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
 }
 
 /* Deck dashboard */
@@ -97,12 +367,16 @@ body {
 
 .deck {
   gap: 1rem;
+  padding: 1.375rem 1.5rem;
+  border-radius: var(--radius-xl);
 }
 
 .deck-name {
   margin: 0;
-  font-size: 1.375rem;
+  font-family: var(--font-display);
+  font-size: 1.25rem;
   font-weight: 600;
+  line-height: 1.35;
 }
 
 .deck-description {
@@ -110,27 +384,170 @@ body {
   color: var(--text-muted);
 }
 
-.deck-due {
-  margin: 0;
+/* A deck's due count, with its actions beside it on wide windows. */
+.deck-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
 }
 
 .deck-actions,
 .form-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 0.5rem;
 }
 
+.empty {
+  margin: 0;
+  padding: 1.75rem 1.5rem;
+  text-align: center;
+  color: var(--text-muted);
+  background-color: var(--surface-low);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-xl);
+}
+
+/* Notices and confirmations */
+
+/* A confirmation of something that just happened ("Card added."). */
 .notice {
   margin: 0;
+  padding: 0.75rem 1rem;
+  color: var(--sage-ink);
+  background-color: var(--sage-soft);
+  border: 1px solid var(--sage-line);
+  border-radius: var(--radius-md);
+}
+
+/* A two-step question, asked in place of the button that opened it. */
+.confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+  padding: 1rem 1.125rem;
+  background-color: var(--amber-soft);
+  border: 1px solid var(--amber-line);
+  border-radius: var(--radius-lg);
+}
+
+/* Bringing something back can't lose anything, so it's asked calmly. */
+.confirm-calm {
+  background-color: var(--primary-soft);
+  border-color: var(--primary-line);
+}
+
+/* Replacing all data can't be undone. */
+.confirm-danger {
+  background-color: var(--danger-soft);
+  border-color: var(--danger-line);
+}
+
+.confirm-question {
+  margin: 0;
+  color: var(--text);
 }
 
 /* A heading, but sized like the body text around it. */
 .archived-deck-name,
 .note-item-title {
   margin: 0;
-  font-size: inherit;
+  font-size: 1rem;
   font-weight: 600;
+  line-height: 1.4;
+}
+
+/* Lists of cards, notes, and recoverable items */
+
+.card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.card-item,
+.data-action {
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+}
+
+/* Exporting and importing, one above the other in "Your data". */
+.data-action + .data-action {
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border-soft);
+}
+
+.card-item {
+  min-width: 0;
+  padding: 1.25rem 1.5rem;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  overflow-wrap: anywhere;
+}
+
+/* Something kept for history: archived decks, deleted cards and notes. */
+.card-item-recovery {
+  background-color: var(--surface-low);
+  border-style: dashed;
+  border-color: var(--border-strong);
+}
+
+.card-item-text {
+  margin: 0;
+  /* Keep the line breaks typed into a card. */
+  white-space: pre-wrap;
+}
+
+.card-item-front {
+  font-weight: 600;
+}
+
+.card-item-back {
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border-soft);
+}
+
+.card-item-back .card-item-text {
+  color: var(--text-muted);
+}
+
+.item-actions {
+  justify-content: flex-end;
+}
+
+.item-meta {
+  margin: 0.125rem 0 0;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+/* A note in the library: its title and dates, and the way in. */
+.note-item {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+}
+
+.note-item-main {
+  display: flex;
+  flex: 1 1 14rem;
+  align-items: flex-start;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.note-item-main .section-icon {
+  margin-top: 0.125rem;
 }
 
 /* A note's text */
@@ -139,6 +556,14 @@ body {
   margin: 0;
   /* Keep the line breaks and indentation typed into a note. */
   white-space: pre-wrap;
+  line-height: 1.7;
+}
+
+.note-detail .note-body {
+  max-width: 68ch;
+  padding-top: 1.25rem;
+  font-size: 1.0625rem;
+  border-top: 1px solid var(--border-soft);
 }
 
 /* The note shown beside the card being written from it. It sticks to the top
@@ -150,9 +575,10 @@ body {
   max-height: min(14rem, 30vh);
   overflow-y: auto;
   padding: 1rem 1.25rem;
-  background-color: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  background-color: var(--surface-low);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 6px 16px -10px rgb(50 48 45 / 0.25);
 }
 
 .note-context .side-label {
@@ -169,118 +595,253 @@ html:has(.note-context) {
   scroll-padding-top: calc(min(14rem, 30vh) + 1.5rem);
 }
 
-/* A deck's card list */
+/* Review session */
 
-.card-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
+.session {
+  gap: 1rem;
+}
+
+.session-title {
   margin: 0;
-  padding: 0;
-  list-style: none;
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
-.card-item,
-.card-item-confirm,
-.data-action {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.card-item {
-  padding: 1.25rem 1.5rem;
-  background-color: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  overflow-wrap: break-word;
-}
-
-.card-item .side-label {
-  margin-bottom: 0.25rem;
-}
-
-.card-item-text {
-  margin: 0;
-  /* Keep the line breaks typed into a card. */
-  white-space: pre-wrap;
+/* Not uppercased: Chromium would put the capitals into the heading's
+   accessible name too. */
+.session-kicker {
+  display: block;
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
 }
 
 /* Session progress */
 
+/* One compact row, so the card and its answer buttons keep the space. */
 .progress {
   display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  padding: 0.75rem 1.25rem;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
 }
 
 .progress-label {
+  flex: none;
   margin: 0;
   font-size: 0.875rem;
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--text);
 }
 
 /* The empty track needs its own border: at the start of a session the bar has
-   no filled part at all, and `--surface` alone is nearly the page colour. */
+   no filled part at all. */
 .progress-bar {
   appearance: none;
+  display: block;
+  flex: 1 1 10rem;
   width: 100%;
-  height: 0.625rem;
-  background-color: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 999px;
+  height: 0.5rem;
+  background-color: var(--surface-low);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-full);
+  overflow: hidden;
 }
 
 .progress-bar::-webkit-progress-bar {
   background-color: transparent;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
 }
 
 .progress-bar::-webkit-progress-value {
-  background-color: var(--accent);
-  border-radius: 999px;
+  background-image: linear-gradient(90deg, var(--sage), var(--primary));
+  border-radius: var(--radius-full);
 }
 
-/* Card */
+/* The card being reviewed */
 
-.card {
+.review {
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
-  padding: 2rem;
-  background-color: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  box-shadow: 0 12px 32px rgb(0 0 0 / 0.35);
-  /* Long words in names or card text wrap instead of overflowing. */
-  overflow-wrap: break-word;
+  gap: 1.25rem;
 }
 
-.side-label {
-  margin: 0 0 0.5rem;
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-muted);
+.review-card {
+  overflow: hidden;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-2xl);
+  box-shadow: var(--shadow-card);
+  /* Long words in card text wrap instead of overflowing. */
+  overflow-wrap: anywhere;
+}
+
+.card-side {
+  padding: 1.75rem 2rem;
+}
+
+.card-side .side-label {
+  display: inline-block;
+  margin-bottom: 0.875rem;
+  padding: 0.125rem 0.625rem;
+  letter-spacing: 0.06em;
+  background-color: var(--surface-low);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
 }
 
 .card-text {
   margin: 0;
   /* Keep the line breaks typed into a card. */
   white-space: pre-wrap;
-  font-size: 1.375rem;
-  line-height: 1.45;
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
 }
 
 .card-back {
-  padding-top: 1.5rem;
+  background-color: var(--surface-low);
   border-top: 1px solid var(--border);
 }
 
+.card-back .side-label {
+  color: var(--sage-ink);
+  background-color: var(--sage-soft);
+  border-color: var(--sage-line);
+}
+
 .card-back .card-text {
+  font-family: var(--font-sans);
   font-size: 1.125rem;
+  font-weight: 400;
+  line-height: 1.65;
+  letter-spacing: 0;
+}
+
+/* Rating */
+
+.rating {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.rating-prompt {
+  margin: 0;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.rating-buttons {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.625rem;
+}
+
+/* Two classes, so these win over `.button`, which comes later. */
+.button.rating-button {
+  align-self: stretch;
+  justify-content: space-between;
+  min-height: 3.5rem;
+  padding: 0.75rem 0.875rem 0.75rem 1rem;
+  border-radius: var(--radius-lg);
+}
+
+.rating-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.rating-again .rating-label {
+  color: var(--danger);
+}
+
+.rating-again .dot {
+  background-color: var(--rose);
+}
+
+.rating-hard .rating-label {
+  color: var(--amber-ink);
+}
+
+.rating-hard .dot {
+  background-color: var(--amber);
+}
+
+.rating-good .rating-label {
+  color: var(--sage-ink);
+}
+
+.rating-easy .rating-label {
+  color: var(--primary-ink);
+}
+
+.rating-easy .dot {
+  background-color: var(--primary);
+}
+
+/* Reveal, with its keyboard hint under it */
+
+.reveal {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.reveal .button {
+  align-self: center;
+  min-width: min(16rem, 100%);
+}
+
+/* Which keys do what. Decorative: the real shortcuts are on each button's
+   `aria-keyshortcuts`. */
+.shortcut-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.kbd {
+  display: inline-block;
+  min-width: 1.5rem;
+  padding: 0 0.375rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.5rem;
+  text-align: center;
+  color: var(--text-muted);
+  background-color: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.rating-status:empty {
+  display: none;
+}
+
+.rating-status {
+  margin: 0;
+  color: var(--text-muted);
 }
 
 /* Focus is moved to these programmatically; they aren't interactive controls.
@@ -294,69 +855,27 @@ html:has(.note-context) {
   outline: none;
 }
 
-/* A notice does get an outline: it's where focus lands when a confirmation
-   opens, so a sighted keyboard user has to be able to see it went there.
-   `:focus`, not `:focus-visible`, because the focus is moved programmatically
-   rather than by the keyboard; clicking a notice also shows it, which is a
-   fair price for never hiding where focus went. */
-.notice:focus {
+/* A notice or question does get an outline: it's where focus lands when a
+   confirmation opens, so a sighted keyboard user has to be able to see it went
+   there. `:focus`, not `:focus-visible`, because the focus is moved
+   programmatically rather than by the keyboard; clicking one also shows it,
+   which is a fair price for never hiding where focus went. */
+.notice:focus,
+.confirm-question:focus {
   outline: 3px solid var(--focus);
   outline-offset: 3px;
 }
 
-/* Rating */
-
-.rating {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.rating-prompt {
-  margin: 0;
-  color: var(--text-muted);
-}
-
-.rating-buttons {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(6rem, 1fr));
-  gap: 0.5rem;
-}
-
-/* The number key that presses this button. Decorative (the real one is on
-   `aria-keyshortcuts`), so it stays quiet next to the label. */
-.rating-key {
-  margin-left: 0.5rem;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: var(--text-muted);
-}
-
-/* Reveal, with its keyboard hint under it */
-
-.reveal {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.5rem;
-}
-
-.shortcut-hint {
-  margin: 0;
-  font-size: 0.8125rem;
-  color: var(--text-muted);
-}
-
-.rating-status:empty {
-  display: none;
-}
-
-.rating-status {
-  margin: 0;
-  color: var(--text-muted);
-}
-
 /* Forms */
+
+.form-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.375rem;
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
 
 .field {
   display: flex;
@@ -376,12 +895,18 @@ html:has(.note-context) {
 
 .field-input {
   width: 100%;
-  padding: 0.625rem 0.75rem;
+  padding: 0.6875rem 0.875rem;
   font: inherit;
+  line-height: 1.55;
   color: var(--text);
-  background-color: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  background-color: var(--surface);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-md);
+  transition: border-color 0.15s;
+}
+
+.field-input:hover {
+  border-color: var(--text-muted);
 }
 
 textarea.field-input {
@@ -395,10 +920,13 @@ textarea.field-input {
 
 .field-input[aria-invalid="true"] {
   border-color: var(--danger);
+  box-shadow: 0 0 0 1px var(--danger);
 }
 
 .field-error {
   margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 500;
   color: var(--danger);
 }
 
@@ -411,36 +939,131 @@ textarea.field-input {
   color: var(--text-muted);
 }
 
-/* Buttons */
+/* Buttons
+   Secondary by default. `button-primary` marks a screen's main action and
+   the confirming button of a question that loses nothing; `button-tonal` a
+   main action repeated beside it; `button-quiet` a low-key action (a way
+   back, or opening a delete question); `button-danger-soft` confirms a
+   removal that can be undone; `button-danger` the one action that can't. */
 
 .button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
   align-self: flex-start;
-  padding: 0.625rem 1.25rem;
+  min-height: 2.5rem;
+  padding: 0.5rem 1.125rem;
   font: inherit;
+  font-size: 0.9375rem;
   font-weight: 600;
+  line-height: 1.3;
+  text-align: center;
   color: var(--text);
-  background-color: transparent;
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  background-color: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-full);
   cursor: pointer;
   transition:
     background-color 0.15s,
-    border-color 0.15s;
+    border-color 0.15s,
+    color 0.15s,
+    box-shadow 0.15s;
 }
 
 .button:hover {
+  background-color: var(--surface-low);
   border-color: var(--text-muted);
 }
 
 .button-primary {
-  color: var(--accent-ink);
-  background-color: var(--accent);
-  border-color: var(--accent);
+  color: var(--on-primary);
+  background-color: var(--primary);
+  border-color: var(--primary);
+  box-shadow: var(--shadow-primary);
 }
 
 .button-primary:hover {
-  background-color: var(--accent-hover);
-  border-color: var(--accent-hover);
+  background-color: var(--primary-hover);
+  border-color: var(--primary-hover);
+}
+
+.button-tonal {
+  color: var(--primary-ink);
+  background-color: var(--primary-soft);
+  border-color: var(--primary-line);
+}
+
+.button-tonal:hover {
+  background-color: var(--primary-soft-hover);
+  border-color: var(--primary);
+}
+
+.button-quiet {
+  color: var(--text-muted);
+  background-color: transparent;
+  border-color: transparent;
+}
+
+.button-quiet:hover {
+  color: var(--text);
+  background-color: var(--surface-sunken);
+  border-color: transparent;
+}
+
+.button-danger {
+  color: var(--on-primary);
+  background-color: var(--danger);
+  border-color: var(--danger);
+}
+
+.button-danger:hover {
+  background-color: var(--danger-hover);
+  border-color: var(--danger-hover);
+}
+
+/* Confirms a removal that can be undone later (deleting a card or note). */
+.button-danger-soft {
+  color: var(--danger);
+  border-color: var(--danger-line);
+}
+
+.button-danger-soft:hover {
+  background-color: var(--danger-soft);
+  border-color: var(--danger);
+}
+
+.button-large {
+  min-height: 3rem;
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
+}
+
+.button-small {
+  min-height: 2.25rem;
+  padding: 0.375rem 0.875rem;
+  font-size: 0.875rem;
+}
+
+.button-small .icon {
+  width: 1rem;
+  height: 1rem;
+}
+
+/* `.button` aligns to the start of column layouts; in these rows it lines up
+   with the text beside it instead. */
+.page-header > .button {
+  align-self: flex-end;
+}
+
+.note-item > .button {
+  align-self: center;
+}
+
+/* A way back to the previous screen, at the top of the screen it leaves. */
+.back-button {
+  margin-left: -0.75rem;
+  padding-inline: 0.75rem;
 }
 
 .button[aria-disabled="true"] {
@@ -455,27 +1078,104 @@ textarea.field-input {
 
 /* Loading / empty / error */
 
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 2.5rem 1rem;
+  color: var(--text-muted);
+}
+
+/* A quiet spinner beside the loading text. */
+.loading::before {
+  content: "";
+  flex: none;
+  width: 1.125rem;
+  height: 1.125rem;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* An error with its own panel, below the control that failed. */
+.message-error {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  color: var(--danger);
+  background-color: var(--danger-soft);
+  border: 1px solid var(--danger-line);
+  border-radius: var(--radius-md);
+}
+
+/* A whole-screen message: an error, the end of a session, or nothing to do. */
 .message {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 1rem;
   margin: 0;
+  padding: 2.25rem 1.75rem;
   text-align: center;
   color: var(--text-muted);
-}
-
-.message-title {
-  color: var(--text);
-}
-
-.message-error {
-  margin: 0;
-  color: var(--danger);
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-2xl);
+  box-shadow: var(--shadow-card);
+  overflow-wrap: anywhere;
 }
 
 .message p {
   margin: 0;
+  max-width: 34rem;
+}
+
+/* Inside a message panel, an error is just its text. */
+.message .message-error {
+  padding: 0;
+  background: none;
+  border: 0;
+}
+
+.message-icon {
+  display: grid;
+  place-items: center;
+  width: 3rem;
+  height: 3rem;
+  color: var(--primary-ink);
+  background-color: var(--primary-soft);
+  border-radius: 50%;
+}
+
+.message-icon .icon {
+  width: 1.5rem;
+  height: 1.5rem;
+}
+
+.message-icon-alert {
+  color: var(--danger);
+  background-color: var(--danger-soft);
+}
+
+.message-icon-done {
+  color: var(--sage-ink);
+  background-color: var(--sage-soft);
+}
+
+.message-title {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-family: var(--font-display);
+  font-size: 1.375rem;
+  color: var(--text);
 }
 
 .message .button {
@@ -489,8 +1189,81 @@ textarea.field-input {
   gap: 0.5rem;
 }
 
+/* Narrow windows */
+
+@media (max-width: 40rem) {
+  .stage {
+    padding-top: 1.5rem;
+  }
+
+  .page-title {
+    font-size: 1.625rem;
+  }
+
+  .card {
+    padding: 1.25rem;
+    border-radius: var(--radius-xl);
+  }
+
+  .deck {
+    padding: 1.125rem 1.25rem;
+  }
+
+  .card-item {
+    padding: 1rem 1.125rem;
+  }
+
+  .card-side {
+    padding: 1.25rem 1.375rem;
+  }
+
+  .card-text {
+    font-size: 1.3125rem;
+  }
+
+  .rating-buttons {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .message {
+    padding: 1.75rem 1.25rem;
+  }
+}
+
+/* Short windows: keep a card and its rating buttons on screen together. */
+@media (max-height: 44rem) {
+  .stage {
+    padding-top: 1.25rem;
+  }
+
+  .session {
+    gap: 0.75rem;
+  }
+
+  .card-side {
+    padding-block: 1.25rem;
+  }
+
+  .card-side .side-label {
+    margin-bottom: 0.5rem;
+  }
+
+  .card-text {
+    font-size: 1.3125rem;
+  }
+
+  .card-back .card-text {
+    font-size: 1.0625rem;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .button {
+  .button,
+  .field-input {
     transition: none;
+  }
+
+  .loading::before {
+    animation: none;
   }
 }

@@ -113,3 +113,6 @@ AGENTS.md
 # Editor workspace state
 *.code-workspace
 .history/
+
+# Design and media assets
+.design-reference/

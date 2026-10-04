@@ -13,6 +13,15 @@ import {
   type DeletedCard,
 } from "./api";
 import { FormActions, TextField, useFormSave } from "./forms";
+import {
+  ArchiveIcon,
+  ArrowLeftIcon,
+  PencilIcon,
+  PlayIcon,
+  PlusIcon,
+  RestoreIcon,
+  TrashIcon,
+} from "./icons";
 import { formatDateTime, Message, useFocusOnMount } from "./ui";
 import { useStartReview } from "./useStartReview";
 
@@ -117,7 +126,7 @@ export function DeckDetail({
 
   if (state.status === "loading") {
     return (
-      <p className="message" role="status">
+      <p className="loading" role="status">
         Loading the deck…
       </p>
     );
@@ -241,19 +250,25 @@ function DeckView({
 
   return (
     <section ref={screenRef} className="deck-detail" tabIndex={-1} aria-labelledby="deck-detail-name">
-      <article className="card deck">
+      <button type="button" className="button button-quiet back-button" onClick={onBack}>
+        <ArrowLeftIcon />
+        Back to decks
+      </button>
+
+      <article className="card">
         <div>
-          <h2 id="deck-detail-name" className="deck-name">
+          <h2 id="deck-detail-name" className="page-title">
             {deck.name}
           </h2>
           {deck.description && <p className="deck-description">{deck.description}</p>}
         </div>
 
-        <div>
-          <p className="deck-due">
+        <div className="stat-row">
+          <p className="pill">
             {cards === 0 ? "No cards yet" : `${cards} ${cards === 1 ? "card" : "cards"} in total`}
           </p>
-          <p className="deck-due">
+          <p className={due === 0 ? "pill" : "pill pill-due"}>
+            {due > 0 && <span className="dot" aria-hidden="true" />}
             {due === 0
               ? "No cards due right now"
               : `${due} ${due === 1 ? "card" : "cards"} due`}
@@ -266,26 +281,30 @@ function DeckView({
           </p>
         )}
 
+        {/* The main action comes first: reviewing when cards are due,
+            otherwise adding one. */}
         <div className="deck-actions">
-          <button
-            ref={addRef}
-            type="button"
-            className={due > 0 ? "button" : "button button-primary"}
-            onClick={onAdd}
-          >
-            Add card
-          </button>
           {due > 0 && (
             <button
               type="button"
-              className="button button-primary"
+              className="button button-primary button-large"
               aria-describedby="deck-detail-name"
               aria-disabled={starting}
               onClick={start}
             >
+              <PlayIcon />
               Start review
             </button>
           )}
+          <button
+            ref={addRef}
+            type="button"
+            className={due > 0 ? "button button-large" : "button button-primary button-large"}
+            onClick={onAdd}
+          >
+            <PlusIcon />
+            Add card
+          </button>
         </div>
 
         {error && (
@@ -330,10 +349,6 @@ function DeckView({
         onRename={onRename}
         onArchived={onArchived}
       />
-
-      <button type="button" className="button" onClick={onBack}>
-        Back to decks
-      </button>
     </section>
   );
 }
@@ -397,21 +412,21 @@ function ManageDeck({
   }
 
   return (
-    <section className="cards" aria-labelledby="manage-deck-heading">
-      <h3 id="manage-deck-heading" className="section-title">
+    <section className="cards section-quiet" aria-labelledby="manage-deck-heading">
+      <h3 id="manage-deck-heading" className="section-title section-title-quiet">
         Manage deck
       </h3>
 
       {confirming ? (
-        <div className="card-item-confirm">
-          <p ref={questionRef} className="notice" tabIndex={-1}>
+        <div className="confirm">
+          <p ref={questionRef} className="confirm-question" tabIndex={-1}>
             Archive this deck? It will leave your deck list and can't be reviewed or changed. Its
             cards and review history are kept, and you can unarchive it from your deck list later.
           </p>
           <div className="deck-actions">
             <button
               type="button"
-              className="button"
+              className="button button-primary button-small"
               aria-describedby="deck-detail-name"
               aria-disabled={archiving}
               onClick={confirmArchive}
@@ -420,7 +435,7 @@ function ManageDeck({
             </button>
             <button
               type="button"
-              className="button"
+              className="button button-small"
               aria-disabled={archiving}
               onClick={() => {
                 if (!archiving) setConfirming(false);
@@ -438,19 +453,21 @@ function ManageDeck({
           <button
             ref={renameRef}
             type="button"
-            className="button"
+            className="button button-small"
             aria-describedby="deck-detail-name"
             onClick={onRename}
           >
+            <PencilIcon />
             Rename deck
           </button>
           <button
             ref={archiveRef}
             type="button"
-            className="button"
+            className="button button-small"
             aria-describedby="deck-detail-name"
             onClick={() => setConfirming(true)}
           >
+            <ArchiveIcon />
             Archive deck
           </button>
         </div>
@@ -484,7 +501,7 @@ function RenameDeckForm({
 
   return (
     <form className="card" aria-labelledby="rename-deck-heading" noValidate onSubmit={submit}>
-      <h2 id="rename-deck-heading" className="section-title">
+      <h2 id="rename-deck-heading" className="form-title">
         Rename {deck.name}
       </h2>
 
@@ -572,25 +589,25 @@ function CardItem({
     <div className="card-item">
       <div>
         <p className="side-label">Front</p>
-        <p id={frontId} className="card-item-text">
+        <p id={frontId} className="card-item-text card-item-front">
           {card.front}
         </p>
       </div>
-      <div>
+      <div className="card-item-back">
         <p className="side-label">Back</p>
         <p className="card-item-text">{card.back}</p>
       </div>
 
       {confirming ? (
-        <div className="card-item-confirm">
-          <p ref={questionRef} className="notice" tabIndex={-1}>
+        <div className="confirm">
+          <p ref={questionRef} className="confirm-question" tabIndex={-1}>
             Delete this card? It will leave this deck and won't appear in reviews. Its schedule and
             review history are kept, and you can restore it from Deleted cards below.
           </p>
           <div className="deck-actions">
             <button
               type="button"
-              className="button"
+              className="button button-danger-soft button-small"
               aria-describedby={frontId}
               aria-disabled={deleting}
               onClick={confirmDelete}
@@ -599,7 +616,7 @@ function CardItem({
             </button>
             <button
               type="button"
-              className="button"
+              className="button button-small"
               aria-disabled={deleting}
               onClick={() => {
                 if (!deleting) setConfirming(false);
@@ -613,23 +630,25 @@ function CardItem({
           </p>
         </div>
       ) : (
-        <div className="deck-actions">
+        <div className="deck-actions item-actions">
           <button
             ref={editRef}
             type="button"
-            className="button"
+            className="button button-small"
             aria-describedby={frontId}
             onClick={onEdit}
           >
+            <PencilIcon />
             Edit card
           </button>
           <button
             ref={deleteRef}
             type="button"
-            className="button"
+            className="button button-quiet button-small"
             aria-describedby={frontId}
             onClick={() => setConfirming(true)}
           >
+            <TrashIcon />
             Delete card
           </button>
         </div>
@@ -659,10 +678,15 @@ function DeletedCardList({
   onStale: () => void;
 }) {
   return (
-    <section className="cards" aria-labelledby="deleted-cards-heading">
-      <h3 id="deleted-cards-heading" className="section-title">
-        Deleted cards
-      </h3>
+    <section className="cards section-quiet" aria-labelledby="deleted-cards-heading">
+      <div className="section-heading">
+        <span className="section-icon section-icon-quiet" aria-hidden="true">
+          <RestoreIcon />
+        </span>
+        <h3 id="deleted-cards-heading" className="section-title section-title-quiet">
+          Deleted cards
+        </h3>
+      </div>
       <p className="field-hint">
         Kept for your history. A deleted card isn't in this deck's counts or reviews, but restoring
         it brings it back with its text, schedule, and review history unchanged — it becomes due
@@ -737,29 +761,29 @@ function DeletedCardItem({
   }
 
   return (
-    <div className="card-item">
+    <div className="card-item card-item-recovery">
       <div>
         <p className="side-label">Front</p>
-        <p id={frontId} className="card-item-text">
+        <p id={frontId} className="card-item-text card-item-front">
           {card.front}
         </p>
       </div>
-      <div>
+      <div className="card-item-back">
         <p className="side-label">Back</p>
         <p className="card-item-text">{card.back}</p>
       </div>
-      <p className="field-hint">{`Deleted ${formatDateTime(card.deletedAt)}`}</p>
+      <p className="item-meta">{`Deleted ${formatDateTime(card.deletedAt)}`}</p>
 
       {confirming ? (
-        <div className="card-item-confirm">
-          <p ref={questionRef} className="notice" tabIndex={-1}>
+        <div className="confirm confirm-calm">
+          <p ref={questionRef} className="confirm-question" tabIndex={-1}>
             Restore this card? It goes back into this deck with the same schedule and review
             history it had, and becomes due again only on the date it already had.
           </p>
           <div className="deck-actions">
             <button
               type="button"
-              className="button"
+              className="button button-primary button-small"
               aria-describedby={frontId}
               aria-disabled={restoring}
               onClick={confirmRestore}
@@ -768,7 +792,7 @@ function DeletedCardItem({
             </button>
             <button
               type="button"
-              className="button"
+              className="button button-small"
               aria-disabled={restoring}
               onClick={() => {
                 if (!restoring) setConfirming(false);
@@ -782,14 +806,15 @@ function DeletedCardItem({
           </p>
         </div>
       ) : (
-        <div className="deck-actions">
+        <div className="deck-actions item-actions">
           <button
             ref={restoreRef}
             type="button"
-            className="button"
+            className="button button-small"
             aria-describedby={frontId}
             onClick={() => setConfirming(true)}
           >
+            <RestoreIcon />
             Restore card
           </button>
         </div>
@@ -826,7 +851,7 @@ function CardForm({
 
   return (
     <form className="card" aria-labelledby="card-form-heading" noValidate onSubmit={submit}>
-      <h2 id="card-form-heading" className="section-title">
+      <h2 id="card-form-heading" className="form-title">
         {card ? "Edit a card in " : "Add a card to "}
         {deck.name}
       </h2>

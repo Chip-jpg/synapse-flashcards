@@ -13,6 +13,17 @@ import {
   type DeckDetail,
 } from "./api";
 import { CreateDeckForm } from "./CreateDeckForm";
+import {
+  ArchiveIcon,
+  ArrowRightIcon,
+  BookIcon,
+  DatabaseIcon,
+  DownloadIcon,
+  PlayIcon,
+  PlusIcon,
+  RestoreIcon,
+  UploadIcon,
+} from "./icons";
 import { formatDateTime, Message, useFocusOnMount } from "./ui";
 import { useStartReview } from "./useStartReview";
 
@@ -102,7 +113,7 @@ export function Dashboard({
 
   if (state.status === "loading") {
     return (
-      <p className="message" role="status">
+      <p className="loading" role="status">
         Loading your decks…
       </p>
     );
@@ -174,10 +185,15 @@ function NotesLink({
   const openRef = useFocusOnMount<HTMLButtonElement>(focus);
 
   return (
-    <section className="cards" aria-labelledby="notes-link-heading" inert={inert}>
-      <h2 id="notes-link-heading" className="section-title">
-        Notes
-      </h2>
+    <section className="card" aria-labelledby="notes-link-heading" inert={inert}>
+      <div className="section-heading">
+        <span className="section-icon" aria-hidden="true">
+          <BookIcon />
+        </span>
+        <h2 id="notes-link-heading" className="section-title">
+          Notes
+        </h2>
+      </div>
       <p id="notes-link-hint" className="field-hint">
         Type up your own study notes and keep them here, then write cards from them.
       </p>
@@ -189,6 +205,7 @@ function NotesLink({
         onClick={onOpen}
       >
         Open notes
+        <ArrowRightIcon />
       </button>
     </section>
   );
@@ -224,6 +241,9 @@ function DeckList({
   const ref = useFocusOnMount<HTMLElement>(focus === "list");
   const createRef = useFocusOnMount<HTMLButtonElement>(focus === "create");
   const noticeRef = useFocusOnMount<HTMLParagraphElement>(focus === "notice");
+  // Only the first deck with cards due gets the filled Start review button, so
+  // the screen has one obvious place to begin; the others are quieter.
+  const firstDueId = decks.find((deck) => deck.dueCount > 0)?.id;
 
   return (
     <section
@@ -233,26 +253,40 @@ function DeckList({
       aria-labelledby="decks-heading"
       inert={inert}
     >
-      <h2 id="decks-heading" className="section-title">
-        Decks
-      </h2>
+      <div className="page-header">
+        <div className="page-heading">
+          <h2 id="decks-heading" className="page-title">
+            Decks
+          </h2>
+          <p className="page-intro">
+            Review the cards that are due, or open a deck you made to add and edit its cards.
+          </p>
+        </div>
+        <button ref={createRef} type="button" className="button" onClick={onCreate}>
+          <PlusIcon />
+          Create deck
+        </button>
+      </div>
       {notice && (
         <p ref={noticeRef} className="notice" role="status" tabIndex={-1}>
           {notice}
         </p>
       )}
-      <button ref={createRef} type="button" className="button" onClick={onCreate}>
-        Create deck
-      </button>
       {decks.length === 0 ? (
-        <p className="message" role="status">
+        <p className="empty" role="status">
           No decks yet. Choose Create deck to make one.
         </p>
       ) : (
         <ul className="deck-list">
           {decks.map((deck) => (
             <li key={deck.id}>
-              <DeckCard deck={deck} onStart={onStart} onOpen={onOpen} onChanged={onChanged} />
+              <DeckCard
+                deck={deck}
+                prominent={deck.id === firstDueId}
+                onStart={onStart}
+                onOpen={onOpen}
+                onChanged={onChanged}
+              />
             </li>
           ))}
         </ul>
@@ -279,10 +313,15 @@ function YourData({
   const [running, setRunning] = useState<"export" | "import" | null>(null);
 
   return (
-    <section className="cards" aria-labelledby="data-heading">
-      <h2 id="data-heading" className="section-title">
-        Your data
-      </h2>
+    <section className="card" aria-labelledby="data-heading">
+      <div className="section-heading">
+        <span className="section-icon" aria-hidden="true">
+          <DatabaseIcon />
+        </span>
+        <h2 id="data-heading" className="section-title">
+          Your data
+        </h2>
+      </div>
       <ExportData
         blocked={running === "import"}
         onRunning={(busy) => setRunning(busy ? "export" : null)}
@@ -351,6 +390,7 @@ function ExportData({
         aria-disabled={state.kind === "busy" || blocked}
         onClick={runExport}
       >
+        <DownloadIcon />
         Export data
       </button>
       {/* Announced as it changes; empty between attempts (see `.form-status:empty`). */}
@@ -513,8 +553,8 @@ function ImportData({
       </p>
 
       {state.kind === "confirm" ? (
-        <div className="card-item-confirm">
-          <p ref={questionRef} id="import-question" className="notice" tabIndex={-1}>
+        <div className="confirm confirm-danger">
+          <p ref={questionRef} id="import-question" className="confirm-question" tabIndex={-1}>
             {`Replace all your study data with ${state.backup.fileName}, exported ${formatDateTime(
               state.backup.exportedAt
             )}? Every deck, card, review, session, and note in Synapse now will be replaced by the backup's, and this can't be undone. To keep a copy of your current data, choose Keep current data and export it first.`}
@@ -522,7 +562,7 @@ function ImportData({
           <div className="deck-actions">
             <button
               type="button"
-              className="button"
+              className="button button-danger"
               aria-describedby="import-question"
               aria-disabled={restoring || blocked}
               onClick={() => restore(state.backup)}
@@ -548,6 +588,7 @@ function ImportData({
           aria-disabled={checking || blocked}
           onClick={choose}
         >
+          <UploadIcon />
           Import data
         </button>
       )}
@@ -581,10 +622,15 @@ function ArchivedDeckList({
   onStale: () => void;
 }) {
   return (
-    <section className="cards" aria-labelledby="archived-heading">
-      <h3 id="archived-heading" className="section-title">
-        Archived decks
-      </h3>
+    <section className="cards section-quiet" aria-labelledby="archived-heading">
+      <div className="section-heading">
+        <span className="section-icon section-icon-quiet" aria-hidden="true">
+          <ArchiveIcon />
+        </span>
+        <h3 id="archived-heading" className="section-title section-title-quiet">
+          Archived decks
+        </h3>
+      </div>
       <p className="field-hint">
         Kept for your history. An archived deck isn't in your deck list and can't be reviewed or
         changed, but unarchiving it brings it back with its cards and review history unchanged.
@@ -665,7 +711,7 @@ function ArchivedDeckItem({
   }
 
   return (
-    <div className="card-item">
+    <div className="card-item card-item-recovery">
       <div>
         {/* A heading, like an active deck's name, so screen-reader
             users can reach archived decks by heading navigation. */}
@@ -673,14 +719,19 @@ function ArchivedDeckItem({
           {deck.name}
         </h4>
         {deck.description && <p className="deck-description">{deck.description}</p>}
+        <p className="item-meta">
+          {`Archived ${archivedOn} · ${cards} ${cards === 1 ? "card" : "cards"} kept`}
+        </p>
       </div>
-      <p className="field-hint">
-        {`Archived ${archivedOn} · ${cards} ${cards === 1 ? "card" : "cards"} kept`}
-      </p>
 
       {confirming ? (
-        <div className="card-item-confirm">
-          <p ref={questionRef} id={`${nameId}-question`} className="notice" tabIndex={-1}>
+        <div className="confirm confirm-calm">
+          <p
+            ref={questionRef}
+            id={`${nameId}-question`}
+            className="confirm-question"
+            tabIndex={-1}
+          >
             {`Unarchive ${deck.name}? It goes back in your deck list with the same cards and ` +
               "review history, and its cards become due again on the dates they already had. " +
               "No review starts, and cards you deleted stay deleted until you restore them."}
@@ -691,7 +742,7 @@ function ArchivedDeckItem({
                 otherwise every one of these reads identically. */}
             <button
               type="button"
-              className="button"
+              className="button button-primary button-small"
               aria-describedby={`${nameId} ${nameId}-question`}
               aria-disabled={unarchiving}
               onClick={confirmUnarchive}
@@ -700,7 +751,7 @@ function ArchivedDeckItem({
             </button>
             <button
               type="button"
-              className="button"
+              className="button button-small"
               aria-describedby={nameId}
               aria-disabled={unarchiving}
               onClick={() => {
@@ -715,14 +766,15 @@ function ArchivedDeckItem({
           </p>
         </div>
       ) : (
-        <div className="deck-actions">
+        <div className="deck-actions item-actions">
           <button
             ref={unarchiveRef}
             type="button"
-            className="button"
+            className="button button-small"
             aria-describedby={nameId}
             onClick={() => setConfirming(true)}
           >
+            <RestoreIcon />
             Unarchive deck
           </button>
         </div>
@@ -739,11 +791,14 @@ function ArchivedDeckItem({
 
 function DeckCard({
   deck,
+  prominent,
   onStart,
   onOpen,
   onChanged,
 }: {
   deck: Deck;
+  /** This deck's Start review is the dashboard's main action. */
+  prominent: boolean;
   onStart: (sessionId: number, deckName: string) => void;
   onOpen: (deckId: number) => void;
   onChanged: () => void;
@@ -763,37 +818,41 @@ function DeckCard({
         {deck.description && <p className="deck-description">{deck.description}</p>}
       </div>
 
-      <p className="deck-due">
-        {due === 0
-          ? "No cards due right now"
-          : `${due} ${due === 1 ? "card" : "cards"} due`}
-      </p>
+      <div className="deck-footer">
+        <p className={due === 0 ? "pill" : "pill pill-due"}>
+          {due > 0 && <span className="dot" aria-hidden="true" />}
+          {due === 0
+            ? "No cards due right now"
+            : `${due} ${due === 1 ? "card" : "cards"} due`}
+        </p>
 
-      {(due > 0 || canOpen) && (
-        <div className="deck-actions">
-          {due > 0 && (
-            <button
-              type="button"
-              className="button button-primary"
-              aria-describedby={nameId}
-              aria-disabled={starting}
-              onClick={start}
-            >
-              Start review
-            </button>
-          )}
-          {canOpen && (
-            <button
-              type="button"
-              className="button"
-              aria-describedby={nameId}
-              onClick={() => onOpen(deck.id)}
-            >
-              Open deck
-            </button>
-          )}
-        </div>
-      )}
+        {(due > 0 || canOpen) && (
+          <div className="deck-actions">
+            {due > 0 && (
+              <button
+                type="button"
+                className={prominent ? "button button-primary" : "button button-tonal"}
+                aria-describedby={nameId}
+                aria-disabled={starting}
+                onClick={start}
+              >
+                <PlayIcon />
+                Start review
+              </button>
+            )}
+            {canOpen && (
+              <button
+                type="button"
+                className="button"
+                aria-describedby={nameId}
+                onClick={() => onOpen(deck.id)}
+              >
+                Open deck
+              </button>
+            )}
+          </div>
+        )}
+      </div>
 
       {error && (
         <p className="message-error" role="alert">

@@ -15,12 +15,15 @@ type SessionState =
   | { status: "due"; card: Flashcard; progress: SessionProgress }
   | { status: "completed"; cardsReviewed: number };
 
-/** The four answer buttons, with the number key that presses each one. */
-const RATINGS: { value: Rating; label: string; key: string }[] = [
-  { value: 1, label: "Again", key: "1" },
-  { value: 2, label: "Hard", key: "2" },
-  { value: 3, label: "Good", key: "3" },
-  { value: 4, label: "Easy", key: "4" },
+/**
+ * The four answer buttons, with the number key that presses each one and the
+ * class that colours it.
+ */
+const RATINGS: { value: Rating; label: string; key: string; tone: string }[] = [
+  { value: 1, label: "Again", key: "1", tone: "rating-again" },
+  { value: 2, label: "Hard", key: "2", tone: "rating-hard" },
+  { value: 3, label: "Good", key: "3", tone: "rating-good" },
+  { value: 4, label: "Easy", key: "4", tone: "rating-easy" },
 ];
 
 /** Fetches the session's next card and describes the outcome; never rejects. */
@@ -79,12 +82,12 @@ export function ReviewSession({
   // focus (the question, the completion message, or the error).
   return (
     <section className="session" aria-labelledby="session-heading">
-      <h2 id="session-heading" className="section-title">
-        Reviewing {deckName}
+      <h2 id="session-heading" className="session-title">
+        <span className="session-kicker">Reviewing</span> {deckName}
       </h2>
 
       {state.status === "loading" && (
-        <p className="message" role="status">
+        <p className="loading" role="status">
           Loading the next card…
         </p>
       )}
@@ -118,6 +121,7 @@ export function ReviewSession({
         <Message
           focus
           tone="status"
+          done
           text={
             <>
               <strong className="message-title">Session complete.</strong>
@@ -253,21 +257,22 @@ function Card({
   }, [revealed]);
 
   return (
-    <article className="card">
-      <section
-        ref={questionRef}
-        className="card-side"
-        tabIndex={-1}
-        aria-labelledby="session-progress card-front-label"
-      >
-        <h3 id="card-front-label" className="side-label">
-          Question
-        </h3>
-        <p className="card-text">{card.front}</p>
-      </section>
+    <article className="review">
+      {/* The card itself: the question, and the answer under it once shown. */}
+      <div className="review-card">
+        <section
+          ref={questionRef}
+          className="card-side"
+          tabIndex={-1}
+          aria-labelledby="session-progress card-front-label"
+        >
+          <h3 id="card-front-label" className="side-label">
+            Question
+          </h3>
+          <p className="card-text">{card.front}</p>
+        </section>
 
-      {revealed ? (
-        <>
+        {revealed && (
           <section
             ref={answerRef}
             className="card-side card-back"
@@ -279,59 +284,62 @@ function Card({
             </h3>
             <p className="card-text">{card.back}</p>
           </section>
+        )}
+      </div>
 
-          <div
-            className="rating"
-            role="group"
-            aria-labelledby="rating-prompt"
-            aria-busy={saving}
-          >
-            <p id="rating-prompt" className="rating-prompt">
-              How well did you remember it?
-            </p>
-            <div className="rating-buttons">
-              {RATINGS.map(({ value, label, key }) => (
-                // `aria-disabled` rather than `disabled`: a disabled button
-                // drops keyboard focus, which would strand keyboard users.
-                <button
-                  key={value}
-                  type="button"
-                  className="button"
-                  aria-disabled={saving}
-                  aria-keyshortcuts={key}
-                  onClick={() => rate(value)}
-                >
+      {revealed ? (
+        <div className="rating" role="group" aria-labelledby="rating-prompt" aria-busy={saving}>
+          <p id="rating-prompt" className="rating-prompt">
+            How well did you remember it?
+          </p>
+          <div className="rating-buttons">
+            {RATINGS.map(({ value, label, key, tone }) => (
+              // `aria-disabled` rather than `disabled`: a disabled button
+              // drops keyboard focus, which would strand keyboard users.
+              <button
+                key={value}
+                type="button"
+                className={`button rating-button ${tone}`}
+                aria-disabled={saving}
+                aria-keyshortcuts={key}
+                onClick={() => rate(value)}
+              >
+                <span className="rating-label">
+                  <span className="dot" aria-hidden="true" />
                   {label}
-                  {/* The shortcut is on `aria-keyshortcuts` already, so this
-                      copy of it is decorative. */}
-                  <span className="rating-key" aria-hidden="true">
-                    {key}
-                  </span>
-                </button>
-              ))}
-            </div>
-            <p className="rating-status" role="status">
-              {saving ? "Saving…" : ""}
-            </p>
-            {saveError && (
-              <p className="message-error" role="alert">
-                {saveError} Choose a rating to try again.
-              </p>
-            )}
+                </span>
+                {/* The shortcut is on `aria-keyshortcuts` already, so this
+                    copy of it is decorative. */}
+                <span className="kbd" aria-hidden="true">
+                  {key}
+                </span>
+              </button>
+            ))}
           </div>
-        </>
+          <p className="rating-status" role="status">
+            {saving ? "Saving…" : ""}
+          </p>
+          {saveError && (
+            <p className="message-error" role="alert">
+              {saveError} Choose a rating to try again.
+            </p>
+          )}
+          <p className="shortcut-hint" aria-hidden="true">
+            Press <span className="kbd">1</span>–<span className="kbd">4</span> to rate
+          </p>
+        </div>
       ) : (
         <div className="reveal">
           <button
             type="button"
-            className="button button-primary"
+            className="button button-primary button-large"
             aria-keyshortcuts="Space Enter"
             onClick={() => setRevealed(true)}
           >
             Reveal answer
           </button>
           <p className="shortcut-hint" aria-hidden="true">
-            or press Space
+            or press <span className="kbd">Space</span> or <span className="kbd">Enter</span>
           </p>
         </div>
       )}

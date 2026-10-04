@@ -3,6 +3,7 @@ import { Dashboard } from "./Dashboard";
 import { DeckDetail } from "./DeckDetail";
 import { NotesArea } from "./Notes";
 import { ReviewSession } from "./ReviewSession";
+import { LogoIcon } from "./icons";
 import "./App.css";
 
 type View =
@@ -32,10 +33,21 @@ function App() {
   }
 
   return (
-    <main className="app">
-      <h1 className="app-title">Synapse</h1>
+    <div className="app">
+      <header className="topbar">
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true">
+            <LogoIcon />
+          </span>
+          <h1 className="app-title">Synapse</h1>
+        </div>
+        <p className="local-badge">
+          <span className="dot" aria-hidden="true" />
+          Stored on this computer
+        </p>
+      </header>
 
-      <div className="stage">
+      <main className="stage">
         {view.screen === "decks" && (
           <Dashboard
             key={restores}
@@ -86,8 +98,8 @@ function App() {
             onOpenDeck={(deckId) => show({ screen: "deck", deckId, justCreated: false })}
           />
         )}
-      </div>
-    </main>
+      </main>
+    </div>
   );
 }
 
