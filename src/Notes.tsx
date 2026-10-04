@@ -187,7 +187,7 @@ function NoteLibrary({
             Retry
           </button>
           <button type="button" className="button" onClick={onBack}>
-            Back to decks
+            Back to Study Desk
           </button>
         </div>
       </Message>
@@ -252,7 +252,7 @@ function NoteList({
     <section ref={screenRef} className="notes" tabIndex={-1} aria-labelledby="notes-heading">
       <button type="button" className="button button-quiet back-button" onClick={onBack}>
         <ArrowLeftIcon />
-        Back to decks
+        Back to Study Desk
       </button>
 
       <div className="page-header">
@@ -763,7 +763,7 @@ function NoteView({
             </p>
           </div>
         ) : (
-          <div className="deck-actions">
+          <div className="deck-actions note-toolbar">
             <button
               ref={editRef}
               type="button"
@@ -953,7 +953,7 @@ function CardFromNote({
       <Message
         focus
         tone="status"
-        text="You don't have a deck to add cards to yet. Create one from the dashboard first; the Sample deck can't take new cards."
+        text="You don't have a deck to add cards to yet. Create one on the Study Desk first; the Sample deck can't take new cards."
       >
         <button type="button" className="button" onClick={onCancel}>
           Back to note

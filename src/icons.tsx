@@ -119,6 +119,16 @@ export function NoteIcon() {
   );
 }
 
+/** A desk laid out in panels: the Study Desk. */
+export function DeskIcon() {
+  return (
+    <Icon>
+      <rect x="3.5" y="4" width="17" height="16" rx="2.5" />
+      <path d="M9.5 4v16M9.5 11h11" />
+    </Icon>
+  );
+}
+
 /** Stacked cards: a deck. */
 export function DeckIcon() {
   return (

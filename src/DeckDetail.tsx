@@ -141,7 +141,7 @@ export function DeckDetail({
             Retry
           </button>
           <button type="button" className="button" onClick={onBack}>
-            Back to decks
+            Back to Study Desk
           </button>
         </div>
       </Message>
@@ -247,22 +247,20 @@ function DeckView({
   const editFocusId = focus.to === "editCard" ? focus.cardId : null;
   const cards = deck.cardCount;
   const due = deck.dueCount;
+  const deleted = deck.deletedCards.length;
 
   return (
     <section ref={screenRef} className="deck-detail" tabIndex={-1} aria-labelledby="deck-detail-name">
       <button type="button" className="button button-quiet back-button" onClick={onBack}>
         <ArrowLeftIcon />
-        Back to decks
+        Back to Study Desk
       </button>
 
-      <article className="card">
-        <div>
-          <h2 id="deck-detail-name" className="page-title">
-            {deck.name}
-          </h2>
-          {deck.description && <p className="deck-description">{deck.description}</p>}
-        </div>
-
+      <div className="detail-header">
+        <h2 id="deck-detail-name" className="page-title">
+          {deck.name}
+        </h2>
+        {deck.description && <p className="page-intro">{deck.description}</p>}
         <div className="stat-row">
           <p className="pill">
             {cards === 0 ? "No cards yet" : `${cards} ${cards === 1 ? "card" : "cards"} in total`}
@@ -273,52 +271,57 @@ function DeckView({
               ? "No cards due right now"
               : `${due} ${due === 1 ? "card" : "cards"} due`}
           </p>
-        </div>
-
-        {notice && (
-          <p ref={noticeRef} className="notice" role="status" tabIndex={-1}>
-            {notice}
-          </p>
-        )}
-
-        {/* The main action comes first: reviewing when cards are due,
-            otherwise adding one. */}
-        <div className="deck-actions">
-          {due > 0 && (
-            <button
-              type="button"
-              className="button button-primary button-large"
-              aria-describedby="deck-detail-name"
-              aria-disabled={starting}
-              onClick={start}
-            >
-              <PlayIcon />
-              Start review
-            </button>
+          {deleted > 0 && (
+            <p className="pill">{`${deleted} deleted ${deleted === 1 ? "card" : "cards"}`}</p>
           )}
-          <button
-            ref={addRef}
-            type="button"
-            className={due > 0 ? "button button-large" : "button button-primary button-large"}
-            onClick={onAdd}
-          >
-            <PlusIcon />
-            Add card
-          </button>
         </div>
+      </div>
 
-        {error && (
-          <p className="message-error" role="alert">
-            {error}
-          </p>
+      {notice && (
+        <p ref={noticeRef} className="notice" role="status" tabIndex={-1}>
+          {notice}
+        </p>
+      )}
+
+      {/* The main action comes first: reviewing when cards are due,
+          otherwise adding one. */}
+      <div className="action-row">
+        {due > 0 && (
+          <button
+            type="button"
+            className="button button-primary button-large"
+            aria-describedby="deck-detail-name"
+            aria-disabled={starting}
+            onClick={start}
+          >
+            <PlayIcon />
+            Start review
+          </button>
         )}
-      </article>
+        <button
+          ref={addRef}
+          type="button"
+          className={due > 0 ? "button button-large" : "button button-primary button-large"}
+          onClick={onAdd}
+        >
+          <PlusIcon />
+          Add card
+        </button>
+      </div>
 
-      {deck.cards.length > 0 && (
-        <section className="cards" aria-labelledby="cards-heading">
-          <h3 id="cards-heading" className="section-title">
-            Cards
-          </h3>
+      {error && (
+        <p className="message-error" role="alert">
+          {error}
+        </p>
+      )}
+
+      <section className="cards" aria-labelledby="cards-heading">
+        <h3 id="cards-heading" className="section-title">
+          Cards <span className="count">{cards}</span>
+        </h3>
+        {deck.cards.length === 0 ? (
+          <p className="empty">Choose Add card to write this deck's first card.</p>
+        ) : (
           <ul className="card-list">
             {deck.cards.map((card) => (
               <li key={card.id}>
@@ -332,8 +335,8 @@ function DeckView({
               </li>
             ))}
           </ul>
-        </section>
-      )}
+        )}
+      </section>
 
       {deck.deletedCards.length > 0 && (
         <DeletedCardList
@@ -421,7 +424,7 @@ function ManageDeck({
         <div className="confirm">
           <p ref={questionRef} className="confirm-question" tabIndex={-1}>
             Archive this deck? It will leave your deck list and can't be reviewed or changed. Its
-            cards and review history are kept, and you can unarchive it from your deck list later.
+            cards and review history are kept, and you can unarchive it from Archived decks later.
           </p>
           <div className="deck-actions">
             <button
@@ -524,6 +527,23 @@ function RenameDeckForm({
   );
 }
 
+/**
+ * A card's full front and back, each beside its label. `frontId` lets the
+ * card's buttons name it.
+ */
+function CardText({ frontId, front, back }: { frontId: string; front: string; back: string }) {
+  return (
+    <div className="card-sides">
+      <p className="side-label">Front</p>
+      <p id={frontId} className="card-item-text card-item-front">
+        {front}
+      </p>
+      <p className="side-label">Back</p>
+      <p className="card-item-text card-item-back">{back}</p>
+    </div>
+  );
+}
+
 /** One card in the list: its full text, Edit, and a two-step Delete. */
 function CardItem({
   card,
@@ -586,17 +606,8 @@ function CardItem({
   }
 
   return (
-    <div className="card-item">
-      <div>
-        <p className="side-label">Front</p>
-        <p id={frontId} className="card-item-text card-item-front">
-          {card.front}
-        </p>
-      </div>
-      <div className="card-item-back">
-        <p className="side-label">Back</p>
-        <p className="card-item-text">{card.back}</p>
-      </div>
+    <div className="card-item card-row">
+      <CardText frontId={frontId} front={card.front} back={card.back} />
 
       {confirming ? (
         <div className="confirm">
@@ -634,7 +645,7 @@ function CardItem({
           <button
             ref={editRef}
             type="button"
-            className="button button-small"
+            className="button button-quiet button-small"
             aria-describedby={frontId}
             onClick={onEdit}
           >
@@ -684,7 +695,7 @@ function DeletedCardList({
           <RestoreIcon />
         </span>
         <h3 id="deleted-cards-heading" className="section-title section-title-quiet">
-          Deleted cards
+          Deleted cards <span className="count">{cards.length}</span>
         </h3>
       </div>
       <p className="field-hint">
@@ -762,16 +773,7 @@ function DeletedCardItem({
 
   return (
     <div className="card-item card-item-recovery">
-      <div>
-        <p className="side-label">Front</p>
-        <p id={frontId} className="card-item-text card-item-front">
-          {card.front}
-        </p>
-      </div>
-      <div className="card-item-back">
-        <p className="side-label">Back</p>
-        <p className="card-item-text">{card.back}</p>
-      </div>
+      <CardText frontId={frontId} front={card.front} back={card.back} />
       <p className="item-meta">{`Deleted ${formatDateTime(card.deletedAt)}`}</p>
 
       {confirming ? (

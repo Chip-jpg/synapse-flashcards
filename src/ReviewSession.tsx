@@ -99,7 +99,7 @@ export function ReviewSession({
               Retry
             </button>
             <button type="button" className="button" onClick={onExit}>
-              Back to decks
+              Back to Study Desk
             </button>
           </div>
         </Message>
@@ -130,7 +130,7 @@ export function ReviewSession({
           }
         >
           <button type="button" className="button button-primary" onClick={onExit}>
-            Back to decks
+            Back to Study Desk
           </button>
         </Message>
       )}

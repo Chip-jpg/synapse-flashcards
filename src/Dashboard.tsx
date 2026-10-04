@@ -1,47 +1,28 @@
-import { useEffect, useRef, useState } from "react";
-import {
-  cancelImport,
-  confirmImport,
-  exportData,
-  getArchivedDecks,
-  getDecks,
-  prepareImport,
-  toCommandError,
-  unarchiveDeck,
-  type ArchivedDeck,
-  type Deck,
-  type DeckDetail,
-} from "./api";
+import { useEffect, useState } from "react";
+import { getDecks, toCommandError, type Deck, type DeckDetail } from "./api";
 import { CreateDeckForm } from "./CreateDeckForm";
-import {
-  ArchiveIcon,
-  ArrowRightIcon,
-  BookIcon,
-  DatabaseIcon,
-  DownloadIcon,
-  PlayIcon,
-  PlusIcon,
-  RestoreIcon,
-  UploadIcon,
-} from "./icons";
-import { formatDateTime, Message, useFocusOnMount } from "./ui";
+import { ArrowRightIcon, BookIcon, CheckIcon, PlayIcon, PlusIcon } from "./icons";
+import { Message, useFocusOnMount } from "./ui";
 import { useStartReview } from "./useStartReview";
 
 type DecksState =
   | { status: "loading" }
   | { status: "error"; message: string }
-  | { status: "ready"; decks: Deck[]; archived: ArchivedDeck[] };
+  | { status: "ready"; decks: Deck[] };
 
-/** Fetches the active and archived decks and describes the outcome; never rejects. */
+/** Fetches the active decks and describes the outcome; never rejects. */
 async function loadDecks(): Promise<DecksState> {
   try {
-    const [decks, archived] = await Promise.all([getDecks(), getArchivedDecks()]);
-    return { status: "ready", decks, archived };
+    return { status: "ready", decks: await getDecks() };
   } catch (err) {
     return { status: "error", message: toCommandError(err).message };
   }
 }
 
+/**
+ * The Study Desk: the deck due for review first, every active deck with its
+ * due count, creating a deck, and the way into notes.
+ */
 export function Dashboard({
   focusOnLoad,
   notice: initialNotice,
@@ -50,7 +31,6 @@ export function Dashboard({
   onOpen,
   onCreated,
   onOpenNotes,
-  onRestored,
 }: {
   focusOnLoad: boolean;
   /** A confirmation to announce when the dashboard appears (e.g. after archiving). */
@@ -61,8 +41,6 @@ export function Dashboard({
   onOpen: (deckId: number) => void;
   onCreated: (deck: DeckDetail) => void;
   onOpenNotes: () => void;
-  /** A backup replaced all study data, so every screen must reload. */
-  onRestored: (fileName: string) => void;
 }) {
   const [state, setState] = useState<DecksState>({ status: "loading" });
   // Bumping this re-runs the load effect (Retry, or refreshing counts).
@@ -72,10 +50,6 @@ export function Dashboard({
   const [cancelledCreate, setCancelledCreate] = useState(false);
   // Shown until the list reloads or the create form opens.
   const [notice, setNotice] = useState(initialNotice);
-  // While a backup is being checked, waits for confirmation, or is being
-  // restored, the deck list is inert: nothing in it may start work against a
-  // database that is about to be replaced, or leave this screen mid-restore.
-  const [importing, setImporting] = useState(false);
 
   useEffect(() => {
     let current = true;
@@ -88,15 +62,13 @@ export function Dashboard({
   }, [attempt]);
 
   /**
-   * Reloads both deck lists, announcing `notice` and giving it focus if there
-   * is one. Goes back to "loading" first: until the fresh lists arrive the old
-   * ones are wrong, and leaving a just-unarchived deck under *Archived decks*
-   * with a live Unarchive button would invite a second, doomed press.
+   * Reloads the deck list. Goes back to "loading" first: until the fresh list
+   * arrives the old due counts are wrong.
    */
-  function reload(notice: string | null = null) {
+  function reload() {
     setState({ status: "loading" });
     setCancelledCreate(false);
-    setNotice(notice);
+    setNotice(null);
     setAttempt((n) => n + 1);
   }
 
@@ -142,121 +114,55 @@ export function Dashboard({
   }
 
   return (
-    <>
-      <DeckList
-        decks={state.decks}
-        archived={state.archived}
-        notice={notice}
-        focus={focus === "notes" ? null : focus}
-        inert={importing}
-        onCreate={() => {
-          setNotice(null);
-          setCreating(true);
-        }}
-        onStart={onStart}
-        onOpen={onOpen}
-        onChanged={() => reload()}
-        onUnarchived={(name) =>
-          reload(`${name} unarchived. It's back in your decks with its cards and review history.`)
-        }
-        onStale={() =>
-          // Unarchiving failed because the deck isn't archived after all. Say
-          // so, rather than reloading silently and leaving the press unexplained.
-          reload("That deck wasn't archived after all. Here are your decks as they are now.")
-        }
-      />
-      <NotesLink focus={focus === "notes"} inert={importing} onOpen={onOpenNotes} />
-      {/* Its own section: exporting and restoring are about all your data, not about decks. */}
-      <YourData onImporting={setImporting} onRestored={onRestored} />
-    </>
+    <StudyDesk
+      decks={state.decks}
+      notice={notice}
+      focus={focus}
+      onCreate={() => {
+        setNotice(null);
+        setCreating(true);
+      }}
+      onStart={onStart}
+      onOpen={onOpen}
+      onOpenNotes={onOpenNotes}
+      onChanged={() => reload()}
+    />
   );
 }
 
-/** The way into the notes area. Inert, like the deck list, while an import runs. */
-function NotesLink({
-  focus,
-  inert,
-  onOpen,
-}: {
-  focus: boolean;
-  inert: boolean;
-  onOpen: () => void;
-}) {
-  const openRef = useFocusOnMount<HTMLButtonElement>(focus);
-
-  return (
-    <section className="card" aria-labelledby="notes-link-heading" inert={inert}>
-      <div className="section-heading">
-        <span className="section-icon" aria-hidden="true">
-          <BookIcon />
-        </span>
-        <h2 id="notes-link-heading" className="section-title">
-          Notes
-        </h2>
-      </div>
-      <p id="notes-link-hint" className="field-hint">
-        Type up your own study notes and keep them here, then write cards from them.
-      </p>
-      <button
-        ref={openRef}
-        type="button"
-        className="button"
-        aria-describedby="notes-link-hint"
-        onClick={onOpen}
-      >
-        Open notes
-        <ArrowRightIcon />
-      </button>
-    </section>
-  );
-}
-
-function DeckList({
+function StudyDesk({
   decks,
-  archived,
   notice,
   focus,
-  inert,
   onCreate,
   onStart,
   onOpen,
+  onOpenNotes,
   onChanged,
-  onUnarchived,
-  onStale,
 }: {
   decks: Deck[];
-  archived: ArchivedDeck[];
   notice: string | null;
-  /** What takes focus when the list appears, if anything. */
-  focus: "list" | "create" | "notice" | null;
-  /** An import is under way, so none of this can be used. */
-  inert: boolean;
+  /** What takes focus when the desk appears, if anything. */
+  focus: "list" | "create" | "notice" | "notes" | null;
   onCreate: () => void;
   onStart: (sessionId: number, deckName: string) => void;
   onOpen: (deckId: number) => void;
+  onOpenNotes: () => void;
   onChanged: () => void;
-  onUnarchived: (deckName: string) => void;
-  onStale: () => void;
 }) {
   const ref = useFocusOnMount<HTMLElement>(focus === "list");
   const createRef = useFocusOnMount<HTMLButtonElement>(focus === "create");
   const noticeRef = useFocusOnMount<HTMLParagraphElement>(focus === "notice");
-  // Only the first deck with cards due gets the filled Start review button, so
-  // the screen has one obvious place to begin; the others are quieter.
-  const firstDueId = decks.find((deck) => deck.dueCount > 0)?.id;
+  // The first deck with cards due is the one place to begin, so it leads the
+  // desk with the screen's only filled Start review button.
+  const next = decks.find((deck) => deck.dueCount > 0);
 
   return (
-    <section
-      ref={ref}
-      className="decks"
-      tabIndex={-1}
-      aria-labelledby="decks-heading"
-      inert={inert}
-    >
+    <section ref={ref} className="desk" tabIndex={-1} aria-labelledby="desk-heading">
       <div className="page-header">
         <div className="page-heading">
-          <h2 id="decks-heading" className="page-title">
-            Decks
+          <h2 id="desk-heading" className="page-title">
+            Study Desk
           </h2>
           <p className="page-intro">
             Review the cards that are due, or open a deck you made to add and edit its cards.
@@ -272,533 +178,164 @@ function DeckList({
           {notice}
         </p>
       )}
+
       {decks.length === 0 ? (
         <p className="empty" role="status">
           No decks yet. Choose Create deck to make one.
         </p>
       ) : (
-        <ul className="deck-list">
-          {decks.map((deck) => (
-            <li key={deck.id}>
-              <DeckCard
-                deck={deck}
-                prominent={deck.id === firstDueId}
-                onStart={onStart}
-                onOpen={onOpen}
-                onChanged={onChanged}
-              />
-            </li>
-          ))}
-        </ul>
+        <>
+          {next ? (
+            <NextReview deck={next} onStart={onStart} onOpen={onOpen} onChanged={onChanged} />
+          ) : (
+            <NothingDue />
+          )}
+
+          <section className="deck-section" aria-labelledby="deck-list-heading">
+            <h3 id="deck-list-heading" className="section-title">
+              Your decks <span className="count">{decks.length}</span>
+            </h3>
+            <ul className="deck-list">
+              {decks.map((deck) => (
+                <li key={deck.id}>
+                  <DeckRow deck={deck} onStart={onStart} onOpen={onOpen} onChanged={onChanged} />
+                </li>
+              ))}
+            </ul>
+          </section>
+        </>
       )}
-      {archived.length > 0 && (
-        <ArchivedDeckList decks={archived} onUnarchived={onUnarchived} onStale={onStale} />
-      )}
+
+      <NotesLink focus={focus === "notes"} onOpen={onOpenNotes} />
     </section>
   );
 }
 
-/**
- * Backing up and restoring everything Synapse stores. Rust opens the file
- * windows and does all the work. Only one of the two runs at a time.
- */
-function YourData({
-  onImporting,
-  onRestored,
-}: {
-  /** Whether an import is under way (checking, waiting for confirmation, or restoring). */
-  onImporting: (importing: boolean) => void;
-  onRestored: (fileName: string) => void;
-}) {
-  const [running, setRunning] = useState<"export" | "import" | null>(null);
-
-  return (
-    <section className="card" aria-labelledby="data-heading">
-      <div className="section-heading">
-        <span className="section-icon" aria-hidden="true">
-          <DatabaseIcon />
-        </span>
-        <h2 id="data-heading" className="section-title">
-          Your data
-        </h2>
-      </div>
-      <ExportData
-        blocked={running === "import"}
-        onRunning={(busy) => setRunning(busy ? "export" : null)}
-      />
-      <ImportData
-        blocked={running === "export"}
-        onRunning={(busy) => setRunning(busy ? "import" : null)}
-        onImporting={onImporting}
-        onRestored={onRestored}
-      />
-    </section>
-  );
-}
-
-/** What the last export attempt did. Cancelling returns to `idle` silently. */
-type ExportState =
-  | { kind: "idle" }
-  | { kind: "busy" }
-  | { kind: "saved"; fileName: string }
-  | { kind: "error"; message: string };
-
-/** Saving a backup of everything Synapse stores. Rust asks where it goes. */
-function ExportData({
-  blocked,
-  onRunning,
-}: {
-  /** An import is running, so this waits. */
-  blocked: boolean;
-  onRunning: (running: boolean) => void;
-}) {
-  const [state, setState] = useState<ExportState>({ kind: "idle" });
-  // The button stays focusable while exporting (so focus is never lost), so
-  // this guards against a second export starting on a repeated Enter.
-  const busyRef = useRef(false);
-
-  async function runExport() {
-    if (busyRef.current || blocked) return;
-    busyRef.current = true;
-    onRunning(true);
-    setState({ kind: "busy" });
-
-    try {
-      const outcome = await exportData();
-      // Cancelling is a normal choice, not a failure, so say nothing.
-      setState(
-        outcome.status === "saved" ? { kind: "saved", fileName: outcome.fileName } : { kind: "idle" }
-      );
-    } catch (err) {
-      setState({ kind: "error", message: toCommandError(err).message });
-    }
-
-    busyRef.current = false;
-    onRunning(false);
-  }
-
-  // No `aria-busy` around this: it would hold back the status announcements.
-  return (
-    <div className="data-action">
-      <p id="export-hint" className="field-hint">
-        Save a copy of every deck, card, review, and note as a .zip file you keep.
-      </p>
-      <button
-        type="button"
-        className="button"
-        aria-describedby="export-hint"
-        aria-disabled={state.kind === "busy" || blocked}
-        onClick={runExport}
-      >
-        <DownloadIcon />
-        Export data
-      </button>
-      {/* Announced as it changes; empty between attempts (see `.form-status:empty`). */}
-      <p className="form-status" role="status">
-        {state.kind === "busy" && "Preparing your export…"}
-        {state.kind === "saved" && `Export saved as ${state.fileName}.`}
-      </p>
-      {state.kind === "error" && (
-        <p className="message-error" role="alert">
-          {state.message}
-        </p>
-      )}
-    </div>
-  );
-}
-
-/** A backup that passed Rust's checks and waits for the user's decision. */
-type CheckedBackup = { token: number; fileName: string; exportedAt: string };
-
-/** Where restoring a backup is up to. Cancelling returns to `idle` silently. */
-type ImportState =
-  | { kind: "idle" }
-  | { kind: "checking" }
-  | { kind: "confirm"; backup: CheckedBackup; restoring: boolean }
-  | { kind: "error"; message: string };
-
-/**
- * Restoring a backup, which replaces all study data. Rust checks the chosen
- * file completely first; nothing changes until the user confirms.
- */
-function ImportData({
-  blocked,
-  onRunning,
-  onImporting,
-  onRestored,
-}: {
-  /** An export is running, so this waits. */
-  blocked: boolean;
-  onRunning: (running: boolean) => void;
-  onImporting: (importing: boolean) => void;
-  onRestored: (fileName: string) => void;
-}) {
-  const [state, setState] = useState<ImportState>({ kind: "idle" });
-  // Blocks a second check or restore immediately, before the re-render lands.
-  const busyRef = useRef(false);
-  const importRef = useRef<HTMLButtonElement>(null);
-  const questionRef = useRef<HTMLParagraphElement>(null);
-  // Whether the question was ever opened, so only closing it moves focus.
-  const openedRef = useRef(false);
-  // The checked backup still waiting for an answer, if any.
-  const waitingTokenRef = useRef<number | null>(null);
-  const confirming = state.kind === "confirm";
-  const checking = state.kind === "checking";
-  const restoring = state.kind === "confirm" && state.restoring;
-  const importing = checking || confirming;
-
-  useEffect(() => {
-    onImporting(importing);
-  }, [importing, onImporting]);
-
-  // Whether this is still on screen, for a check that finishes after it isn't.
-  const mountedRef = useRef(false);
-
-  // Leaving this screen while a backup still waits for an answer forgets it,
-  // so its checked copy is removed now rather than at the next import.
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      const token = waitingTokenRef.current;
-      if (token !== null) cancelImport(token).catch(() => undefined);
-    };
-  }, []);
-
-  // As with archiving a deck: focus moves to the question when it opens (so a
-  // repeated Enter can't replace anything), and back to "Import data" when it
-  // closes, whether the user kept their data or the restore failed.
-  useEffect(() => {
-    if (confirming) {
-      openedRef.current = true;
-      questionRef.current?.focus();
-    } else if (openedRef.current) {
-      importRef.current?.focus();
-    }
-  }, [confirming]);
-
-  function setBusy(busy: boolean) {
-    busyRef.current = busy;
-    onRunning(busy);
-  }
-
-  async function choose() {
-    if (busyRef.current || blocked) return;
-    setBusy(true);
-    setState({ kind: "checking" });
-
-    try {
-      const check = await prepareImport();
-      if (!mountedRef.current) {
-        // The screen closed during the check (e.g. a review that was already
-        // starting opened), so nobody can answer: remove the checked copy.
-        if (check.status === "ready") cancelImport(check.token).catch(() => undefined);
-        return;
-      }
-      waitingTokenRef.current = check.status === "ready" ? check.token : null;
-      setState(
-        check.status === "ready"
-          ? {
-              kind: "confirm",
-              backup: {
-                token: check.token,
-                fileName: check.fileName,
-                exportedAt: check.exportedAt,
-              },
-              restoring: false,
-            }
-          : { kind: "idle" }
-      );
-    } catch (err) {
-      setState({ kind: "error", message: toCommandError(err).message });
-    }
-
-    setBusy(false);
-  }
-
-  async function restore(backup: CheckedBackup) {
-    // Never while an export is still reading the data being replaced.
-    if (busyRef.current || blocked) return;
-    setBusy(true);
-    // Confirming uses the token up, whether or not the restore succeeds.
-    waitingTokenRef.current = null;
-    setState({ kind: "confirm", backup, restoring: true });
-
-    try {
-      await confirmImport(backup.token);
-      onRestored(backup.fileName);
-      return; // Every screen reloads with the restored data.
-    } catch (err) {
-      setState({ kind: "error", message: toCommandError(err).message });
-    }
-
-    setBusy(false);
-  }
-
-  function keep(backup: CheckedBackup) {
-    if (busyRef.current) return;
-    waitingTokenRef.current = null;
-    setState({ kind: "idle" });
-    // Only removes Rust's checked copy; nothing was replaced, so there's
-    // nothing to report if it fails (the next import clears it anyway).
-    cancelImport(backup.token).catch(() => undefined);
-  }
-
-  // No `aria-busy` around this: it would hold back the status announcements.
-  return (
-    <div className="data-action">
-      <p id="import-hint" className="field-hint">
-        Replace everything in Synapse with a backup made by Export data. Synapse checks the file and
-        asks you to confirm before anything changes.
-      </p>
-
-      {state.kind === "confirm" ? (
-        <div className="confirm confirm-danger">
-          <p ref={questionRef} id="import-question" className="confirm-question" tabIndex={-1}>
-            {`Replace all your study data with ${state.backup.fileName}, exported ${formatDateTime(
-              state.backup.exportedAt
-            )}? Every deck, card, review, session, and note in Synapse now will be replaced by the backup's, and this can't be undone. To keep a copy of your current data, choose Keep current data and export it first.`}
-          </p>
-          <div className="deck-actions">
-            <button
-              type="button"
-              className="button button-danger"
-              aria-describedby="import-question"
-              aria-disabled={restoring || blocked}
-              onClick={() => restore(state.backup)}
-            >
-              Replace my data
-            </button>
-            <button
-              type="button"
-              className="button"
-              aria-disabled={restoring}
-              onClick={() => keep(state.backup)}
-            >
-              Keep current data
-            </button>
-          </div>
-        </div>
-      ) : (
-        <button
-          ref={importRef}
-          type="button"
-          className="button"
-          aria-describedby="import-hint"
-          aria-disabled={checking || blocked}
-          onClick={choose}
-        >
-          <UploadIcon />
-          Import data
-        </button>
-      )}
-
-      {/* Announced as it changes; empty between attempts (see `.form-status:empty`). */}
-      <p className="form-status" role="status">
-        {checking && "Checking the backup…"}
-        {restoring && "Restoring your backup…"}
-      </p>
-      {state.kind === "error" && (
-        <p className="message-error" role="alert">
-          {state.message}
-        </p>
-      )}
-    </div>
-  );
-}
-
-/**
- * Archived decks: history, and the only place they appear. They can't be
- * reviewed or changed while archived; Unarchive puts one back in the deck list
- * exactly as it was.
- */
-function ArchivedDeckList({
-  decks,
-  onUnarchived,
-  onStale,
-}: {
-  decks: ArchivedDeck[];
-  onUnarchived: (deckName: string) => void;
-  onStale: () => void;
-}) {
-  return (
-    <section className="cards section-quiet" aria-labelledby="archived-heading">
-      <div className="section-heading">
-        <span className="section-icon section-icon-quiet" aria-hidden="true">
-          <ArchiveIcon />
-        </span>
-        <h3 id="archived-heading" className="section-title section-title-quiet">
-          Archived decks
-        </h3>
-      </div>
-      <p className="field-hint">
-        Kept for your history. An archived deck isn't in your deck list and can't be reviewed or
-        changed, but unarchiving it brings it back with its cards and review history unchanged.
-        Cards you deleted stay deleted, and can be restored from the deck once it's back.
-      </p>
-      <ul className="card-list">
-        {decks.map((deck) => (
-          <li key={deck.id}>
-            <ArchivedDeckItem deck={deck} onUnarchived={onUnarchived} onStale={onStale} />
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-/** One archived deck, with the one action it has: a two-step Unarchive. */
-function ArchivedDeckItem({
+/** The first deck with cards due, offered as the place to begin. */
+function NextReview({
   deck,
-  onUnarchived,
-  onStale,
-}: {
-  deck: ArchivedDeck;
-  onUnarchived: (deckName: string) => void;
-  onStale: () => void;
-}) {
-  const [confirming, setConfirming] = useState(false);
-  const [unarchiving, setUnarchiving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // Blocks a second unarchive immediately, before the re-render lands.
-  const unarchivingRef = useRef(false);
-  const unarchiveRef = useRef<HTMLButtonElement>(null);
-  const questionRef = useRef<HTMLParagraphElement>(null);
-  // Whether the question was ever opened, so only closing it moves focus.
-  const openedRef = useRef(false);
-  const nameId = `archived-deck-${deck.id}-name`;
-  const cards = deck.cardCount;
-  const archivedOn = new Date(deck.archivedAt).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
-
-  // As with archiving a deck: the pressed button disappears either way, so
-  // focus follows — to the question when it opens (reading it, and keeping a
-  // repeated Enter from unarchiving), and back to Unarchive if it's kept.
-  useEffect(() => {
-    if (confirming) {
-      openedRef.current = true;
-      questionRef.current?.focus();
-    } else if (openedRef.current) {
-      unarchiveRef.current?.focus();
-    }
-  }, [confirming]);
-
-  async function confirmUnarchive() {
-    if (unarchivingRef.current) return;
-    unarchivingRef.current = true;
-    setUnarchiving(true);
-    setError(null);
-
-    try {
-      await unarchiveDeck(deck.id);
-      onUnarchived(deck.name);
-      return; // Both lists are replaced.
-    } catch (err) {
-      const failure = toCommandError(err);
-      if (failure.kind === "stale") {
-        // Not archived after all: reload to show what's really there.
-        onStale();
-        return;
-      }
-      setError(failure.message);
-    }
-
-    unarchivingRef.current = false;
-    setUnarchiving(false);
-  }
-
-  return (
-    <div className="card-item card-item-recovery">
-      <div>
-        {/* A heading, like an active deck's name, so screen-reader
-            users can reach archived decks by heading navigation. */}
-        <h4 id={nameId} className="archived-deck-name">
-          {deck.name}
-        </h4>
-        {deck.description && <p className="deck-description">{deck.description}</p>}
-        <p className="item-meta">
-          {`Archived ${archivedOn} · ${cards} ${cards === 1 ? "card" : "cards"} kept`}
-        </p>
-      </div>
-
-      {confirming ? (
-        <div className="confirm confirm-calm">
-          <p
-            ref={questionRef}
-            id={`${nameId}-question`}
-            className="confirm-question"
-            tabIndex={-1}
-          >
-            {`Unarchive ${deck.name}? It goes back in your deck list with the same cards and ` +
-              "review history, and its cards become due again on the dates they already had. " +
-              "No review starts, and cards you deleted stay deleted until you restore them."}
-          </p>
-          <div className="deck-actions">
-            {/* Both buttons name the deck as well as the question: several
-                archived decks can have their question open at once, and
-                otherwise every one of these reads identically. */}
-            <button
-              type="button"
-              className="button button-primary button-small"
-              aria-describedby={`${nameId} ${nameId}-question`}
-              aria-disabled={unarchiving}
-              onClick={confirmUnarchive}
-            >
-              Unarchive deck
-            </button>
-            <button
-              type="button"
-              className="button button-small"
-              aria-describedby={nameId}
-              aria-disabled={unarchiving}
-              onClick={() => {
-                if (!unarchiving) setConfirming(false);
-              }}
-            >
-              Keep archived
-            </button>
-          </div>
-          <p className="form-status" role="status">
-            {unarchiving ? "Unarchiving…" : ""}
-          </p>
-        </div>
-      ) : (
-        <div className="deck-actions item-actions">
-          <button
-            ref={unarchiveRef}
-            type="button"
-            className="button button-small"
-            aria-describedby={nameId}
-            onClick={() => setConfirming(true)}
-          >
-            <RestoreIcon />
-            Unarchive deck
-          </button>
-        </div>
-      )}
-
-      {error && (
-        <p className="message-error" role="alert">
-          {error}
-        </p>
-      )}
-    </div>
-  );
-}
-
-function DeckCard({
-  deck,
-  prominent,
   onStart,
   onOpen,
   onChanged,
 }: {
   deck: Deck;
-  /** This deck's Start review is the dashboard's main action. */
-  prominent: boolean;
+  onStart: (sessionId: number, deckName: string) => void;
+  onOpen: (deckId: number) => void;
+  onChanged: () => void;
+}) {
+  const { starting, error, start } = useStartReview(deck.id, deck.name, onStart, onChanged);
+  const due = deck.dueCount;
+
+  return (
+    <section className="focus-card" aria-labelledby="next-review-name">
+      {/* The name comes first, so moving by heading reaches it before its
+          details; the tag and count are drawn above it (see `.focus-meta`). */}
+      <div>
+        <h3 id="next-review-name" className="focus-title">
+          {deck.name}
+        </h3>
+        {deck.description && <p className="focus-description">{deck.description}</p>}
+      </div>
+      <div className="focus-meta">
+        <p className="tag tag-primary">Ready to review</p>
+        <p className="due-line">
+          <span className="dot" aria-hidden="true" />
+          {`${due} ${due === 1 ? "card" : "cards"} due`}
+        </p>
+      </div>
+      <div className="focus-actions">
+        <button
+          type="button"
+          className="button button-primary button-large focus-start"
+          aria-describedby="next-review-name"
+          aria-disabled={starting}
+          onClick={start}
+        >
+          <PlayIcon />
+          Start review
+        </button>
+        {/* The sample deck can be reviewed but not opened for editing. */}
+        {!deck.isSample && (
+          <button
+            type="button"
+            className="button button-large"
+            aria-describedby="next-review-name"
+            onClick={() => onOpen(deck.id)}
+          >
+            Open deck
+          </button>
+        )}
+      </div>
+      {error && (
+        <p className="message-error" role="alert">
+          {error}
+        </p>
+      )}
+    </section>
+  );
+}
+
+/** In place of the next review when no deck has cards due. */
+function NothingDue() {
+  return (
+    <section className="focus-card focus-card-calm" aria-labelledby="nothing-due-heading">
+      <div>
+        <h3 id="nothing-due-heading" className="focus-title">
+          No cards are due right now
+        </h3>
+        <p className="focus-description">
+          Cards become due again on the dates FSRS scheduled for them. In the meantime, you can
+          open a deck you made to add or edit cards.
+        </p>
+      </div>
+      <div className="focus-meta">
+        <p className="tag tag-sage">
+          <CheckIcon />
+          All caught up
+        </p>
+      </div>
+    </section>
+  );
+}
+
+/** The way into the notes area. */
+function NotesLink({ focus, onOpen }: { focus: boolean; onOpen: () => void }) {
+  const openRef = useFocusOnMount<HTMLButtonElement>(focus);
+
+  return (
+    <section className="panel panel-row" aria-labelledby="notes-link-heading">
+      <span className="section-icon section-icon-amber" aria-hidden="true">
+        <BookIcon />
+      </span>
+      <div className="panel-row-text">
+        <h3 id="notes-link-heading" className="section-title">
+          Notes
+        </h3>
+        <p id="notes-link-hint" className="field-hint">
+          Type up your own study notes and keep them here, then write cards from them.
+        </p>
+      </div>
+      <button
+        ref={openRef}
+        type="button"
+        className="button button-small"
+        aria-describedby="notes-link-hint"
+        onClick={onOpen}
+      >
+        Open notes
+        <ArrowRightIcon />
+      </button>
+    </section>
+  );
+}
+
+function DeckRow({
+  deck,
+  onStart,
+  onOpen,
+  onChanged,
+}: {
+  deck: Deck;
   onStart: (sessionId: number, deckName: string) => void;
   onOpen: (deckId: number) => void;
   onChanged: () => void;
@@ -810,49 +347,48 @@ function DeckCard({
   const canOpen = !deck.isSample;
 
   return (
-    <article className="card deck" aria-labelledby={nameId}>
-      <div>
-        <h3 id={nameId} className="deck-name">
+    <article className="deck-row" aria-labelledby={nameId}>
+      {/* The name comes first, so moving by heading reaches it before its due
+          count; the count is drawn above it (see `.deck-row-main`). */}
+      <div className="deck-row-main">
+        <h4 id={nameId} className="deck-name">
           {deck.name}
-        </h3>
-        {deck.description && <p className="deck-description">{deck.description}</p>}
-      </div>
-
-      <div className="deck-footer">
-        <p className={due === 0 ? "pill" : "pill pill-due"}>
+        </h4>
+        <p className={due === 0 ? "due-line due-line-idle" : "due-line"}>
           {due > 0 && <span className="dot" aria-hidden="true" />}
           {due === 0
             ? "No cards due right now"
             : `${due} ${due === 1 ? "card" : "cards"} due`}
         </p>
-
-        {(due > 0 || canOpen) && (
-          <div className="deck-actions">
-            {due > 0 && (
-              <button
-                type="button"
-                className={prominent ? "button button-primary" : "button button-tonal"}
-                aria-describedby={nameId}
-                aria-disabled={starting}
-                onClick={start}
-              >
-                <PlayIcon />
-                Start review
-              </button>
-            )}
-            {canOpen && (
-              <button
-                type="button"
-                className="button"
-                aria-describedby={nameId}
-                onClick={() => onOpen(deck.id)}
-              >
-                Open deck
-              </button>
-            )}
-          </div>
-        )}
+        {deck.description && <p className="deck-description">{deck.description}</p>}
       </div>
+
+      {(due > 0 || canOpen) && (
+        <div className="deck-actions">
+          {due > 0 && (
+            <button
+              type="button"
+              className="button button-tonal button-small"
+              aria-describedby={nameId}
+              aria-disabled={starting}
+              onClick={start}
+            >
+              <PlayIcon />
+              Start review
+            </button>
+          )}
+          {canOpen && (
+            <button
+              type="button"
+              className="button button-small"
+              aria-describedby={nameId}
+              onClick={() => onOpen(deck.id)}
+            >
+              Open deck
+            </button>
+          )}
+        </div>
+      )}
 
       {error && (
         <p className="message-error" role="alert">

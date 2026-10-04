@@ -79,13 +79,17 @@ thing that replaces it is *Import data*, and only after you confirm.
 
 ## Using it
 
-**Make a deck and some cards.** On the dashboard, *Create deck* → name it (a description is
+**Find your way around.** The sidebar has four places: the **Study Desk** (your decks, with the
+first one that has cards due at the top), **Notes**, **Archived decks**, and **Backup & restore**.
+In a narrow window it becomes a bar across the top.
+
+**Make a deck and some cards.** On the Study Desk, *Create deck* → name it (a description is
 optional) → *Open deck* → *Add card* → fill in front and back. Names must be unique ignoring case;
 line breaks inside a card are kept as you typed them.
 
 **Study.** Press *Start review* on any deck with cards due. Reveal the answer, then rate it. The
-session ends when nothing in that deck is due. Closing the app mid-session is safe — reopening the
-deck resumes it.
+session ends when nothing in that deck is due. Closing the app or leaving through the sidebar
+mid-session is safe — starting a review of that deck again resumes it.
 
 Above the card, *Card 2 of 5* and a bar show how far you've got. The card you're looking at counts
 towards the total, so the bar fills only once you finish the session. The total is read fresh with
@@ -109,32 +113,35 @@ review session starts. Cards in an archived deck can't be restored until the dec
 and the Sample deck's cards stay out of this entirely.
 
 **Rename or archive a deck.** Also on the deck screen. Archiving asks for confirmation, then moves
-the deck to *Archived decks* on the dashboard: it can't be reviewed, changed, or given new cards, and
-any unfinished session in it is closed. Its cards and history are kept, and its name stays taken.
+the deck to *Archived decks*: it can't be reviewed, changed, or given new cards, and any unfinished
+session in it is closed. Its cards and history are kept, and its name stays taken.
 
-**Unarchive a deck.** Under *Archived decks* on the dashboard, *Unarchive deck* asks for
-confirmation, then puts the deck back in your deck list exactly as it was: same name, description,
+**Unarchive a deck.** In *Archived decks*, *Unarchive deck* asks for confirmation, then puts the
+deck back on the Study Desk exactly as it was: same name, description,
 cards, FSRS state, review log, and sessions. Its cards become due again only on the dates they
 already had, no review session starts, and cards you deleted before archiving come back still
 deleted — you can restore them from the deck once it's back.
 
-**Export your data.** On the dashboard, *Your data* → *Export data*. Pick where to save the `.zip`.
+**Export your data.** *Backup & restore* → *Export data*. Pick where to save the `.zip`.
 It contains exactly two files: `manifest.json` (format, format version, schema version, app version,
 and export time) and `db/synapse.sqlite`, a complete snapshot of your database.
 
-**Restore a backup.** *Your data* → *Import data* → pick a `.zip` made by *Export data*. Synapse
+**Restore a backup.** *Backup & restore* → *Import data* → pick a `.zip` made by *Export data*. Synapse
 checks the whole file first — only its own export format is accepted, and anything else is refused
 with nothing changed. If the backup is sound, Synapse names it and asks whether to replace **all**
 your current decks, cards, reviews, sessions, and notes with the backup's. *Keep current data*
 changes nothing (export first if you want a copy). *Replace my data* swaps the database in one step,
-keeping a rollback copy until the restored database has opened and passed its checks; the dashboard
-then reloads from the backup. A backup from an older version of Synapse is upgraded as it's
-restored; one from a newer version is refused.
+keeping a rollback copy until the restored database has opened and passed its checks; the Study
+Desk then reloads from the backup. A backup from an older version of Synapse is upgraded as it's
+restored; one from a newer version is refused. While a backup is being checked, waits for your
+answer, or is being restored — and while an export is being saved — the sidebar can't be used, so
+nothing else can start in the meantime.
 
-**Write notes.** On the dashboard, *Notes* → *Open notes* → *New note*. A note has a title (up to
-200 characters) and a plain-text body (up to 100,000 characters); both are required. Line breaks
-and indentation are kept, and only blank space at the very start and end is trimmed. *Open note*
-shows it, *Edit note* changes it. The library lists the most recently edited note first.
+**Write notes.** *Notes* (in the sidebar, or *Open notes* on the Study Desk) → *New note*. A note
+has a title (up to 200 characters) and a plain-text body (up to 100,000 characters); both are
+required. Line breaks and indentation are kept, and only blank space at the very start and end is
+trimmed. *Open note* shows it, *Edit note* changes it. The library lists the most recently edited
+note first.
 
 **Delete or restore a note.** Open a note → *Delete note* asks for confirmation, then takes the note
 out of your library: it can't be opened, edited, or used to write a card. Nothing is lost — the note
@@ -166,8 +173,9 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   tags, or folders. Nothing generates cards from a note, and a card doesn't remember the note it was
   written from — so deleting a note leaves its cards exactly where they are. A deleted note is
   listed by title and dates only; there's no way to read its text again without restoring it.
-- **The dashboard is the way in.** *Notes*, *Export data*, and *Import data* sit below the deck list,
-  so if the deck list can't load they aren't reachable until *Retry* succeeds.
+- **No unsaved-changes prompt.** Choosing a place in the sidebar while a form is open (a new card,
+  an edited note) closes the form, and whatever you typed but haven't saved is lost, just as with
+  *Cancel*.
 - **No sync, accounts, cloud, or collaboration.** By design.
 - **Default FSRS parameters only.** The optimizer that re-fits weights to your own history is
   future work and isn't built.
@@ -179,7 +187,9 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
 ## Architecture
 
 - **`src/`** — the React UI. `api.ts` is the only file that calls Rust, through typed Tauri
-  commands. The screens are `Dashboard.tsx`, `DeckDetail.tsx`, `ReviewSession.tsx`, and `Notes.tsx`.
+  commands. `Shell.tsx` is the sidebar and the bar above each screen. The screens are
+  `Dashboard.tsx` (the Study Desk), `DeckDetail.tsx`, `ReviewSession.tsx`, `Notes.tsx`,
+  `ArchivedDecks.tsx`, and `Backup.tsx`.
 - **`src-tauri/src/`** — the Rust core:
   - `lib.rs` — app setup and command registration; `main.rs` is a thin entry point.
   - `commands.rs` — the Tauri commands, the only way the frontend reaches the core.
