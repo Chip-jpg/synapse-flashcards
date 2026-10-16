@@ -1,0 +1,104 @@
+name: Release
+
+# Builds the Windows installers and, only once they've built and every check
+# has passed, tags the commit and publishes a GitHub release with them. Run it
+# by hand (Actions → Release → Run workflow) on the commit that bumped the
+# version. The version comes from src-tauri/tauri.conf.json and the release
+# notes from .github/release-notes.md.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the version
+        id: version
+        run: |
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Check every version file agrees
+        run: |
+          $want = "${{ steps.version.outputs.version }}"
+          $found = [ordered]@{
+            "package.json"      = (Get-Content package.json -Raw | ConvertFrom-Json).version
+            "package-lock.json" = (Get-Content package-lock.json -Raw | ConvertFrom-Json).version
+            "Cargo.toml"        = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version = "(.+)"' |
+                                   Select-Object -First 1).Matches.Groups[1].Value
+          }
+          $wrong = $found.GetEnumerator() | Where-Object { $_.Value -ne $want }
+          if ($wrong) { throw "Not at $want`: $(($wrong | ForEach-Object { "$($_.Key) is $($_.Value)" }) -join ', ')" }
+
+      - name: Refuse a version that's already tagged
+        run: |
+          $tag = "v${{ steps.version.outputs.version }}"
+          git ls-remote --exit-code --tags origin "refs/tags/$tag" | Out-Null
+          if ($LASTEXITCODE -eq 0) { throw "$tag already exists." }
+          exit 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup default stable
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Frontend tests
+        run: npm test
+
+      - name: Rust formatting
+        working-directory: src-tauri
+        run: cargo fmt --check
+
+      - name: Clippy
+        working-directory: src-tauri
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test --locked
+
+      - name: Build the installers
+        run: npm run tauri build
+
+      - name: Check the installers
+        id: files
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $exe = "src-tauri/target/release/bundle/nsis/Synapse_${version}_x64-setup.exe"
+          $msi = "src-tauri/target/release/bundle/msi/Synapse_${version}_x64_en-US.msi"
+          foreach ($file in $exe, $msi) {
+            if (-not (Test-Path $file)) { throw "Missing $file" }
+          }
+          Get-Item $exe, $msi | Format-Table Name, Length -AutoSize
+          Get-FileHash $exe, $msi -Algorithm SHA256 | Format-Table Hash, Path -AutoSize
+          "exe=$exe" >> $env:GITHUB_OUTPUT
+          "msi=$msi" >> $env:GITHUB_OUTPUT
+
+      - name: Tag and publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "v${{ steps.version.outputs.version }}"
+          gh release create $tag "${{ steps.files.outputs.msi }}" "${{ steps.files.outputs.exe }}" `
+            --target $env:GITHUB_SHA --title $tag --notes-file .github/release-notes.md
