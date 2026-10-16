@@ -186,9 +186,12 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   future work and isn't built.
 - **One card type.** Front/back text only: no images, audio, cloze, or tags.
 - **No search, bulk actions, folders, or statistics.**
-- **Few automated frontend tests.** The Rust core has unit tests (`cargo test`). On the React side,
-  `npm test` covers only the unsaved-changes prompt so far; the rest is checked by TypeScript and
-  manual end-to-end testing.
+- **Frontend tests cover the risky interactions, not every screen.** The Rust core has unit tests
+  (`cargo test`). On the React side, `npm test` runs the screens against a stand-in for the Rust
+  core and checks reviewing (reveal before rating, the keyboard shortcuts, never rating twice),
+  confirmations and where focus goes, restoring and out-of-date (stale) refusals, the locked
+  sidebar during backup and restore, and the unsaved-changes prompt. Layout, looks, and the real
+  Tauri window are still checked by hand.
 
 ## Architecture
 
