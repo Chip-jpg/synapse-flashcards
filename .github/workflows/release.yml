@@ -34,11 +34,14 @@ jobs:
       - name: Check every version file agrees
         run: |
           $want = "${{ steps.version.outputs.version }}"
+          # A hashtable, because package-lock.json lists the app itself under an empty key.
+          $lock = Get-Content package-lock.json -Raw | ConvertFrom-Json -AsHashtable
           $found = [ordered]@{
-            "package.json"      = (Get-Content package.json -Raw | ConvertFrom-Json).version
-            "package-lock.json" = (Get-Content package-lock.json -Raw | ConvertFrom-Json).version
-            "Cargo.toml"        = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version = "(.+)"' |
-                                   Select-Object -First 1).Matches.Groups[1].Value
+            "package.json"                = (Get-Content package.json -Raw | ConvertFrom-Json).version
+            "package-lock.json"           = $lock["version"]
+            "package-lock.json (the app)" = $lock["packages"][""]["version"]
+            "Cargo.toml"                  = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version = "(.+)"' |
+                                             Select-Object -First 1).Matches.Groups[1].Value
           }
           $wrong = $found.GetEnumerator() | Where-Object { $_.Value -ne $want }
           if ($wrong) { throw "Not at $want`: $(($wrong | ForEach-Object { "$($_.Key) is $($_.Value)" }) -join ', ')" }
@@ -90,8 +93,8 @@ jobs:
           foreach ($file in $exe, $msi) {
             if (-not (Test-Path $file)) { throw "Missing $file" }
           }
-          Get-Item $exe, $msi | Format-Table Name, Length -AutoSize
-          Get-FileHash $exe, $msi -Algorithm SHA256 | Format-Table Hash, Path -AutoSize
+          Get-Item $exe, $msi | Format-Table Name, Length -AutoSize | Out-String -Width 200
+          Get-FileHash $exe, $msi -Algorithm SHA256 | Format-Table Hash, Path -AutoSize | Out-String -Width 200
           "exe=$exe" >> $env:GITHUB_OUTPUT
           "msi=$msi" >> $env:GITHUB_OUTPUT
 
