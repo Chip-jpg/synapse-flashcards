@@ -33,7 +33,9 @@ synapse-export-*.zip
 *.pfx
 
 # Claude / agent workspace and local instructions
-.claude/
+# (except the shared project memory, which is published on purpose)
+.claude/*
+!.claude/PROJECT_BREAKDOWN.md
 .agents/
 
 # Private project brainstorming and planning files
@@ -88,6 +90,7 @@ test-dbs/
 
 # Agent transcripts and local prompts
 CLAUDE.md
+!.claude/CLAUDE.md
 CLAUDE.local.md
 AGENTS.md
 .cursor/
