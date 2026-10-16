@@ -7,7 +7,7 @@ Those are two different levels of maturity, and keeping them separate is essenti
 - The current application is real, released, and usable without AI.
 - The broader study-companion vision is the roadmap, not a list of features already implemented.
 
-I checked GitHub for this breakdown. As of this lookup, the latest published release is v0.3.1, published October 4, 2026. The current `main` commit is `e62704732b1a604c4b85e6e7a993eea39180f844`, titled `fix: align study workspace UI`. The release includes both Windows x64 installer formats.
+As of this update, the latest published release is v0.3.2, published October 16, 2026 from `main` at `ce3c67ae6b605b84ce27d1b0f65375067edb015b` (`fix: read package-lock.json as a hashtable in the release workflow`). It includes both Windows x64 installer formats. v0.3.2 added unsaved-changes protection and the first frontend test suite (sections 4.5 and 12). The rest of this breakdown was first written against v0.3.1 and has been updated wherever those changes reach.
 
 This breakdown combines that current repository documentation, your implementation reports, and the original product/specification documents. The older specification is useful for architecture and intent, but parts of its feature-status descriptions are outdated—for example, it predates the restore/unarchive work.
 
@@ -87,22 +87,24 @@ ______________________________________________________________________
 | :-- | :-- |
 | Repository | `Chip-jpg/synapse-flashcards` |
 | Visibility | Public, by your deliberate choice |
-| Main development environment | Your local Windows setup |
-| Latest published release found | v0.3.1 |
-| Latest `main` commit found | `e62704732b1a604c4b85e6e7a993eea39180f844` |
-| Windows installer | `Synapse_0.3.1_x64-setup.exe` |
-| Windows MSI | `Synapse_0.3.1_x64_en-US.msi` |
+| Development environments | Your local Windows setup, and Claude Code cloud sessions (Linux) |
+| Latest published release | v0.3.2 (October 16, 2026) |
+| Release commit | `ce3c67ae6b605b84ce27d1b0f65375067edb015b` |
+| Windows installer | `Synapse_0.3.2_x64-setup.exe` |
+| Windows MSI | `Synapse_0.3.2_x64_en-US.msi` |
 | Installer signing | Release notes say the installers are unsigned |
+| How releases are built | The manual **Release** GitHub Actions workflow on `windows-latest` (since v0.3.2; section 13) |
 | Database migrations documented in current README | `0001`–`0010` |
+| Frontend tests | Vitest + Testing Library, 59 tests (`npm test`; section 12.4) |
 | AI generation | Not implemented |
 | PDF ingestion | Not implemented in the current documented application |
 
-The v0.3.1 release assets are uploaded. Their reported sizes are:
+The v0.3.2 release assets are uploaded:
 
-- EXE: 2,593,160 bytes.
-- MSI: 3,604,480 bytes.
+- EXE: 2,593,095 bytes, SHA-256 `356d5f1033df388da450a0a6c19db93240ec902f35606fb8c0f237b331ff8f8a`.
+- MSI: 3,600,384 bytes, SHA-256 `ffc1b2ae7496f7a659c31da61b27a6f5be9ee08589dfd3f90e32d34ec1cb9ee5`.
 
-These are verified release metadata, not a fresh installation test performed during this conversation.
+The published files were downloaded and their hashes matched the ones the Windows build logged. That is verified release metadata, not a fresh installation test: v0.3.2 has not yet been installed on Windows.
 
 ### 3.2 Important distinction: repository, app, and personal data
 
@@ -419,6 +421,38 @@ If a card is reviewed more than once, those are multiple learning events. A futu
 
 ______________________________________________________________________
 
+## 4.5 Unsaved-changes protection
+
+Added in v0.3.2.
+
+A form is *unsaved* when what it holds differs from what it opened with. This covers all five forms: create deck, rename deck, add/edit card, new/edit note, and card from note (choosing a deck counts).
+
+While any form is unsaved:
+
+- Choosing a place in the sidebar asks "Leave without saving?" first.
+- Closing the window asks "Close Synapse without saving?" first.
+
+The answers:
+
+- *Discard changes* carries on: to the chosen place, or closing the app.
+- *Keep editing*, or Escape, returns to the form with its text and focus intact.
+
+Boundaries:
+
+- An untouched form, or one changed back to how it opened, doesn't ask.
+- *Cancel* still discards without asking; it is an explicit choice.
+- Nothing is saved as a draft. Discarding loses the text, and nothing survives a restart. This is a navigation guard, not autosave.
+- The window close is held only while something is unsaved. Otherwise the window closes exactly as before.
+
+How it works:
+
+- Forms report their state through `useUnsavedChanges` in `src/unsaved.tsx`, and `App.tsx` asks before sidebar navigation.
+- `api.ts` holds the window close through Tauri's close-requested event (`holdWindowClose`) and closes the window after Discard (`closeWindow`).
+- Closing after Discard needs the `core:window:allow-destroy` capability in `src-tauri/capabilities/default.json`.
+- The native close path was checked on Linux (WebKitGTK) before release, but not yet on Windows.
+
+______________________________________________________________________
+
 ## 5. FSRS and personalization
 
 ### 5.1 What is already implemented
@@ -560,6 +594,14 @@ That sequence establishes a useful rule for later design work:
 
 For a design-led feature, screenshot comparison and your approval are separate acceptance gates.
 
+### 6.7 The discard prompt (v0.3.2)
+
+The unsaved-changes question is a modal dialog built like the app's cards: a white rounded card over a dimmed screen. It has an amber warning icon, a display-font title, muted body text, and form-sized buttons. *Discard changes* uses the soft-red style of the delete confirmations, and *Keep editing* is a plain button.
+
+Its first version reused the small amber inline-question style and looked out of place as a floating window. It was restyled before release at your request.
+
+Focus lands on the dialog itself, without an outline, the way screens take focus, so a held Enter can't discard.
+
 ______________________________________________________________________
 
 ## 7. Technical architecture
@@ -598,7 +640,7 @@ Current README identifies these main files:
 
 | File | Responsibility |
 | :-- | :-- |
-| `api.ts` | Typed calls into Rust |
+| `api.ts` | Typed calls into Rust, plus holding and closing the window |
 | `Shell.tsx` | Shared sidebar and location bar |
 | `Dashboard.tsx` | Study Desk |
 | `DeckDetail.tsx` | Deck content and management |
@@ -607,6 +649,9 @@ Current README identifies these main files:
 | `ArchivedDecks.tsx` | Archived-deck recovery |
 | `Backup.tsx` | Export and restore |
 | `App.css` | Shared visual tokens and presentation |
+| `forms.tsx` | Shared form fields and saving (one save at a time, field errors) |
+| `unsaved.tsx` | Tracks unsaved forms and asks before discarding them |
+| `*.test.tsx`, `src/test/` | Frontend tests and the fake Rust backend they run against |
 
 The frontend should not duplicate durable scheduling or restoration rules.
 
@@ -954,8 +999,8 @@ The current README is explicit about these gaps.
 
 ### UX and testing
 
-- Unsaved-changes warnings.
-- Automated frontend test coverage.
+- Drafts or autosave. Since v0.3.2 unsaved typing is protected by a prompt, but nothing survives a restart.
+- Frontend tests for layout, visuals, or the real desktop window. The v0.3.2 suite covers interactions only.
 
 
 ### Distribution
@@ -982,6 +1027,8 @@ Clippy with warnings denied
       ↓
 TypeScript checking + frontend build
       ↓
+Frontend tests (Vitest)
+      ↓
 Isolated native application smoke test
       ↓
 Read-only review
@@ -999,6 +1046,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 # From the repository root
 npm run build
+npm test
 ```
 
 Exact command choices should follow the current project configuration rather than a stale prompt.
@@ -1013,8 +1061,10 @@ Your reports recorded:
 - 129 after card restoration.
 - 133 during the broader preservation/upgrade verification.
 - 136 after session progress and keyboard ratings.
+- 136 Rust tests at v0.3.2, passing on Linux and in the Windows release run.
+- Frontend: 16 tests with the unsaved-changes prompt, then 59 with the Stage B suite (v0.3.2).
 
-These are historical reported totals. I have not executed the current suite in your local environment during this lookup.
+The totals up to v0.3.1 are historical reports. The v0.3.2 totals were run in a cloud session and in the Windows release run, not in your local environment.
 
 ### 12.3 The tests protect meaningful invariants
 
@@ -1031,18 +1081,36 @@ The strongest coverage described in the project history includes:
 
 That is more valuable than simply counting tests.
 
-### 12.4 Major testing gap
+### 12.4 Frontend tests and what they don't cover
 
-React has no automated test runner in the documented current setup.
+Since v0.3.2 the React side has a test runner: Vitest with jsdom and Testing Library, run with `npm test`. The 59 tests drive the real screens through `api.ts` against a fake Rust backend (`src/test/backend.ts`, built on `@tauri-apps/api/mocks`). They cover:
 
-Consequently:
+- Reviewing: reveal before rating, Space/Enter and 1–4, ignored modifier and held keys, one rating per press while saving, failed and stale ratings, progress and the summary.
+- Confirmations and where focus goes, for deleting, restoring, archiving and unarchiving.
+- Stale refusals that reload and explain, and repeated presses that send once.
+- Field errors that take focus, and the card-from-note deck refusal.
+- The sidebar locking during backup checking, confirming, restoring and exporting.
+- The unsaved-changes prompt for every form, including the window close.
 
-- A successful TypeScript build cannot establish correct focus behavior.
-- A successful Rust test run cannot establish that a sidebar renders properly.
-- A manual CDP smoke test is not the same thing as a committed, repeatable frontend regression suite.
-- Visual fidelity needs visual acceptance criteria.
+Each guard they cover was checked by breaking it and seeing a test fail.
 
-A focused frontend test layer would be a worthwhile maintenance investment, particularly for keyboard review, confirmation focus, stale responses, and unsaved forms.
+What they still don't establish:
+
+- Visual fidelity and layout. Screenshots and your approval remain separate acceptance gates.
+- The real desktop window. jsdom has no modal dialogs (`src/test/setup.ts` stands in for them), and Tauri is mocked.
+- Agreement with Rust. The fake backend answers as the tests say, so if a Rust command's contract changes, these tests won't notice.
+
+### 12.5 Running checks in a cloud session
+
+A Claude Code cloud container starts without Tauri's Linux libraries, so the Rust side doesn't compile until they're installed. That has to happen in every session, unless it's added to the environment's setup script:
+
+```bash
+apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf build-essential libssl-dev libxdo-dev
+```
+
+With them, `cargo fmt --check`, clippy and `cargo test --locked` run as on Windows.
+
+The real app can also be run under Xvfb with a scratch `SYNAPSE_DB_DIR` and driven with `xdotool`. That's how the v0.3.2 window-close behaviour was checked before release. It runs on WebKitGTK, not WebView2, so it doesn't replace a Windows check.
 
 ______________________________________________________________________
 
@@ -1057,6 +1125,7 @@ ______________________________________________________________________
 | v0.2.0 | Reliability, upgrade, and restore-preservation verification |
 | v0.3.0 | Redesigned presentation plus the accumulated review-experience work |
 | v0.3.1 | Corrective Study Desk shell and visual alignment |
+| v0.3.2 | Unsaved-changes protection and the first frontend test suite; first release built by the Release workflow |
 
 Not every feature was committed at the same time as its release bump. Session progress and keyboard ratings were committed September 22 and packaged later.
 
@@ -1085,6 +1154,32 @@ The five version-bearing files in your established workflow are:
 - `src-tauri/Cargo.toml`
 - `src-tauri/Cargo.lock`
 - `src-tauri/tauri.conf.json`
+
+### The Release workflow (since v0.3.2)
+
+`.github/workflows/release.yml` carries out steps 5 and 9–10 of that order on GitHub's Windows machines. It runs only when started by hand (Actions → Release → Run workflow) on `main`. In order, it:
+
+1. reads the version from `tauri.conf.json`, and checks that `package.json`, both versions in `package-lock.json`, and `Cargo.toml` agree (`cargo test --locked` covers `Cargo.lock`);
+2. refuses a version whose tag already exists;
+3. runs `npm test`, `cargo fmt --check`, clippy with warnings denied, and `cargo test --locked`;
+4. builds the MSI and NSIS installers, checks both exist, and logs their sizes and SHA-256 hashes;
+5. only then creates the tag on the run's commit and publishes the release, with `.github/release-notes.md` as its notes.
+
+So a release is:
+
+1. bump the five version files;
+2. rewrite `.github/release-notes.md`;
+3. merge;
+4. run the workflow;
+5. check the published assets against the hashes in the run log.
+
+Things to know:
+
+- A run that fails before the last step builds, tags and publishes nothing, so it can be fixed and run again.
+- v0.3.2's first run stopped at the version check, on a PowerShell quirk: `package-lock.json` has an empty key, which needs `ConvertFrom-Json -AsHashtable`. The fix went into the commit that was then released.
+- The workflow creates a lightweight tag. v0.3.0 and v0.3.1 were annotated tags.
+- GitHub warns that `actions/checkout@v4` and `actions/setup-node@v4` target Node 20; they will need moving to v5.
+- The installers are still unsigned.
 
 ______________________________________________________________________
 
@@ -1279,9 +1374,11 @@ You asked for the whole project rather than a task prompt, so this is a roadmap�
 
 ### Stage A — Close the most visible data-loss edge case
 
+**Done in v0.3.2** (section 4.5): a prompt on sidebar navigation and window close. There is no autosave, and nothing survives a restart.
+
 Add unsaved-changes protection.
 
-The current README explicitly says navigating through the sidebar can discard an unsaved form.
+Before v0.3.2, the README said navigating through the sidebar could discard an unsaved form.
 
 A small feature should define:
 
@@ -1294,6 +1391,8 @@ A small feature should define:
 Do not conflate a navigation warning with full autosave. They are different features.
 
 ### Stage B — Add repeatable frontend regression coverage
+
+**Done in v0.3.2** (section 12.4): 59 tests covering every item below.
 
 Start with high-value interactions:
 
@@ -1308,6 +1407,8 @@ Start with high-value interactions:
 This supports faster changes without repeatedly depending on manual memory.
 
 ### Stage C — Choose the next capability leap
+
+**Next.** With Stages A and B done, this is the open decision.
 
 There are two reasonable paths.
 
@@ -1442,11 +1543,11 @@ ______________________________________________________________________
 | Backup portability | Implemented, with strict replace-only semantics |
 | UI consistency | Improved substantially in v0.3.1 |
 | Visual fidelity | Must still be judged against your reference in the real app |
-| Frontend regression testing | A known gap |
-| Unsaved work protection | A known gap |
+| Frontend regression testing | Started in v0.3.2: 59 interaction tests; no visual or real-window tests |
+| Unsaved work protection | Implemented in v0.3.2 (a prompt, not autosave) |
 | Material ingestion | Not yet implemented |
 | AI study assistance | Not yet implemented |
-| Public distribution | Working Windows release assets |
+| Public distribution | Windows releases built and published by the Release workflow |
 | Signing and wider platform validation | Not established |
 | Long-term vision | Defined, but much broader than the released app |
 
