@@ -51,6 +51,7 @@ cargo fmt --check                          # in src-tauri/
 cargo test                                 # in src-tauri/
 cargo clippy --all-targets -- -D warnings  # in src-tauri/
 npm run build                              # tsc + vite, from the project root
+npm test                                   # frontend tests (Vitest), from the project root
 ```
 
 ### Using a throwaway database
@@ -82,6 +83,13 @@ thing that replaces it is *Import data*, and only after you confirm.
 **Find your way around.** The sidebar has four places: the **Study Desk** (your decks, with the
 first one that has cards due at the top), **Notes**, **Archived decks**, and **Backup & restore**.
 In a narrow window it becomes a bar across the top.
+
+**Unsaved changes are never dropped silently.** If you've typed something in a form (a deck, card,
+or note) and haven't saved it, choosing a place in the sidebar or closing the window first asks
+whether to discard it. *Keep editing* (or **Escape**) leaves you in the form with your text intact;
+*Discard changes* carries on. A form you opened but haven't changed, or changed back to how it
+started, doesn't ask. *Cancel* still discards a form's changes without asking, and nothing is kept
+as a draft: if you discard, what you typed is gone.
 
 **Make a deck and some cards.** On the Study Desk, *Create deck* → name it (a description is
 optional) → *Open deck* → *Add card* → fill in front and back. Names must be unique ignoring case;
@@ -173,23 +181,23 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   tags, or folders. Nothing generates cards from a note, and a card doesn't remember the note it was
   written from — so deleting a note leaves its cards exactly where they are. A deleted note is
   listed by title and dates only; there's no way to read its text again without restoring it.
-- **No unsaved-changes prompt.** Choosing a place in the sidebar while a form is open (a new card,
-  an edited note) closes the form, and whatever you typed but haven't saved is lost, just as with
-  *Cancel*.
 - **No sync, accounts, cloud, or collaboration.** By design.
 - **Default FSRS parameters only.** The optimizer that re-fits weights to your own history is
   future work and isn't built.
 - **One card type.** Front/back text only: no images, audio, cloze, or tags.
 - **No search, bulk actions, folders, or statistics.**
-- **No automated frontend tests.** The Rust core has unit tests (`cargo test`); React is checked by
-  TypeScript and manual end-to-end testing.
+- **Few automated frontend tests.** The Rust core has unit tests (`cargo test`). On the React side,
+  `npm test` covers only the unsaved-changes prompt so far; the rest is checked by TypeScript and
+  manual end-to-end testing.
 
 ## Architecture
 
 - **`src/`** — the React UI. `api.ts` is the only file that calls Rust, through typed Tauri
-  commands. `Shell.tsx` is the sidebar and the bar above each screen. The screens are
-  `Dashboard.tsx` (the Study Desk), `DeckDetail.tsx`, `ReviewSession.tsx`, `Notes.tsx`,
-  `ArchivedDecks.tsx`, and `Backup.tsx`.
+  commands (and the window, to hold it open while something is unsaved). `Shell.tsx` is the
+  sidebar and the bar above each screen. The screens are `Dashboard.tsx` (the Study Desk),
+  `DeckDetail.tsx`, `ReviewSession.tsx`, `Notes.tsx`, `ArchivedDecks.tsx`, and `Backup.tsx`.
+  `unsaved.tsx` tracks which form holds unsaved text and asks before it's discarded. Tests sit
+  beside the code they cover (`*.test.tsx`), with shared helpers in `src/test/`.
 - **`src-tauri/src/`** — the Rust core:
   - `lib.rs` — app setup and command registration; `main.rs` is a thin entry point.
   - `commands.rs` — the Tauri commands, the only way the frontend reaches the core.

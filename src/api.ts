@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 /** Mirrors `DeckSummary` in `src-tauri/src/study.rs`. */
 export type Deck = {
@@ -333,6 +334,35 @@ export function deleteNote(noteId: number): Promise<void> {
  */
 export function restoreNote(noteId: number): Promise<void> {
   return invoke<void>("restore_note", { noteId });
+}
+
+/**
+ * Until the returned function is called, closing the window doesn't close it:
+ * `onRequest` runs instead, and the window stays open until `closeWindow`.
+ * With no hold in place, the window closes as usual.
+ */
+export function holdWindowClose(onRequest: () => void): () => void {
+  let unlisten: (() => void) | null = null;
+  let released = false;
+  getCurrentWindow()
+    .onCloseRequested((event) => {
+      event.preventDefault();
+      onRequest();
+    })
+    .then((stop) => {
+      // Released before the listener was in place: remove it straight away.
+      if (released) stop();
+      else unlisten = stop;
+    });
+  return () => {
+    released = true;
+    unlisten?.();
+  };
+}
+
+/** Closes the window for good, even while `holdWindowClose` is holding it. */
+export function closeWindow(): Promise<void> {
+  return getCurrentWindow().destroy();
 }
 
 /** Normalizes anything a command rejected with into a `CommandError`. */

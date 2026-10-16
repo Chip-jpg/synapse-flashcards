@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { createDeck, type DeckDetail } from "./api";
 import { FormActions, TextField, useFormSave } from "./forms";
+import { useUnsavedChanges } from "./unsaved";
 
 /** Creating a normal deck. All validation happens in Rust; errors come back per field. */
 export function CreateDeckForm({
@@ -12,6 +13,7 @@ export function CreateDeckForm({
 }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  useUnsavedChanges(name !== "" || description !== "");
   const { saving, submit, fieldError, formError, edited } = useFormSave(
     () => createDeck(name, description),
     onCreated,

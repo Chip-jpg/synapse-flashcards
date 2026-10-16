@@ -28,6 +28,7 @@ import {
   TrashIcon,
 } from "./icons";
 import { formatDateTime, Message, useFocusOnMount } from "./ui";
+import { useUnsavedChanges } from "./unsaved";
 
 /** What takes focus when the library appears. */
 type LibraryFocus =
@@ -821,6 +822,7 @@ function NoteForm({
 }) {
   const [title, setTitle] = useState(note?.title ?? "");
   const [body, setBody] = useState(note?.body ?? "");
+  useUnsavedChanges(title !== (note?.title ?? "") || body !== (note?.body ?? ""));
   const { saving, submit, fieldError, formError, edited } = useFormSave(
     () => (note ? updateNote(note.id, title, body) : createNote(title, body)),
     onSaved,
@@ -992,6 +994,7 @@ function CardFromNoteForm({
   const [deckId, setDeckId] = useState("");
   const [front, setFront] = useState("");
   const [back, setBack] = useState("");
+  useUnsavedChanges(deckId !== "" || front !== "" || back !== "");
 
   /** Reloads the deck choices in place, keeping what the user wrote. */
   function refreshDecks() {

@@ -796,6 +796,27 @@ body {
   color: var(--text);
 }
 
+/* The question asked before unsaved changes are thrown away. It's modal, so it
+   floats over a dimmed screen; inside, it looks like the app's other questions. */
+.discard-dialog {
+  width: min(30rem, calc(100vw - 2 * var(--gutter)));
+  max-width: none;
+  padding: 0;
+  color: var(--text);
+  background: none;
+  border: none;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+}
+
+.discard-dialog::backdrop {
+  background-color: rgb(45 43 40 / 0.32);
+}
+
+.discard-dialog .confirm {
+  padding: 1.25rem 1.375rem;
+}
+
 /* A heading, but sized like the body text around it. */
 .item-title,
 .note-item-title {

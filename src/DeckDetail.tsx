@@ -23,6 +23,7 @@ import {
   TrashIcon,
 } from "./icons";
 import { formatDateTime, Message, useFocusOnMount } from "./ui";
+import { useUnsavedChanges } from "./unsaved";
 import { useStartReview } from "./useStartReview";
 
 type DetailState =
@@ -496,6 +497,7 @@ function RenameDeckForm({
   onSaved: (deck: Deck) => void;
 }) {
   const [name, setName] = useState(deck.name);
+  useUnsavedChanges(name !== deck.name);
   const { saving, submit, fieldError, formError, edited } = useFormSave(
     () => renameDeck(deck.id, name),
     onSaved,
@@ -845,6 +847,7 @@ function CardForm({
 }) {
   const [front, setFront] = useState(card?.front ?? "");
   const [back, setBack] = useState(card?.back ?? "");
+  useUnsavedChanges(front !== (card?.front ?? "") || back !== (card?.back ?? ""));
   const { saving, submit, fieldError, formError, edited } = useFormSave(
     () => (card ? updateFlashcard(card.id, front, back) : createFlashcard(deck.id, front, back)),
     onSaved,
