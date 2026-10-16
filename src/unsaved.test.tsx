@@ -97,7 +97,8 @@ describe("leaving a form with unsaved changes", () => {
     await user.click(sidebar().getByRole("button", { name: "Archived decks" }));
 
     expect(question().open).toBe(true);
-    expect(document.activeElement).toBe(within(question()).getByText(/^Leave without saving\?/));
+    expect(within(question()).getByRole("heading", { name: "Leave without saving?", hidden: true })).toBeTruthy();
+    expect(document.activeElement).toBe(question());
   });
 
   it("leaves an untouched form without asking", async () => {
@@ -229,7 +230,9 @@ describe("closing the window with unsaved changes", () => {
     await requestClose(calls);
 
     expect(question().open).toBe(true);
-    expect(within(question()).getByText(/^Close Synapse without saving\?/)).toBeTruthy();
+    expect(
+      within(question()).getByRole("heading", { name: "Close Synapse without saving?", hidden: true })
+    ).toBeTruthy();
     expect(calls).not.toContain("plugin:window|destroy");
 
     await answer(user, "Discard changes");

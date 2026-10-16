@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useId, useRef, useState } from "react";
+import { AlertIcon } from "./icons";
 
 /** Tells the app whether the form with this id has changes that haven't been saved. */
 type Report = (formId: string, unsaved: boolean) => void;
@@ -40,6 +41,18 @@ export function useUnsavedChanges(unsaved: boolean) {
   }, [report, formId, unsaved]);
 }
 
+/** What the question says, by why it was asked. */
+const WORDING = {
+  navigate: {
+    title: "Leave without saving?",
+    text: "What you've typed in this form hasn't been saved. If you leave now, it will be lost.",
+  },
+  close: {
+    title: "Close Synapse without saving?",
+    text: "What you've typed in this form hasn't been saved. If you close Synapse now, it will be lost.",
+  },
+};
+
 /**
  * Asked before unsaved changes are thrown away, when the user picks a place in
  * the sidebar (`leaving` is "navigate") or closes the window ("close"). Modal:
@@ -59,24 +72,26 @@ export function DiscardDialog({
   onKeep: () => void;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
-  const questionRef = useRef<HTMLParagraphElement>(null);
+  const wording = WORDING[leaving ?? "navigate"];
 
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog || leaving === null || dialog.open) return;
     dialog.returnValue = "";
     dialog.showModal();
-    // As with the app's other questions, focus goes to the question rather
-    // than its first button: it's read out, and a held Enter can't discard.
-    questionRef.current?.focus();
+    // Focus goes to the dialog itself rather than its first button, so its
+    // title and text are read out and a held Enter can't discard.
+    dialog.focus();
   }, [leaving]);
 
   return (
     <dialog
       ref={dialogRef}
-      className="discard-dialog"
+      className="dialog"
       role="alertdialog"
-      aria-labelledby="discard-question"
+      tabIndex={-1}
+      aria-labelledby="discard-title"
+      aria-describedby="discard-text"
       // Closing returns focus to whatever had it before the question opened.
       // A button, or Escape, closes it; the answer is read from `returnValue`.
       onClose={(event) => {
@@ -84,30 +99,32 @@ export function DiscardDialog({
         else onKeep();
       }}
     >
-      <div className="confirm">
-        <p ref={questionRef} id="discard-question" className="confirm-question" tabIndex={-1}>
-          {leaving === "close"
-            ? "Close Synapse without saving? What you've typed in this form hasn't been saved, " +
-              "and closing now will discard it."
-            : "Leave without saving? What you've typed in this form hasn't been saved, and " +
-              "leaving now will discard it."}
-        </p>
-        <div className="deck-actions">
-          <button
-            type="button"
-            className="button button-danger button-small"
-            onClick={() => dialogRef.current?.close("discard")}
-          >
-            Discard changes
-          </button>
-          <button
-            type="button"
-            className="button button-small"
-            onClick={() => dialogRef.current?.close("keep")}
-          >
-            Keep editing
-          </button>
-        </div>
+      <div className="section-heading">
+        <span className="section-icon section-icon-warning" aria-hidden="true">
+          <AlertIcon />
+        </span>
+        <h2 id="discard-title" className="form-title">
+          {wording.title}
+        </h2>
+      </div>
+      <p id="discard-text" className="dialog-text">
+        {wording.text}
+      </p>
+      <div className="form-actions">
+        <button
+          type="button"
+          className="button button-danger-soft"
+          onClick={() => dialogRef.current?.close("discard")}
+        >
+          Discard changes
+        </button>
+        <button
+          type="button"
+          className="button"
+          onClick={() => dialogRef.current?.close("keep")}
+        >
+          Keep editing
+        </button>
       </div>
     </dialog>
   );
