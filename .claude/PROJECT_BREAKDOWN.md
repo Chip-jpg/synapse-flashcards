@@ -7,7 +7,7 @@ Those are two different levels of maturity, and keeping them separate is essenti
 - The current application is real, released, and usable without AI.
 - The broader study-companion vision is the roadmap, not a list of features already implemented.
 
-As of this update, the latest published release is v0.3.2, published October 16, 2026 from `main` at `ce3c67ae6b605b84ce27d1b0f65375067edb015b` (`fix: read package-lock.json as a hashtable in the release workflow`). It includes both Windows x64 installer formats. v0.3.2 added unsaved-changes protection and the first frontend test suite (sections 4.5 and 12). The rest of this breakdown was first written against v0.3.1 and has been updated wherever those changes reach.
+As of this update, the latest published release is v0.4.0, published October 18, 2026 from `main` at `017ae508e1f9482c6b0fce494ba6b6f538a8e4a2` (`chore: release v0.4.0 (#8)`). It includes both Windows x64 installer formats. v0.4.0 added the first AI feature: cards suggested from a note by a model in Ollama on the user's computer (section 4.6). v0.3.2 added unsaved-changes protection and the first frontend test suite (sections 4.5 and 12). Since v0.4.0, importing files as notes (section 4.7) has been built but not yet released. The rest of this breakdown was first written against v0.3.1 and has been updated wherever those changes reach.
 
 This breakdown combines that current repository documentation, your implementation reports, and the original product/specification documents. The older specification is useful for architecture and intent, but parts of its feature-status descriptions are outdated—for example, it predates the restore/unarchive work.
 
@@ -88,23 +88,23 @@ ______________________________________________________________________
 | Repository | `Chip-jpg/synapse-flashcards` |
 | Visibility | Public, by your deliberate choice |
 | Development environments | Your local Windows setup, and Claude Code cloud sessions (Linux) |
-| Latest published release | v0.3.2 (October 16, 2026) |
-| Release commit | `ce3c67ae6b605b84ce27d1b0f65375067edb015b` |
-| Windows installer | `Synapse_0.3.2_x64-setup.exe` |
-| Windows MSI | `Synapse_0.3.2_x64_en-US.msi` |
+| Latest published release | v0.4.0 (October 18, 2026) |
+| Release commit | `017ae508e1f9482c6b0fce494ba6b6f538a8e4a2` |
+| Windows installer | `Synapse_0.4.0_x64-setup.exe` |
+| Windows MSI | `Synapse_0.4.0_x64_en-US.msi` |
 | Installer signing | Release notes say the installers are unsigned |
 | How releases are built | The manual **Release** GitHub Actions workflow on `windows-latest` (since v0.3.2; section 13) |
 | Database migrations documented in current README | `0001`–`0010` |
-| Frontend tests | Vitest + Testing Library, 59 tests (`npm test`; section 12.4) |
-| AI generation | Not implemented |
-| PDF ingestion | Not implemented in the current documented application |
+| Frontend tests | Vitest + Testing Library: 79 tests at v0.4.0, 88 with file import (`npm test`; section 12.4) |
+| AI generation | Cards suggested from a note by a local model in Ollama, since v0.4.0 (section 4.6) |
+| File import | PDF, TXT, MD, DOCX, PPTX as text-only notes: built after v0.4.0, not released (section 4.7) |
 
-The v0.3.2 release assets are uploaded:
+The v0.4.0 release assets are uploaded:
 
-- EXE: 2,593,095 bytes, SHA-256 `356d5f1033df388da450a0a6c19db93240ec902f35606fb8c0f237b331ff8f8a`.
-- MSI: 3,600,384 bytes, SHA-256 `ffc1b2ae7496f7a659c31da61b27a6f5be9ee08589dfd3f90e32d34ec1cb9ee5`.
+- EXE: 2,784,897 bytes, SHA-256 `4b453970153479f44046f3324fe0f942c93f722ed04161c6ce91861df6e50b0e`.
+- MSI: 3,866,624 bytes, SHA-256 `29d0a39f1fc439feb5b84467f8f8d5e37fcbad40b4647fa83b4b6561f985f283`.
 
-The published files were downloaded and their hashes matched the ones the Windows build logged. That is verified release metadata, not a fresh installation test: v0.3.2 has not yet been installed on Windows.
+The published files were downloaded and their hashes matched the ones the Windows build logged (and GitHub's own asset digests). That is verified release metadata, not a fresh installation test: neither v0.3.2 nor v0.4.0 has been installed on Windows yet.
 
 ### 3.2 Important distinction: repository, app, and personal data
 
@@ -451,6 +451,35 @@ How it works:
 - Closing after Discard needs the `core:window:allow-destroy` capability in `src-tauri/capabilities/default.json`.
 - The native close path was checked on Linux (WebKitGTK) before release, but not yet on Windows.
 
+## 4.6 Suggested cards (local AI)
+
+Added in v0.4.0. The first AI feature, deliberately narrow.
+
+The flow: open a note → *Suggest cards* → choose a model → wait (with *Stop*) → check the drafts → choose a deck → save.
+
+- **Only Ollama on this computer.** Synapse asks `http://127.0.0.1:11434` and nothing else, and only when the user presses *Suggest cards*. The HTTP client (`reqwest`, no TLS backend) ignores proxies and follows no redirects. Ollama's cloud models (marked `remote_host`/`remote_model`, or named `…:cloud`/`…-cloud`) are never listed, and the chosen model is checked against the local list again before the note is sent. The cloud filter follows Ollama's documented fields; it hasn't been tested against a real cloud entry.
+- **Drafts, not writes.** Nothing is stored until the user saves. Drafts aren't kept anywhere, so the schema and backup format are unchanged (no migration). Suggested cards count as unsaved changes.
+- **Kept to the note.** A model can't be made to forget what it knows, so what's checked is where each card says it came from. The model must quote, for each card, the passage its answer comes from. `suggest.rs` keeps a card only if the quote is in the note word for word (`quoted_from`), its answer is drawn from the quote (`drawn_from`: at least half its significant words), and the answer doesn't just repeat the question. Each kept card shows its quote, and lists answer words the note never uses (`unfamiliar`). These checks catch most outside facts, not all; the user still reads every card.
+- **Saving is all or nothing.** `create_flashcards` (in `authoring.rs`) checks every card as a typed card is checked and saves them in one transaction. A refused card comes back with its `index` and `field`, and the frontend keeps that error on the right draft by its key.
+- **Limits.** Up to 10 cards; notes up to 12,000 characters (`SUGGESTION_NOTE_MAX_CHARS`). Longer notes are refused, not cut, and so is a prompt that fills the 16,384-token context. Temperature is 0.
+- **Stopping.** *Stop*, or leaving the screen, drops the request, and Ollama cancels the generation. Checked in Ollama's log.
+- **Checked against real models.** Ollama 0.40.6 with qwen2.5:0.5b, llama3.2:1b and llama3.2:3b. Every quote was verbatim, and the stricter instructions alone stopped the 1B model adding facts the note doesn't state. Small models still write weak cards; 3B and up are noticeably better. A skipped test (`real_ollama_lists_the_model_and_suggests_cards`) asks a real Ollama.
+
+## 4.7 Importing files as notes
+
+Built after v0.4.0; not yet released. *Notes* → *Import file* reads a PDF, TXT, MD, DOCX or PPTX and opens its text in the new-note form to check, edit and save.
+
+- **The product decision: text only, originals not kept.** An import becomes an ordinary note. Synapse doesn't copy the file, link to it, or remember where it was, so the schema and backup format don't change. This is the "smaller import-as-text feature" of section 10.6. Keeping originals, which the original vision prefers, remains a separate, larger feature.
+- **What's read** (`extract.rs`):
+  - PDF: page text in order, with lines broken at the page edge rejoined. Pages without text are reported, and a PDF with no text at all is refused (no OCR).
+  - TXT/MD: UTF-8, UTF-16 with a byte order mark, or else Windows-1252. Markdown stays as written, and its title comes from front matter or the first heading.
+  - DOCX: body paragraphs, list items as `- `, table rows on one line separated by tabs.
+  - PPTX: slides in shown order, with speaker notes.
+  - The title is the document's own title, or else the file name.
+- **PDFs are read in a helper process.** `pdf-extract` panics on some files, and release builds use `panic = "abort"`. So Synapse starts itself with `--read-pdf-text` (handled in `main.rs` before Tauri), pipes the PDF in and reads JSON back. A crash, or a run past 60 seconds, is just "couldn't read that PDF". `tests/pdf_helper.rs` runs the real binary as the helper.
+- **Limits.** Files up to 50 MB. Text over a note's 100,000 characters is shown with a warning and must be shortened before saving. `.doc`/`.ppt` aren't supported. Suggestions are limited to 12,000 characters, so long imports need splitting before *Suggest cards*.
+- Checked in the real app on Linux, through the GTK file window, with files made by LibreOffice, pandoc and python-pptx. Not yet checked on Windows.
+
 ______________________________________________________________________
 
 ## 5. FSRS and personalization
@@ -645,7 +674,9 @@ Current README identifies these main files:
 | `Dashboard.tsx` | Study Desk |
 | `DeckDetail.tsx` | Deck content and management |
 | `ReviewSession.tsx` | Review interaction |
-| `Notes.tsx` | Notes library and note flows |
+| `Notes.tsx` | Notes library and note flows, including importing a file as a note |
+| `SuggestCards.tsx` | Suggesting cards from a note and checking them before saving |
+| `deckChoices.ts` | The decks a card can be added to, for both card-from-note screens |
 | `ArchivedDecks.tsx` | Archived-deck recovery |
 | `Backup.tsx` | Export and restore |
 | `App.css` | Shared visual tokens and presentation |
@@ -669,6 +700,8 @@ For example, hiding a Restore button is useful UX, but the Rust command must sti
 | `study.rs` | Deck study data, sessions, recording reviews |
 | `authoring.rs` | Deck/card creation and lifecycle |
 | `notes.rs` | Note lifecycle |
+| `suggest.rs` | Asking Ollama for suggested cards, and checking them against the note |
+| `extract.rs` | Reading a file's text for import; the PDF helper process |
 | `export.rs` | Backup creation |
 | `import.rs` | Backup checking and replacement |
 
@@ -954,8 +987,7 @@ The current README is explicit about these gaps.
 
 ### Content and ingestion
 
-- PDF import.
-- Slide import.
+- Keeping imported originals. Imports (section 4.7, unreleased) keep only the text.
 - Image attachments.
 - OCR.
 - Handwritten-note recognition.
@@ -967,13 +999,13 @@ The current README is explicit about these gaps.
 
 ### AI
 
-- Automatic flashcard generation.
+- Flashcard generation beyond v0.4.0's local suggestions: no cloud providers, no choice of card count, and no suggestions from notes over 12,000 characters.
 - Summaries.
 - Quizzes.
 - Memory aids.
 - Feynman feedback.
 - Socratic tutoring.
-- Local-model setup.
+- Local-model setup inside Synapse (Ollama is installed and managed by the user).
 - Cloud-provider integrations.
 - Local/cloud routing.
 
@@ -1063,6 +1095,8 @@ Your reports recorded:
 - 136 after session progress and keyboard ratings.
 - 136 Rust tests at v0.3.2, passing on Linux and in the Windows release run.
 - Frontend: 16 tests with the unsaved-changes prompt, then 59 with the Stage B suite (v0.3.2).
+- v0.4.0: 160 Rust tests plus 1 skipped real-Ollama test, and 79 frontend tests, passing on Linux and in the Windows release run.
+- File import (unreleased): 175 Rust unit tests, 4 helper-process integration tests, and 88 frontend tests, on Linux.
 
 The totals up to v0.3.1 are historical reports. The v0.3.2 totals were run in a cloud session and in the Windows release run, not in your local environment.
 
@@ -1126,6 +1160,7 @@ ______________________________________________________________________
 | v0.3.0 | Redesigned presentation plus the accumulated review-experience work |
 | v0.3.1 | Corrective Study Desk shell and visual alignment |
 | v0.3.2 | Unsaved-changes protection and the first frontend test suite; first release built by the Release workflow |
+| v0.4.0 | Cards suggested from a note by a local model in Ollama, kept to the note by verified quotes |
 
 Not every feature was committed at the same time as its release bump. Session progress and keyboard ratings were committed September 22 and packaged later.
 
@@ -1178,7 +1213,7 @@ Things to know:
 - A run that fails before the last step builds, tags and publishes nothing, so it can be fixed and run again.
 - v0.3.2's first run stopped at the version check, on a PowerShell quirk: `package-lock.json` has an empty key, which needs `ConvertFrom-Json -AsHashtable`. The fix went into the commit that was then released.
 - The workflow creates a lightweight tag. v0.3.0 and v0.3.1 were annotated tags.
-- GitHub warns that `actions/checkout@v4` and `actions/setup-node@v4` target Node 20; they will need moving to v5.
+- GitHub warns that `actions/checkout@v4` and `actions/setup-node@v4` target Node 20. GitHub now forces them onto Node 24 (seen in the v0.4.0 run), and they should be moved to v5.
 - The installers are still unsigned.
 
 ______________________________________________________________________
@@ -1408,7 +1443,7 @@ This supports faster changes without repeatedly depending on manual memory.
 
 ### Stage C — Choose the next capability leap
 
-**Next.** With Stages A and B done, this is the open decision.
+**Option 2 done in v0.4.0** (section 4.6). **Option 1 built, as text-only import, and not yet released** (section 4.7). Stage D is next.
 
 There are two reasonable paths.
 
@@ -1545,8 +1580,8 @@ ______________________________________________________________________
 | Visual fidelity | Must still be judged against your reference in the real app |
 | Frontend regression testing | Started in v0.3.2: 59 interaction tests; no visual or real-window tests |
 | Unsaved work protection | Implemented in v0.3.2 (a prompt, not autosave) |
-| Material ingestion | Not yet implemented |
-| AI study assistance | Not yet implemented |
+| Material ingestion | Text-only file import built (PDF, TXT, MD, DOCX, PPTX); not yet released |
+| AI study assistance | Local card suggestions from notes since v0.4.0, kept to the note by verified quotes |
 | Public distribution | Windows releases built and published by the Release workflow |
 | Signing and wider platform validation | Not established |
 | Long-term vision | Defined, but much broader than the released app |
