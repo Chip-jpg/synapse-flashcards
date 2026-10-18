@@ -7,7 +7,7 @@ Those are two different levels of maturity, and keeping them separate is essenti
 - The current application is real, released, and usable without AI.
 - The broader study-companion vision is the roadmap, not a list of features already implemented.
 
-As of this update, the latest published release is v0.4.0, published October 18, 2026 from `main` at `017ae508e1f9482c6b0fce494ba6b6f538a8e4a2` (`chore: release v0.4.0 (#8)`). It includes both Windows x64 installer formats. v0.4.0 added the first AI feature: cards suggested from a note by a model in Ollama on the user's computer (section 4.6). v0.3.2 added unsaved-changes protection and the first frontend test suite (sections 4.5 and 12). Since v0.4.0, importing files as notes (section 4.7) has been built but not yet released. The rest of this breakdown was first written against v0.3.1 and has been updated wherever those changes reach.
+As of this update, the latest published release is v0.5.0, published October 18, 2026 from `main` at `390fa47160cfbc2a3dbe4886c79d83d1cfef1b45` (`chore: release v0.5.0 (#10)`). It includes both Windows x64 installer formats. v0.5.0 added importing files as notes (section 4.7). v0.4.0 added the first AI feature: cards suggested from a note by a model in Ollama on the user's computer (section 4.6). v0.3.2 added unsaved-changes protection and the first frontend test suite (sections 4.5 and 12). The rest of this breakdown was first written against v0.3.1 and has been updated wherever those changes reach.
 
 This breakdown combines that current repository documentation, your implementation reports, and the original product/specification documents. The older specification is useful for architecture and intent, but parts of its feature-status descriptions are outdated—for example, it predates the restore/unarchive work.
 
@@ -88,23 +88,23 @@ ______________________________________________________________________
 | Repository | `Chip-jpg/synapse-flashcards` |
 | Visibility | Public, by your deliberate choice |
 | Development environments | Your local Windows setup, and Claude Code cloud sessions (Linux) |
-| Latest published release | v0.4.0 (October 18, 2026) |
-| Release commit | `017ae508e1f9482c6b0fce494ba6b6f538a8e4a2` |
-| Windows installer | `Synapse_0.4.0_x64-setup.exe` |
-| Windows MSI | `Synapse_0.4.0_x64_en-US.msi` |
+| Latest published release | v0.5.0 (October 18, 2026) |
+| Release commit | `390fa47160cfbc2a3dbe4886c79d83d1cfef1b45` |
+| Windows installer | `Synapse_0.5.0_x64-setup.exe` |
+| Windows MSI | `Synapse_0.5.0_x64_en-US.msi` |
 | Installer signing | Release notes say the installers are unsigned |
 | How releases are built | The manual **Release** GitHub Actions workflow on `windows-latest` (since v0.3.2; section 13) |
 | Database migrations documented in current README | `0001`–`0010` |
-| Frontend tests | Vitest + Testing Library: 79 tests at v0.4.0, 88 with file import (`npm test`; section 12.4) |
+| Frontend tests | Vitest + Testing Library: 88 tests at v0.5.0 (`npm test`; section 12.4) |
 | AI generation | Cards suggested from a note by a local model in Ollama, since v0.4.0 (section 4.6) |
-| File import | PDF, TXT, MD, DOCX, PPTX as text-only notes: built after v0.4.0, not released (section 4.7) |
+| File import | PDF, TXT, MD, DOCX, PPTX as text-only notes, since v0.5.0 (section 4.7) |
 
-The v0.4.0 release assets are uploaded:
+The v0.5.0 release assets are uploaded:
 
-- EXE: 2,784,897 bytes, SHA-256 `4b453970153479f44046f3324fe0f942c93f722ed04161c6ce91861df6e50b0e`.
-- MSI: 3,866,624 bytes, SHA-256 `29d0a39f1fc439feb5b84467f8f8d5e37fcbad40b4647fa83b4b6561f985f283`.
+- EXE: @EXE_SIZE@ bytes, SHA-256 `@EXE_HASH@`.
+- MSI: @MSI_SIZE@ bytes, SHA-256 `@MSI_HASH@`.
 
-The published files were downloaded and their hashes matched the ones the Windows build logged (and GitHub's own asset digests). That is verified release metadata, not a fresh installation test: neither v0.3.2 nor v0.4.0 has been installed on Windows yet.
+The published files were downloaded and their hashes matched the ones the Windows build logged (and GitHub's own asset digests). That is verified release metadata, not a fresh installation test: none of v0.3.2, v0.4.0, or v0.5.0 has been installed on Windows yet.
 
 ### 3.2 Important distinction: repository, app, and personal data
 
@@ -467,7 +467,7 @@ The flow: open a note → *Suggest cards* → choose a model → wait (with *Sto
 
 ## 4.7 Importing files as notes
 
-Built after v0.4.0; not yet released. *Notes* → *Import file* reads a PDF, TXT, MD, DOCX or PPTX and opens its text in the new-note form to check, edit and save.
+Added in v0.5.0. *Notes* → *Import file* reads a PDF, TXT, MD, DOCX or PPTX and opens its text in the new-note form to check, edit and save.
 
 - **The product decision: text only, originals not kept.** An import becomes an ordinary note. Synapse doesn't copy the file, link to it, or remember where it was, so the schema and backup format don't change. This is the "smaller import-as-text feature" of section 10.6. Keeping originals, which the original vision prefers, remains a separate, larger feature.
 - **What's read** (`extract.rs`):
@@ -987,7 +987,7 @@ The current README is explicit about these gaps.
 
 ### Content and ingestion
 
-- Keeping imported originals. Imports (section 4.7, unreleased) keep only the text.
+- Keeping imported originals. Imports (section 4.7, since v0.5.0) keep only the text.
 - Image attachments.
 - OCR.
 - Handwritten-note recognition.
@@ -1096,7 +1096,7 @@ Your reports recorded:
 - 136 Rust tests at v0.3.2, passing on Linux and in the Windows release run.
 - Frontend: 16 tests with the unsaved-changes prompt, then 59 with the Stage B suite (v0.3.2).
 - v0.4.0: 160 Rust tests plus 1 skipped real-Ollama test, and 79 frontend tests, passing on Linux and in the Windows release run.
-- File import (unreleased): 175 Rust unit tests, 4 helper-process integration tests, and 88 frontend tests, on Linux.
+- v0.5.0: 175 Rust unit tests plus 1 skipped, 4 helper-process integration tests, and 88 frontend tests, passing on Linux and in the Windows release run.
 
 The totals up to v0.3.1 are historical reports. The v0.3.2 totals were run in a cloud session and in the Windows release run, not in your local environment.
 
@@ -1161,6 +1161,7 @@ ______________________________________________________________________
 | v0.3.1 | Corrective Study Desk shell and visual alignment |
 | v0.3.2 | Unsaved-changes protection and the first frontend test suite; first release built by the Release workflow |
 | v0.4.0 | Cards suggested from a note by a local model in Ollama, kept to the note by verified quotes |
+| v0.5.0 | Importing PDF, text, Markdown, Word, and PowerPoint files as text-only notes |
 
 Not every feature was committed at the same time as its release bump. Session progress and keyboard ratings were committed September 22 and packaged later.
 
@@ -1443,7 +1444,7 @@ This supports faster changes without repeatedly depending on manual memory.
 
 ### Stage C — Choose the next capability leap
 
-**Option 2 done in v0.4.0** (section 4.6). **Option 1 built, as text-only import, and not yet released** (section 4.7). Stage D is next.
+**Option 2 done in v0.4.0** (section 4.6). **Option 1 done, as text-only import, in v0.5.0** (section 4.7). Stage D is next: the 12,000-character suggestion limit is the first gap between them, since imported documents are often longer.
 
 There are two reasonable paths.
 
@@ -1580,7 +1581,7 @@ ______________________________________________________________________
 | Visual fidelity | Must still be judged against your reference in the real app |
 | Frontend regression testing | Started in v0.3.2: 59 interaction tests; no visual or real-window tests |
 | Unsaved work protection | Implemented in v0.3.2 (a prompt, not autosave) |
-| Material ingestion | Text-only file import built (PDF, TXT, MD, DOCX, PPTX); not yet released |
+| Material ingestion | Text-only file import (PDF, TXT, MD, DOCX, PPTX) since v0.5.0 |
 | AI study assistance | Local card suggestions from notes since v0.4.0, kept to the note by verified quotes |
 | Public distribution | Windows releases built and published by the Release workflow |
 | Signing and wider platform validation | Not established |
