@@ -2,6 +2,8 @@ mod authoring;
 mod commands;
 mod db;
 mod export;
+// Public for its test of the PDF helper process (`tests/pdf_helper.rs`).
+pub mod extract;
 mod import;
 mod notes;
 mod scheduler;
@@ -58,6 +60,7 @@ pub fn run() {
             commands::update_note,
             commands::delete_note,
             commands::restore_note,
+            commands::import_file,
             commands::get_models,
             commands::suggest_cards,
             commands::stop_suggesting

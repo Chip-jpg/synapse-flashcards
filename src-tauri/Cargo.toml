@@ -40,7 +40,19 @@ reqwest = { version = "0.13", default-features = false, features = ["json"] }
 # Stopping a suggestion the user cancelled, which also closes the connection,
 # so Ollama stops generating.
 tokio-util = "0.7"
+# Reading the text of a PDF the user imports. Only ever run in a separate
+# helper process (see `extract.rs`), so a file it can't handle can't take
+# Synapse down with it.
+pdf-extract = "0.12"
+# Reading the text of Word (.docx) and PowerPoint (.pptx) files, which are
+# zip archives of XML.
+quick-xml = "0.42"
 
+
+[dev-dependencies]
+# Making PDFs to import in tests. The version and features `pdf-extract`
+# already uses, so it adds nothing to the build.
+lopdf = { version = "0.42", default-features = false, features = ["wasm_js"] }
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

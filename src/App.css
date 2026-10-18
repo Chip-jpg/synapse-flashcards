@@ -1589,8 +1589,20 @@ textarea.field-input {
 
 /* `.button` aligns to the start of column layouts; in these rows it lines up
    with the text beside it instead. */
-.page-header > .button {
+.page-header > .button,
+.page-header > .page-actions {
   align-self: flex-end;
+}
+
+/* Something to check about an imported file's text before saving it as a
+   note. Amber, like notes and the questions asked about them. */
+.import-warning {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  color: var(--amber-ink);
+  background-color: var(--amber-soft);
+  border: 1px solid var(--amber-line);
+  border-radius: var(--radius-md);
 }
 
 .note-item > .button,

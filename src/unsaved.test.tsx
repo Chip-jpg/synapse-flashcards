@@ -127,6 +127,29 @@ describe("leaving a form with unsaved changes", () => {
     expect(question().open).toBe(true);
   });
 
+  it("asks first when a file's text was imported, even if none was changed", async () => {
+    fakeBackend({
+      import_file: () => ({
+        status: "read",
+        fileName: "Lecture 3.pdf",
+        kind: "pdf",
+        title: "Lecture 3",
+        body: "Mitosis is cell division.",
+        pages: 1,
+        pagesWithoutText: [],
+      }),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(sidebar().getByRole("button", { name: "Notes" }));
+    await user.click(await screen.findByRole("button", { name: "Import file" }));
+    await screen.findByRole("heading", { name: "New note from Lecture 3.pdf" });
+
+    await user.click(sidebar().getByRole("button", { name: "Study Desk" }));
+
+    expect(question().open).toBe(true);
+  });
+
   it("leaves without asking while only a model is being chosen", async () => {
     fakeBackend();
     const user = userEvent.setup();
