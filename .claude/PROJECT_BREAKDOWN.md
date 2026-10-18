@@ -7,7 +7,7 @@ Those are two different levels of maturity, and keeping them separate is essenti
 - The current application is real, released, and usable without AI.
 - The broader study-companion vision is the roadmap, not a list of features already implemented.
 
-As of this update, the latest published release is v0.5.0, published October 18, 2026 from `main` at `390fa47160cfbc2a3dbe4886c79d83d1cfef1b45` (`chore: release v0.5.0 (#10)`). It includes both Windows x64 installer formats. v0.5.0 added importing files as notes (section 4.7). v0.4.0 added the first AI feature: cards suggested from a note by a model in Ollama on the user's computer (section 4.6). v0.3.2 added unsaved-changes protection and the first frontend test suite (sections 4.5 and 12). The rest of this breakdown was first written against v0.3.1 and has been updated wherever those changes reach.
+As of this update, the latest published release is v0.5.0, published October 18, 2026 from `main` at `9952cc43999b4fb3bec831559f473835499a6daf` (`fix: satisfy clippy 1.99 in UTF-16 decoding (#11)`). It includes both Windows x64 installer formats. v0.5.0 added importing files as notes (section 4.7). v0.4.0 added the first AI feature: cards suggested from a note by a model in Ollama on the user's computer (section 4.6). v0.3.2 added unsaved-changes protection and the first frontend test suite (sections 4.5 and 12). The rest of this breakdown was first written against v0.3.1 and has been updated wherever those changes reach.
 
 This breakdown combines that current repository documentation, your implementation reports, and the original product/specification documents. The older specification is useful for architecture and intent, but parts of its feature-status descriptions are outdated—for example, it predates the restore/unarchive work.
 
@@ -89,7 +89,7 @@ ______________________________________________________________________
 | Visibility | Public, by your deliberate choice |
 | Development environments | Your local Windows setup, and Claude Code cloud sessions (Linux) |
 | Latest published release | v0.5.0 (October 18, 2026) |
-| Release commit | `390fa47160cfbc2a3dbe4886c79d83d1cfef1b45` |
+| Release commit | `9952cc43999b4fb3bec831559f473835499a6daf` |
 | Windows installer | `Synapse_0.5.0_x64-setup.exe` |
 | Windows MSI | `Synapse_0.5.0_x64_en-US.msi` |
 | Installer signing | Release notes say the installers are unsigned |
@@ -1213,6 +1213,7 @@ Things to know:
 
 - A run that fails before the last step builds, tags and publishes nothing, so it can be fixed and run again.
 - v0.3.2's first run stopped at the version check, on a PowerShell quirk: `package-lock.json` has an empty key, which needs `ConvertFrom-Json -AsHashtable`. The fix went into the commit that was then released.
+- v0.5.0's first run stopped at Clippy. The workflow installs the latest stable Rust (1.99 then), whose clippy had a lint (`chunks_exact_to_as_chunks`) that the 1.97 used locally didn't. The fix (#11) is the commit that was released. Before a release, run clippy with the latest stable (`rustup toolchain install stable`, then `cargo +stable clippy …`), or pin the toolchain in `rust-toolchain.toml`.
 - The workflow creates a lightweight tag. v0.3.0 and v0.3.1 were annotated tags.
 - GitHub warns that `actions/checkout@v4` and `actions/setup-node@v4` target Node 20. GitHub now forces them onto Node 24 (seen in the v0.4.0 run), and they should be moved to v5.
 - The installers are still unsigned.
