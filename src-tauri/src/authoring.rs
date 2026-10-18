@@ -12,6 +12,10 @@
 //! - Card front and back: both required, each at most [`CARD_TEXT_MAX_CHARS`].
 //!   Only outer whitespace is trimmed; line breaks inside are kept as typed.
 //!
+//! Several cards can be added at once ([`create_flashcards`], used to save
+//! suggested cards): each is checked exactly as a single card is, and either
+//! all of them are saved or, if any is refused, none.
+//!
 //! Editing a card changes only its text: its FSRS scheduling and review
 //! history stay exactly as they were. Deleting a card is a soft delete: the
 //! row gets a `deleted_at` time and disappears from lists, counts, and
@@ -64,6 +68,9 @@ use crate::study;
 pub const DECK_NAME_MAX_CHARS: usize = 100;
 pub const DECK_DESCRIPTION_MAX_CHARS: usize = 500;
 pub const CARD_TEXT_MAX_CHARS: usize = 2_000;
+/// The most cards [`create_flashcards`] adds in one go: far more than one
+/// suggestion offers, but a bound on what the frontend can ask for.
+pub const CARD_BATCH_MAX: usize = 100;
 
 /// A normal deck as shown on its own screen:
 /// `{ id, name, description, cardCount, dueCount, cards, deletedCards }`.
@@ -122,6 +129,14 @@ pub struct DeletedCard {
     pub deleted_at: String,
 }
 
+/// A card's text as sent, before it is checked: `{ front, back }`. Also the
+/// shape of a suggested card (`suggest.rs`), which is saved the same way.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CardText {
+    pub front: String,
+    pub back: String,
+}
+
 /// What was wrong with the text a user entered. Nothing was saved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InvalidInput {
@@ -140,6 +155,12 @@ pub enum InvalidInput {
 #[derive(Debug)]
 pub enum AuthoringError {
     Invalid(InvalidInput),
+    /// One of several cards was refused: which one (counting from 0), and why.
+    InvalidCard(usize, InvalidInput),
+    /// No cards were sent to add.
+    NoCards,
+    /// More than [`CARD_BATCH_MAX`] cards were sent to add at once.
+    TooManyCards,
     /// No deck has this id.
     DeckNotFound,
     /// The deck (or the card's deck) is the sample deck, which can't be edited.
@@ -425,7 +446,62 @@ pub async fn create_flashcard(
     // Stops here, before writing anything, if the deck is missing, archived,
     // or the sample deck. Returning early drops `tx`, which rolls it back.
     load_deck_detail(&mut tx, deck_id, &now).await?;
+    insert_new_card(&mut tx, deck_id, &card, &now).await?;
 
+    let deck = load_deck_detail(&mut tx, deck_id, &now).await?;
+    tx.commit().await?;
+    Ok(deck)
+}
+
+/// Adds several cards to a normal deck at once, in the order given, and
+/// returns the deck with updated counts. Each card is checked and starts
+/// exactly as one added by [`create_flashcard`] does.
+///
+/// All or nothing: every card is checked before anything is written, and the
+/// writes share one transaction, so if any card is refused (it is reported by
+/// its position, counting from 0) or the deck can't take cards, none is added.
+pub async fn create_flashcards(
+    pool: &SqlitePool,
+    deck_id: i64,
+    cards: &[CardText],
+    now: DateTime<Utc>,
+) -> Result<DeckDetail, AuthoringError> {
+    if cards.is_empty() {
+        return Err(AuthoringError::NoCards);
+    }
+    if cards.len() > CARD_BATCH_MAX {
+        return Err(AuthoringError::TooManyCards);
+    }
+    let cards = cards
+        .iter()
+        .enumerate()
+        .map(|(index, card)| {
+            validate_card(&card.front, &card.back)
+                .map_err(|problem| AuthoringError::InvalidCard(index, problem))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let now = to_db_time(now);
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    // As in `create_flashcard`: refused here, before any card is written.
+    load_deck_detail(&mut tx, deck_id, &now).await?;
+    for card in &cards {
+        insert_new_card(&mut tx, deck_id, card, &now).await?;
+    }
+
+    let deck = load_deck_detail(&mut tx, deck_id, &now).await?;
+    tx.commit().await?;
+    Ok(deck)
+}
+
+/// Writes one checked card into `deck_id` as a brand-new FSRS card (see
+/// [`create_flashcard`]). The caller has already checked the deck.
+async fn insert_new_card(
+    conn: &mut SqliteConnection,
+    deck_id: i64,
+    card: &NewCard,
+    now: &str,
+) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO flashcards (deck_id, front, back, fsrs_state, due, reps, lapses,
                                  created_at, updated_at)
@@ -434,13 +510,10 @@ pub async fn create_flashcard(
     .bind(deck_id)
     .bind(&card.front)
     .bind(&card.back)
-    .bind(&now)
-    .execute(&mut *tx)
+    .bind(now)
+    .execute(conn)
     .await?;
-
-    let deck = load_deck_detail(&mut tx, deck_id, &now).await?;
-    tx.commit().await?;
-    Ok(deck)
+    Ok(())
 }
 
 /// Where a card sits and what state it is in: everything needed to decide
@@ -1267,6 +1340,171 @@ mod tests {
             assert!(matches!(
                 deck_detail(&pool, sample, now).await,
                 Err(AuthoringError::SampleDeck)
+            ));
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM flashcards").await, 1);
+        });
+    }
+
+    fn card(front: &str, back: &str) -> CardText {
+        CardText {
+            front: front.to_string(),
+            back: back.to_string(),
+        }
+    }
+
+    #[test]
+    fn several_cards_are_added_in_order_each_as_a_new_card() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let now = at(NOW);
+            let deck = deck_id(&pool, "Biology").await;
+            create_flashcard(&pool, deck, "Already here", "a", now)
+                .await
+                .unwrap();
+
+            let detail = create_flashcards(
+                &pool,
+                deck,
+                &[
+                    card(" What is mitosis? ", "Cell division\ninto two cells.\n"),
+                    card(
+                        "Name the phases.",
+                        " Prophase, metaphase, anaphase, telophase.",
+                    ),
+                ],
+                now,
+            )
+            .await
+            .unwrap();
+
+            let texts: Vec<(&str, &str)> = detail
+                .cards
+                .iter()
+                .map(|card| (card.front.as_str(), card.back.as_str()))
+                .collect();
+            assert_eq!(
+                texts,
+                vec![
+                    ("Already here", "a"),
+                    ("What is mitosis?", "Cell division\ninto two cells."),
+                    (
+                        "Name the phases.",
+                        "Prophase, metaphase, anaphase, telophase."
+                    ),
+                ]
+            );
+            assert_eq!((detail.card_count, detail.due_count), (3, 3));
+            assert_eq!(deck_detail(&pool, deck, now).await.unwrap(), detail);
+
+            // Each starts exactly as a card typed on the deck screen does.
+            let at_now = "2026-09-15T12:00:00.000Z".to_string();
+            for id in &card_ids(&pool, deck).await[1..] {
+                let (deck_of, _, _, state, stability, difficulty, due, last, reps, lapses, c, u) =
+                    stored_card(&pool, *id).await;
+                assert_eq!(
+                    (deck_of, state, stability, difficulty, due, last, reps, lapses, c, u),
+                    (
+                        Some(deck),
+                        "New".to_string(),
+                        None,
+                        None,
+                        None,
+                        None,
+                        0,
+                        0,
+                        at_now.clone(),
+                        at_now.clone()
+                    )
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn if_any_card_is_refused_none_is_added() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let deck = deck_id(&pool, "Biology").await;
+            let too_long = "x".repeat(CARD_TEXT_MAX_CHARS + 1);
+
+            let attempts = [
+                (
+                    vec![card("q1", "a1"), card("q2", "a2"), card("q3", " \n")],
+                    2,
+                    InvalidInput::BackBlank,
+                ),
+                (
+                    vec![card(&too_long, "a1"), card("", "")],
+                    0,
+                    InvalidInput::FrontTooLong,
+                ),
+                (
+                    vec![card("q1", "a1"), card("", "a2")],
+                    1,
+                    InvalidInput::FrontBlank,
+                ),
+            ];
+            for (cards, index, expected) in attempts {
+                let result = create_flashcards(&pool, deck, &cards, at(NOW)).await;
+                assert!(
+                    matches!(
+                        result,
+                        Err(AuthoringError::InvalidCard(i, problem)) if i == index && problem == expected
+                    ),
+                    "{result:?}"
+                );
+            }
+            assert!(card_ids(&pool, deck).await.is_empty());
+        });
+    }
+
+    #[test]
+    fn an_empty_or_oversized_batch_is_refused() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let deck = deck_id(&pool, "Biology").await;
+
+            assert!(matches!(
+                create_flashcards(&pool, deck, &[], at(NOW)).await,
+                Err(AuthoringError::NoCards)
+            ));
+            let too_many = vec![card("q", "a"); CARD_BATCH_MAX + 1];
+            assert!(matches!(
+                create_flashcards(&pool, deck, &too_many, at(NOW)).await,
+                Err(AuthoringError::TooManyCards)
+            ));
+            assert!(card_ids(&pool, deck).await.is_empty());
+
+            // Exactly at the limit is fine.
+            let most = vec![card("q", "a"); CARD_BATCH_MAX];
+            let detail = create_flashcards(&pool, deck, &most, at(NOW))
+                .await
+                .unwrap();
+            assert_eq!(detail.card_count, CARD_BATCH_MAX as i64);
+        });
+    }
+
+    #[test]
+    fn a_batch_for_a_missing_sample_or_archived_deck_adds_nothing() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let now = at(NOW);
+            let sample = sample_deck_id(&pool).await;
+            let archived = deck_id(&pool, "Old").await;
+            archive_deck(&pool, archived, now).await.unwrap();
+            let cards = [card("q1", "a1"), card("q2", "a2")];
+
+            assert!(matches!(
+                create_flashcards(&pool, 999, &cards, now).await,
+                Err(AuthoringError::DeckNotFound)
+            ));
+            assert!(matches!(
+                create_flashcards(&pool, sample, &cards, now).await,
+                Err(AuthoringError::SampleDeck)
+            ));
+            assert!(matches!(
+                create_flashcards(&pool, archived, &cards, now).await,
+                Err(AuthoringError::DeckArchived)
             ));
             assert_eq!(count(&pool, "SELECT COUNT(*) FROM flashcards").await, 1);
         });

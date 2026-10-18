@@ -84,7 +84,22 @@ const FORMS: { form: string; open: (user: UserEvent) => Promise<void>; field: st
     },
     field: "Front",
   },
+  {
+    form: "checking suggested cards",
+    open: async (user) => {
+      await suggest(user);
+    },
+    field: "Front",
+  },
 ];
+
+/** Opens the note, and has the fake model suggest its one card. */
+async function suggest(user: UserEvent) {
+  await openNote(user);
+  await user.click(await screen.findByRole("button", { name: "Suggest cards" }));
+  await user.click(await screen.findByRole("button", { name: "Suggest cards" }));
+  await screen.findByRole("group", { name: "Card 1" });
+}
 
 describe("leaving a form with unsaved changes", () => {
   it.each(FORMS)("asks first when $form", async ({ open, field }) => {
@@ -99,6 +114,31 @@ describe("leaving a form with unsaved changes", () => {
     expect(question().open).toBe(true);
     expect(within(question()).getByRole("heading", { name: "Leave without saving?", hidden: true })).toBeTruthy();
     expect(document.activeElement).toBe(question());
+  });
+
+  it("asks first when cards were suggested, even if none was changed", async () => {
+    fakeBackend();
+    const user = userEvent.setup();
+    render(<App />);
+    await suggest(user);
+
+    await user.click(sidebar().getByRole("button", { name: "Study Desk" }));
+
+    expect(question().open).toBe(true);
+  });
+
+  it("leaves without asking while only a model is being chosen", async () => {
+    fakeBackend();
+    const user = userEvent.setup();
+    render(<App />);
+    await openNote(user);
+    await user.click(await screen.findByRole("button", { name: "Suggest cards" }));
+    await screen.findByLabelText("Model");
+
+    await user.click(sidebar().getByRole("button", { name: "Archived decks" }));
+
+    expect(question().open).toBe(false);
+    expect(await screen.findByRole("heading", { name: "Archived decks" })).toBeTruthy();
   });
 
   it("leaves an untouched form without asking", async () => {

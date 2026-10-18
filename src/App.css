@@ -1029,6 +1029,68 @@ html:has(.note-context) {
   scroll-padding-top: calc(min(14rem, 30vh) + 1.5rem);
 }
 
+/* Suggesting cards from a note: choosing a model, waiting for it, then
+   checking the cards it suggests. */
+
+.suggest-step {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+/* The model is working: a calm box with the loading spinner beside the text. */
+.suggest-waiting .confirm-question {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.suggest-waiting .confirm-question::before {
+  content: "";
+  flex: none;
+  width: 1.125rem;
+  height: 1.125rem;
+  margin-top: 0.125rem;
+  border: 2px solid var(--primary-line);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+/* The passage of the note a suggested card comes from, to check it against.
+   Amber, like notes. */
+.draft-source {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  background-color: var(--amber-soft);
+  border-left: 3px solid var(--amber);
+  border-radius: var(--radius-sm);
+}
+
+.draft-quote {
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.6;
+}
+
+/* Words of the answer the note never uses. */
+.draft-check {
+  margin: 0.5rem 0 0;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--amber-ink);
+}
+
+/* The name of a suggested card ("Card 2"), styled like a side label. */
+.draft-label {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
 /* Review session */
 
 .session {
@@ -1863,7 +1925,8 @@ textarea.field-input {
     transition: none;
   }
 
-  .loading::before {
+  .loading::before,
+  .suggest-waiting .confirm-question::before {
     animation: none;
   }
 }

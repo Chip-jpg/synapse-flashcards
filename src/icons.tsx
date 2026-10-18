@@ -165,6 +165,16 @@ export function DatabaseIcon() {
   );
 }
 
+/** A four-pointed spark: cards a model suggests. */
+export function SparkleIcon() {
+  return (
+    <Icon>
+      <path d="M11 3.5c.7 4.2 2.8 6.3 7 7-4.2.7-6.3 2.8-7 7-.7-4.2-2.8-6.3-7-7 4.2-.7 6.3-2.8 7-7z" />
+      <path d="M18.5 15v5M16 17.5h5" />
+    </Icon>
+  );
+}
+
 export function CheckIcon() {
   return (
     <Icon>

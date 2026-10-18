@@ -33,6 +33,13 @@ zip = { version = "8", default-features = false, features = ["deflate-flate2-zli
 # where the user chose, and an import only reads the file the user picked.
 # Called from Rust, so the frontend needs no dialog permission.
 tauri-plugin-dialog = "2"
+# Asking Ollama, on this computer, to suggest cards. Plain HTTP only: with no
+# TLS backend enabled the client can't reach an `https://` address at all, so
+# a note can't be sent to a cloud service by accident.
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
+# Stopping a suggestion the user cancelled, which also closes the connection,
+# so Ollama stops generating.
+tokio-util = "0.7"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

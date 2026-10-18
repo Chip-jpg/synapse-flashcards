@@ -6,6 +6,7 @@ mod import;
 mod notes;
 mod scheduler;
 mod study;
+mod suggest;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -18,6 +19,8 @@ pub fn run() {
         .manage(db::Database::default())
         // A checked backup waiting for the user to confirm a restore.
         .manage(import::ImportState::default())
+        // The card suggestion Ollama is working on, so it can be stopped.
+        .manage(suggest::Suggesting::default())
         .setup(|app| {
             // A backup checked in an earlier run but never confirmed or
             // cancelled (the window closed while Synapse asked) can't be
@@ -37,6 +40,7 @@ pub fn run() {
             commands::create_deck,
             commands::get_deck_detail,
             commands::create_flashcard,
+            commands::create_flashcards,
             commands::update_flashcard,
             commands::delete_flashcard,
             commands::restore_flashcard,
@@ -53,7 +57,10 @@ pub fn run() {
             commands::create_note,
             commands::update_note,
             commands::delete_note,
-            commands::restore_note
+            commands::restore_note,
+            commands::get_models,
+            commands::suggest_cards,
+            commands::stop_suggesting
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

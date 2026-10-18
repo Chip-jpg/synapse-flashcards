@@ -162,7 +162,35 @@ export type CommandError = {
   message: string;
   /** Only for input that failed validation: the form field to fix. */
   field?: Field;
+  /**
+   * Only when several cards were sent at once (`createFlashcards`): which one
+   * `field` belongs to, counting from 0.
+   */
+  index?: number;
 };
+
+/**
+ * Mirrors `CardText` in `src-tauri/src/authoring.rs`: a card's front and back
+ * before it is saved, such as a suggested card.
+ */
+export type CardText = { front: string; back: string };
+
+/**
+ * Mirrors `SuggestedCard` in `src-tauri/src/suggest.rs`: a suggested card, with
+ * the passage of the note it comes from (checked to be in the note) and the
+ * words of its answer that the note never uses, for the user to check.
+ */
+export type SuggestedCard = CardText & { source: string; unfamiliar: string[] };
+
+/**
+ * Mirrors `SuggestOutcome` in `src-tauri/src/commands.rs`. Suggested cards are
+ * drafts: nothing has been saved. `leftOut` counts suggestions dropped as
+ * unusable (blank, too long, or repeated), and `unsupported` those dropped as
+ * not coming from the note.
+ */
+export type SuggestOutcome =
+  | { status: "suggested"; cards: SuggestedCard[]; leftOut: number; unsupported: number }
+  | { status: "stopped" };
 
 /** Every active (not archived) deck with its due-card count. */
 export function getDecks(): Promise<Deck[]> {
@@ -207,6 +235,15 @@ export function getDeckDetail(deckId: number): Promise<DeckDetail> {
 /** Adds a new, immediately due card to a normal deck; resolves with the updated deck. */
 export function createFlashcard(deckId: number, front: string, back: string): Promise<DeckDetail> {
   return invoke<DeckDetail>("create_flashcard", { deckId, front, back });
+}
+
+/**
+ * Adds several new, immediately due cards to a normal deck at once; resolves
+ * with the updated deck. All or nothing: a refused card rejects with its
+ * `field` and `index`, and then no card is added.
+ */
+export function createFlashcards(deckId: number, cards: CardText[]): Promise<DeckDetail> {
+  return invoke<DeckDetail>("create_flashcards", { deckId, cards });
 }
 
 /** Replaces a card's text, keeping its schedule and history; resolves with its deck. */
@@ -334,6 +371,30 @@ export function deleteNote(noteId: number): Promise<void> {
  */
 export function restoreNote(noteId: number): Promise<void> {
   return invoke<void>("restore_note", { noteId });
+}
+
+/**
+ * The models cards can be suggested with: Ollama's local models, by name.
+ * Empty if Ollama has none; rejects with kind "failed" if Ollama can't be
+ * reached. Ollama's cloud models are never listed.
+ */
+export function getModels(): Promise<string[]> {
+  return invoke<string[]>("get_models");
+}
+
+/**
+ * Asks `model`, in Ollama on this computer, to suggest cards from a note.
+ * Nothing is saved. Resolves with `{ status: "stopped" }` if `stopSuggesting`
+ * is called first; rejects with kind "stale" if the model has left Ollama or
+ * the note was deleted.
+ */
+export function suggestCards(noteId: number, model: string): Promise<SuggestOutcome> {
+  return invoke<SuggestOutcome>("suggest_cards", { noteId, model });
+}
+
+/** Stops the suggestion being worked on, if any, which frees up the model. */
+export function stopSuggesting(): Promise<void> {
+  return invoke<void>("stop_suggesting");
 }
 
 /**
