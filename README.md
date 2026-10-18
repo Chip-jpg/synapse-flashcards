@@ -1,8 +1,9 @@
 # Synapse
 
 A local-first desktop flashcard app. Everything lives in one SQLite file on your own machine: no
-account, no server, no network calls. Reviews are scheduled with [FSRS](https://github.com/open-spaced-repetition/fsrs-rs)
-using its default parameters.
+account, no server, and nothing sent over the internet. Reviews are scheduled with [FSRS](https://github.com/open-spaced-repetition/fsrs-rs)
+using its default parameters. If you run [Ollama](https://ollama.com) on the same computer, a model
+there can suggest cards from your notes; Synapse talks to nothing else.
 
 Tauri 2 + React + TypeScript on the front, Rust + `sqlx` on the back. Rust owns the database,
 migrations, validation, scheduling, and every business rule; React only calls typed Tauri commands.
@@ -30,8 +31,12 @@ migrations, validation, scheduling, and every business rule; React only calls ty
   *Deleted notes*, where *Restore note* brings it back unchanged.
 - **Cards from notes** — with a note on screen, write a card yourself and add it to one of your
   decks. The card is an ordinary card; it isn't linked to the note.
+- **Suggested cards (optional)** — have a model in Ollama, on your own computer, suggest up to ten
+  cards from a note. You check, edit, and remove them, then save the ones you want into a deck.
+  Nothing is saved until you do, and the note never leaves your computer.
 
-Everything works offline. Turning off networking changes nothing.
+Everything works offline. Turning off networking changes nothing: suggestions use Ollama on this
+computer, and the rest of Synapse doesn't need it at all.
 
 ## Running it in development
 
@@ -52,6 +57,14 @@ cargo test                                 # in src-tauri/
 cargo clippy --all-targets -- -D warnings  # in src-tauri/
 npm run build                              # tsc + vite, from the project root
 npm test                                   # frontend tests (Vitest), from the project root
+```
+
+The Rust tests answer for Ollama with a stand-in. One more test, skipped by default, asks a real
+Ollama running on this computer, to catch changes in its API:
+
+```sh
+# in src-tauri/, with the model installed in Ollama
+SYNAPSE_TEST_OLLAMA_MODEL=llama3.2:3b cargo test real_ollama -- --ignored
 ```
 
 ### Using a throwaway database
@@ -163,6 +176,22 @@ you. The card is checked exactly like one added on the deck screen, is due strai
 linked to the note — editing the note later never changes the card. After saving, *Open <deck>* takes
 you to the deck the card went into.
 
+**Have cards suggested from a note.** This needs [Ollama](https://ollama.com) installed and running
+on the same computer, with at least one model downloaded (for example `ollama pull llama3.2`;
+larger models write better cards but take longer). Open a note → *Suggest cards* → choose a model →
+*Suggest cards*. The model reads the note and suggests up to ten cards; this can take a minute or
+more without a fast graphics card, and *Stop* ends it. Then check every card, because models get
+things wrong: edit the front or back, *Remove card* for any you don't want, choose a deck, and
+*Save*. All the cards are saved together, checked exactly like cards you type, and are due
+straight away; if any is refused, none is saved and the one to fix is pointed out. Until you save,
+nothing is stored anywhere: leaving or closing first asks whether to discard the suggestions.
+Synapse remembers which model you used last.
+
+Only Ollama at its usual address on this computer (`127.0.0.1:11434`) is ever asked, and only
+when you press *Suggest cards*. Ollama's cloud models, which run on Ollama's servers, are never
+listed or used, so the note stays on your computer. Notes longer than 12,000 characters can't be
+used for suggestions yet; split a long note to use part of it.
+
 The Sample deck is read-only: you can study it, but not rename, archive, edit it, or add cards to it.
 
 ## Current limitations
@@ -178,14 +207,19 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   them one by one; there's no "restore all", no undo of a restore beyond deleting the card again,
   and no way to move a card to a different deck on the way back.
 - **Notes are plain typed text.** No formatting, attachments, PDFs, OCR, audio, web clips, search,
-  tags, or folders. Nothing generates cards from a note, and a card doesn't remember the note it was
-  written from — so deleting a note leaves its cards exactly where they are. A deleted note is
+  tags, or folders. A card doesn't remember the note it was written or suggested from — so deleting
+  a note leaves its cards exactly where they are. A deleted note is
   listed by title and dates only; there's no way to read its text again without restoring it.
 - **No sync, accounts, cloud, or collaboration.** By design.
 - **Default FSRS parameters only.** The optimizer that re-fits weights to your own history is
   future work and isn't built.
 - **One card type.** Front/back text only: no images, audio, cloze, or tags.
 - **No search, bulk actions, folders, or statistics.**
+- **Suggestions are a first step.** They come only from Ollama on this computer, from one typed
+  note of up to 12,000 characters at a time, as front/back cards. There's no cloud option, no
+  choice of how many cards, and no PDFs or other files to suggest from. Suggested cards aren't
+  linked to the note, and suggestions aren't kept: once you leave without saving, they're gone.
+  How good they are depends on the model.
 - **Frontend tests cover the risky interactions, not every screen.** The Rust core has unit tests
   (`cargo test`). On the React side, `npm test` runs the screens against a stand-in for the Rust
   core and checks reviewing (reveal before rating, the keyboard shortcuts, never rating twice),
@@ -198,7 +232,8 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
 - **`src/`** — the React UI. `api.ts` is the only file that calls Rust, through typed Tauri
   commands (and the window, to hold it open while something is unsaved). `Shell.tsx` is the
   sidebar and the bar above each screen. The screens are `Dashboard.tsx` (the Study Desk),
-  `DeckDetail.tsx`, `ReviewSession.tsx`, `Notes.tsx`, `ArchivedDecks.tsx`, and `Backup.tsx`.
+  `DeckDetail.tsx`, `ReviewSession.tsx`, `Notes.tsx`, `ArchivedDecks.tsx`, and `Backup.tsx`;
+  `SuggestCards.tsx` is the note screen's *Suggest cards*.
   `unsaved.tsx` tracks which form holds unsaved text and asks before it's discarded. Tests sit
   beside the code they cover (`*.test.tsx`), with shared helpers in `src/test/`.
 - **`src-tauri/src/`** — the Rust core:
@@ -210,6 +245,8 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   - `authoring.rs` — creating, renaming, archiving, and unarchiving decks; adding, editing,
     deleting, and restoring cards.
   - `notes.rs` — typed notes: writing, editing, soft-deleting, and restoring them.
+  - `suggest.rs` — asking Ollama, on this computer, to suggest cards from a note, and checking
+    its answer. It writes nothing; suggested cards are saved through `authoring.rs`.
   - `export.rs` / `import.rs` — writing a `.zip` backup, and checking and restoring one.
 - **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0010`), embedded in the
   binary at compile time.

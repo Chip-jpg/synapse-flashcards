@@ -8,18 +8,30 @@ import { toCommandError, type CommandError, type Field } from "./api";
  * `fieldIds` maps this form's fields to their input ids. An error about one
  * of them is shown under that input, which then takes focus. Any other error
  * is shown for the whole form, and saving again retries.
+ *
+ * A form with several of the same field (one per card) passes a function
+ * instead, which is also given the error's `index` to say which input.
  */
 export function useFormSave<T>(
   save: () => Promise<T>,
   onSaved: (result: T) => void,
-  fieldIds: Partial<Record<Field, string>>,
+  fieldIds:
+    | Partial<Record<Field, string>>
+    | ((field: Field, index: number | undefined) => string | undefined),
 ) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<CommandError | null>(null);
   // Blocks a second submit immediately, before the re-render lands.
   const savingRef = useRef(false);
 
-  const errorFieldId = error?.field ? fieldIds[error.field] : undefined;
+  const errorFieldId = !error?.field
+    ? undefined
+    : typeof fieldIds === "function"
+      ? fieldIds(error.field, error.index)
+      : fieldIds[error.field];
+  /** Whether the last save failed because of `field` (of item `index`). */
+  const isAbout = (field: Field, index: number | undefined) =>
+    error?.field === field && error.index === index;
 
   // Focus after the error has rendered, so the field is announced together
   // with its message.
@@ -49,20 +61,22 @@ export function useFormSave<T>(
   return {
     saving,
     submit,
-    /** The message for `field`, if the last save failed because of it. */
-    fieldError: (field: Field) => (error?.field === field ? error.message : undefined),
+    /** The message for `field` (of item `index`), if the last save failed because of it. */
+    fieldError: (field: Field, index?: number) =>
+      isAbout(field, index) ? error?.message : undefined,
     /** A failure that isn't about one of this form's fields. */
     formError: error && !errorFieldId ? error.message : null,
-    /** Call when `field` changes: its error no longer applies. */
-    edited: (field: Field) => {
-      if (error?.field === field) setError(null);
+    /** Call when `field` (of item `index`) changes: its error no longer applies. */
+    edited: (field: Field, index?: number) => {
+      if (isAbout(field, index)) setError(null);
     },
   };
 }
 
 /**
- * A labelled single-line input, or a textarea when `multiline`. The hint and
- * any error are linked to the control, so screen readers read them on focus.
+ * A labelled single-line input, or a textarea when `multiline`. The hint (if
+ * any) and any error are linked to the control, so screen readers read them
+ * on focus.
  */
 export function TextField({
   id,
@@ -78,7 +92,8 @@ export function TextField({
 }: {
   id: string;
   label: string;
-  hint: string;
+  /** Left out where many fields share one rule, said once above them. */
+  hint?: string;
   value: string;
   onChange: (value: string) => void;
   error?: string;
@@ -88,8 +103,9 @@ export function TextField({
   rows?: number;
   autoFocus?: boolean;
 }) {
-  const hintId = `${id}-hint`;
+  const hintId = hint === undefined ? undefined : `${id}-hint`;
   const errorId = `${id}-error`;
+  const description = [error ? errorId : undefined, hintId].filter(Boolean).join(" ");
   const shared = {
     id,
     className: "field-input",
@@ -97,7 +113,7 @@ export function TextField({
     autoFocus,
     "aria-required": required || undefined,
     "aria-invalid": error ? true : undefined,
-    "aria-describedby": error ? `${errorId} ${hintId}` : hintId,
+    "aria-describedby": description || undefined,
   };
 
   return (
@@ -105,9 +121,11 @@ export function TextField({
       <label htmlFor={id} className="field-label">
         {label}
       </label>
-      <p id={hintId} className="field-hint">
-        {hint}
-      </p>
+      {hint !== undefined && (
+        <p id={hintId} className="field-hint">
+          {hint}
+        </p>
+      )}
       {multiline ? (
         <textarea {...shared} rows={rows} onChange={(e) => onChange(e.target.value)} />
       ) : (

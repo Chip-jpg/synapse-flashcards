@@ -3,7 +3,6 @@ import {
   createFlashcard,
   createNote,
   deleteNote,
-  getDecks,
   getDeletedNotes,
   getNote,
   getNotes,
@@ -17,6 +16,7 @@ import {
   type Note,
   type NoteSummary,
 } from "./api";
+import { loadDeckChoices, type DeckChoices } from "./deckChoices";
 import { FormActions, SelectField, TextField, useFormSave } from "./forms";
 import {
   ArrowLeftIcon,
@@ -25,8 +25,10 @@ import {
   PencilIcon,
   PlusIcon,
   RestoreIcon,
+  SparkleIcon,
   TrashIcon,
 } from "./icons";
+import { SuggestCards } from "./SuggestCards";
 import { formatDateTime, Message, useFocusOnMount } from "./ui";
 import { useUnsavedChanges } from "./unsaved";
 
@@ -472,12 +474,12 @@ type NoteState =
   | { status: "ready"; note: Note };
 
 /** What takes focus when the note view appears. */
-type NoteFocus = "screen" | "notice" | "edit" | "card";
+type NoteFocus = "screen" | "notice" | "edit" | "card" | "suggest";
 
 /**
  * How the note view appears next. `key` changes every time, so the view
- * remounts and its focus target takes effect. `cardDeck` is the deck a card
- * was just written into, offered as a way on.
+ * remounts and its focus target takes effect. `cardDeck` is the deck cards
+ * were just added to, offered as a way on.
  */
 type NoteViewState = {
   key: number;
@@ -495,7 +497,10 @@ async function loadNote(noteId: number): Promise<NoteState> {
   }
 }
 
-/** One note: reading it, editing it in place, and writing a card from it. */
+/**
+ * One note: reading it, editing it in place, writing a card from it, and
+ * having a local model suggest cards from it.
+ */
 function NoteScreen({
   noteId,
   justCreated,
@@ -513,7 +518,7 @@ function NoteScreen({
   const [state, setState] = useState<NoteState>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
   // The note itself, or a form in its place.
-  const [mode, setMode] = useState<"view" | "edit" | "card">("view");
+  const [mode, setMode] = useState<"view" | "edit" | "card" | "suggest">("view");
   const [view, setView] = useState<NoteViewState>({
     key: 0,
     notice: justCreated ? "Note saved." : null,
@@ -599,6 +604,24 @@ function NoteScreen({
     );
   }
 
+  if (mode === "suggest") {
+    return (
+      <SuggestCards
+        note={state.note}
+        onCancel={() => showView(null, "suggest")}
+        onSaved={(deck, count) =>
+          showView(
+            count === 1
+              ? `1 card added to ${deck.name}. It's due for review now.`
+              : `${count} cards added to ${deck.name}. They're due for review now.`,
+            "notice",
+            { id: deck.id, name: deck.name }
+          )
+        }
+      />
+    );
+  }
+
   return (
     <NoteView
       key={view.key}
@@ -608,6 +631,7 @@ function NoteScreen({
       cardDeck={view.cardDeck}
       onEdit={() => setMode("edit")}
       onCreateCard={() => setMode("card")}
+      onSuggest={() => setMode("suggest")}
       onDeleted={onDeleted}
       onOpenDeck={onOpenDeck}
       onBack={onBack}
@@ -622,6 +646,7 @@ function NoteView({
   cardDeck,
   onEdit,
   onCreateCard,
+  onSuggest,
   onDeleted,
   onOpenDeck,
   onBack,
@@ -632,6 +657,7 @@ function NoteView({
   cardDeck: NoteViewState["cardDeck"];
   onEdit: () => void;
   onCreateCard: () => void;
+  onSuggest: () => void;
   onDeleted: () => void;
   onOpenDeck: (deckId: number) => void;
   onBack: () => void;
@@ -640,6 +666,7 @@ function NoteView({
   const noticeRef = useFocusOnMount<HTMLParagraphElement>(focus === "notice");
   const editRef = useFocusOnMount<HTMLButtonElement>(focus === "edit");
   const cardRef = useFocusOnMount<HTMLButtonElement>(focus === "card");
+  const suggestRef = useFocusOnMount<HTMLButtonElement>(focus === "suggest");
   const edited = note.updatedAt !== note.createdAt;
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -786,6 +813,16 @@ function NoteView({
               Create card from note
             </button>
             <button
+              ref={suggestRef}
+              type="button"
+              className="button button-tonal"
+              aria-describedby="note-heading"
+              onClick={onSuggest}
+            >
+              <SparkleIcon />
+              Suggest cards
+            </button>
+            <button
               ref={deleteRef}
               type="button"
               className="button button-quiet"
@@ -871,25 +908,6 @@ function NoteForm({
       />
     </form>
   );
-}
-
-type DeckChoices =
-  | { status: "loading" }
-  | { status: "error"; message: string }
-  | { status: "ready"; decks: Deck[] };
-
-/**
- * The decks a card can be added to: active normal decks. The dashboard's list
- * is already active-only; the sample deck is left out because Rust refuses
- * cards for it (and still does, whatever is sent). Never rejects.
- */
-async function loadDeckChoices(): Promise<DeckChoices> {
-  try {
-    const decks = await getDecks();
-    return { status: "ready", decks: decks.filter((deck) => !deck.isSample) };
-  } catch (err) {
-    return { status: "error", message: toCommandError(err).message };
-  }
 }
 
 /**

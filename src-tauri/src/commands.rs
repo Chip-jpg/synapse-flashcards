@@ -13,17 +13,19 @@ use tauri::{AppHandle, Manager, State};
 
 use tauri_plugin_dialog::DialogExt;
 
-use crate::authoring::{self, ArchivedDeck, AuthoringError, DeckDetail, InvalidInput};
+use crate::authoring::{self, ArchivedDeck, AuthoringError, CardText, DeckDetail, InvalidInput};
 use crate::db::Database;
 use crate::export::{self, ExportError};
 use crate::import::{self, ImportError, ImportState, RestoreError};
 use crate::notes::{self, DeletedNote, InvalidNote, Note, NoteError, NoteSummary};
 use crate::scheduler::Rating;
 use crate::study::{self, DeckSummary, SessionCard, StartedSession, StudyError};
+use crate::suggest::{Ollama, SuggestError, Suggesting};
 
 /// Error sent to React: `{ "kind": "failed" | "stale" | "invalid", "message": "..." }`,
 /// plus `"field": "name" | "description" | "front" | "back" | "title" | "body"`
-/// when the user's input failed validation.
+/// when the user's input failed validation, and `"index"` when that input is
+/// one of several cards.
 #[derive(Debug, serde::Serialize)]
 pub struct CommandError {
     kind: ErrorKind,
@@ -31,6 +33,10 @@ pub struct CommandError {
     /// The form field to fix. Only present for invalid user input.
     #[serde(skip_serializing_if = "Option::is_none")]
     field: Option<Field>,
+    /// Which of several cards `field` belongs to, counting from 0. Only
+    /// present when adding several cards at once.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    index: Option<usize>,
 }
 
 /// The form fields a validation error can point at.
@@ -62,6 +68,7 @@ impl CommandError {
             kind: ErrorKind::Failed,
             message,
             field: None,
+            index: None,
         }
     }
 
@@ -70,6 +77,7 @@ impl CommandError {
             kind: ErrorKind::Stale,
             message,
             field: None,
+            index: None,
         }
     }
 
@@ -78,6 +86,7 @@ impl CommandError {
             kind: ErrorKind::Invalid,
             message,
             field: None,
+            index: None,
         }
     }
 
@@ -103,6 +112,15 @@ impl CommandError {
             kind: ErrorKind::Invalid,
             message,
             field: Some(field),
+            index: None,
+        }
+    }
+
+    /// As [`CommandError::invalid_input`], for one of several cards.
+    fn invalid_card(index: usize, problem: InvalidInput) -> Self {
+        CommandError {
+            index: Some(index),
+            ..Self::invalid_input(problem)
         }
     }
 
@@ -119,6 +137,7 @@ impl CommandError {
             kind: ErrorKind::Invalid,
             message,
             field: Some(field),
+            index: None,
         }
     }
 }
@@ -163,6 +182,11 @@ fn study_error(
 fn authoring_error(err: AuthoringError, context: &str, failed: &'static str) -> CommandError {
     match err {
         AuthoringError::Invalid(problem) => CommandError::invalid_input(problem),
+        AuthoringError::InvalidCard(index, problem) => CommandError::invalid_card(index, problem),
+        AuthoringError::NoCards => CommandError::invalid("There are no cards to save."),
+        AuthoringError::TooManyCards => {
+            CommandError::invalid("At most 100 cards can be saved at once.")
+        }
         AuthoringError::DeckNotFound => CommandError::invalid(DECK_NOT_FOUND),
         AuthoringError::SampleDeck => CommandError::invalid("The sample deck can't be edited."),
         // The screen is out of date: the deck was archived since it was shown.
@@ -382,6 +406,29 @@ pub async fn create_flashcard(
     authoring::create_flashcard(&pool, deck_id, &front, &back, Utc::now())
         .await
         .map_err(|err| authoring_error(err, "adding a card", "Synapse couldn't save the card."))
+}
+
+/// Adds several front/back cards to a normal deck at once (saving suggested
+/// cards), each checked as `create_flashcard` checks one. All or nothing: if
+/// any card or the deck is refused, no card is added.
+///
+/// Arguments: `{ deckId, cards: [{ front, back }] }`. Returns the updated deck
+/// (same shape as `get_deck_detail`). A refused card rejects with kind
+/// "invalid", its `field`, and its `index` in `cards`.
+#[tauri::command]
+pub async fn create_flashcards(
+    app: AppHandle,
+    database: State<'_, Database>,
+    deck_id: i64,
+    cards: Vec<CardText>,
+) -> Result<DeckDetail, CommandError> {
+    if deck_id < 1 {
+        return Err(CommandError::invalid(DECK_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    authoring::create_flashcards(&pool, deck_id, &cards, Utc::now())
+        .await
+        .map_err(|err| authoring_error(err, "adding cards", "Synapse couldn't save the cards."))
 }
 
 /// Replaces a card's front and back, keeping its schedule and review history.
@@ -654,6 +701,139 @@ pub async fn restore_note(
             "Synapse couldn't restore the note.",
         )
     })
+}
+
+const OLLAMA_UNREACHABLE: &str =
+    "Synapse couldn't reach Ollama on this computer. Check that Ollama is installed and running, \
+     then try again.";
+const OLLAMA_UNEXPECTED: &str =
+    "Ollama didn't answer the way Synapse expected. Restarting or updating Ollama may help.";
+
+/// Turns a failed suggestion into a user-safe error, logging internal detail.
+/// Neither the note nor the model's answer is ever logged.
+fn suggest_error(err: SuggestError) -> CommandError {
+    match err {
+        SuggestError::Unreachable(detail) => {
+            eprintln!("[synapse] reaching Ollama failed: {detail}");
+            CommandError::failed(OLLAMA_UNREACHABLE)
+        }
+        SuggestError::Unexpected(detail) => {
+            eprintln!("[synapse] Ollama answered unexpectedly: {detail}");
+            CommandError::failed(OLLAMA_UNEXPECTED)
+        }
+        // The model list on screen is out of date, so React reloads it.
+        SuggestError::ModelMissing => {
+            CommandError::stale("That model isn't in Ollama any more. Choose another.")
+        }
+        SuggestError::NoteTooLong => CommandError::invalid(
+            "This note is too long to suggest cards from: notes of up to 12,000 characters can \
+             be used.",
+        ),
+        SuggestError::NoteOverflowed => CommandError::failed(
+            "This note was too long for the model to read all at once, so no cards were \
+             suggested. Try a shorter note.",
+        ),
+        SuggestError::TimedOut => CommandError::failed(
+            "The model took too long to answer, so Synapse stopped waiting. Try again, or choose \
+             a smaller model.",
+        ),
+        SuggestError::ModelFailed(detail) => {
+            eprintln!("[synapse] Ollama couldn't run the model: {detail}");
+            CommandError::failed("Ollama couldn't run that model. Try again, or choose another.")
+        }
+        SuggestError::Unusable(detail) => {
+            eprintln!("[synapse] the model's answer was unusable: {detail}");
+            CommandError::failed(
+                "The model's answer didn't include any usable cards. Try again, or choose \
+                 another model.",
+            )
+        }
+        SuggestError::Internal(detail) => {
+            eprintln!("[synapse] setting up a request to Ollama failed: {detail}");
+            CommandError::failed("Synapse couldn't ask Ollama for suggestions.")
+        }
+    }
+}
+
+/// The models cards can be suggested with: Ollama's local models that write
+/// text, by name, sorted. Cloud models are never listed. Takes no arguments.
+/// Returns `["llama3.2:3b", ...]`, which is empty if Ollama has no models;
+/// rejects with kind "failed" if Ollama can't be reached.
+#[tauri::command]
+pub async fn get_models() -> Result<Vec<String>, CommandError> {
+    let ollama = Ollama::local().map_err(suggest_error)?;
+    ollama.models().await.map_err(suggest_error)
+}
+
+/// What a suggestion did: `{ "status": "suggested", "cards": [{ front, back }],
+/// "leftOut": 2 }` or `{ "status": "stopped" }`.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum SuggestOutcome {
+    Suggested {
+        /// Drafts for the user to check: nothing has been saved.
+        cards: Vec<CardText>,
+        /// Suggestions left out as unusable, so the user can be told.
+        left_out: usize,
+    },
+    /// `stop_suggesting` was called first.
+    Stopped,
+}
+
+/// Asks a local model in Ollama to suggest cards from a note. Only Ollama on
+/// this computer is asked, and nothing is saved: the cards are drafts, which
+/// the user may save with `create_flashcards`. Starting another suggestion,
+/// or `stop_suggesting`, stops this one.
+///
+/// Arguments: `{ noteId, model }`, where `model` is a name from `get_models`.
+/// Returns [`SuggestOutcome`]; rejects with kind "stale" if the note was
+/// deleted or the model is no longer in Ollama.
+#[tauri::command]
+pub async fn suggest_cards(
+    app: AppHandle,
+    database: State<'_, Database>,
+    suggesting: State<'_, Suggesting>,
+    note_id: i64,
+    model: String,
+) -> Result<SuggestOutcome, CommandError> {
+    if note_id < 1 {
+        return Err(CommandError::invalid(NOTE_NOT_FOUND));
+    }
+    // Tracked from the start, so a stop while the note loads counts too.
+    let suggestion = suggesting.begin();
+    let work = async {
+        let pool = pool(&app, &database).await?;
+        let note = notes::note(&pool, note_id).await.map_err(|err| {
+            note_error(
+                err,
+                "loading a note to suggest cards from",
+                "Synapse couldn't load this note.",
+            )
+        })?;
+        let ollama = Ollama::local().map_err(suggest_error)?;
+        ollama
+            .suggest(&model, &note.title, &note.body)
+            .await
+            .map_err(suggest_error)
+    };
+    match suggestion.run(work).await {
+        None => Ok(SuggestOutcome::Stopped),
+        Some(result) => result.map(|suggestions| SuggestOutcome::Suggested {
+            cards: suggestions.cards,
+            left_out: suggestions.left_out,
+        }),
+    }
+}
+
+/// Stops the suggestion being worked on, if any; its `suggest_cards` call
+/// then returns `{ status: "stopped" }`. Takes no arguments; returns `null`.
+#[tauri::command]
+pub fn stop_suggesting(suggesting: State<'_, Suggesting>) {
+    suggesting.stop();
 }
 
 /// What an export attempt did: `{ "status": "saved", "fileName": "..." }` or
@@ -969,7 +1149,9 @@ pub async fn cancel_import(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::authoring::{CARD_TEXT_MAX_CHARS, DECK_DESCRIPTION_MAX_CHARS, DECK_NAME_MAX_CHARS};
+    use crate::authoring::{
+        CARD_BATCH_MAX, CARD_TEXT_MAX_CHARS, DECK_DESCRIPTION_MAX_CHARS, DECK_NAME_MAX_CHARS,
+    };
     use crate::notes::{NOTE_BODY_MAX_CHARS, NOTE_TITLE_MAX_CHARS};
     use serde_json::json;
 
@@ -1248,6 +1430,96 @@ mod tests {
             to_json(NoteError::NotDeleted),
             json!({ "kind": "stale", "message": "This note isn't deleted." })
         );
+    }
+
+    #[test]
+    fn a_refused_card_among_several_names_its_index_and_field() {
+        let to_json = |err| serde_json::to_value(authoring_error(err, "test", "failed")).unwrap();
+        assert_eq!(
+            to_json(AuthoringError::InvalidCard(2, InvalidInput::BackBlank)),
+            json!({
+                "kind": "invalid",
+                "message": "Enter the back of the card.",
+                "field": "back",
+                "index": 2
+            })
+        );
+        // A single card's error has no `index`, as before.
+        assert_eq!(
+            to_json(AuthoringError::Invalid(InvalidInput::FrontTooLong)),
+            json!({
+                "kind": "invalid",
+                "message": "The front can be at most 2,000 characters.",
+                "field": "front"
+            })
+        );
+        assert_eq!(
+            to_json(AuthoringError::NoCards),
+            json!({ "kind": "invalid", "message": "There are no cards to save." })
+        );
+        let too_many = to_json(AuthoringError::TooManyCards);
+        assert_eq!(too_many["kind"], "invalid");
+        assert!(too_many["message"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("At most {CARD_BATCH_MAX} cards")));
+    }
+
+    #[test]
+    fn suggestions_serialize_to_the_shape_react_expects() {
+        assert_eq!(
+            serde_json::to_value(SuggestOutcome::Suggested {
+                cards: vec![CardText {
+                    front: "What is mitosis?".to_string(),
+                    back: "Cell division.".to_string(),
+                }],
+                left_out: 2,
+            })
+            .unwrap(),
+            json!({
+                "status": "suggested",
+                "cards": [{ "front": "What is mitosis?", "back": "Cell division." }],
+                "leftOut": 2
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(SuggestOutcome::Stopped).unwrap(),
+            json!({ "status": "stopped" })
+        );
+    }
+
+    #[test]
+    fn failed_suggestions_are_reported_without_detail() {
+        let detail = || -> crate::db::DbError { "http://127.0.0.1:11434/api/chat: secret".into() };
+        for (err, kind) in [
+            (SuggestError::Unreachable(detail()), "failed"),
+            (SuggestError::Unexpected(detail()), "failed"),
+            (SuggestError::ModelMissing, "stale"),
+            (SuggestError::NoteTooLong, "invalid"),
+            (SuggestError::NoteOverflowed, "failed"),
+            (SuggestError::TimedOut, "failed"),
+            (SuggestError::ModelFailed(detail()), "failed"),
+            (SuggestError::Unusable(detail()), "failed"),
+            (SuggestError::Internal(detail()), "failed"),
+        ] {
+            let value = serde_json::to_value(suggest_error(err)).unwrap();
+            assert_eq!(value["kind"], kind, "{value}");
+            let message = value["message"].as_str().unwrap();
+            assert!(
+                !message.contains("secret") && !message.contains("11434"),
+                "{message}"
+            );
+            assert!(value.get("field").is_none() && value.get("index").is_none());
+        }
+        let too_long = serde_json::to_value(suggest_error(SuggestError::NoteTooLong)).unwrap();
+        assert!(too_long["message"]
+            .as_str()
+            .unwrap()
+            .replace(',', "")
+            .contains(&format!(
+                " {} characters",
+                crate::suggest::SUGGESTION_NOTE_MAX_CHARS
+            )));
     }
 
     #[test]

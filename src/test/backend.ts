@@ -1,5 +1,5 @@
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
-import type { CommandError, Deck, DeckDetail, Note, NoteSummary } from "../api";
+import type { CardText, CommandError, Deck, DeckDetail, Note, NoteSummary } from "../api";
 
 export const CREATED = "2026-10-01T09:00:00Z";
 
@@ -10,8 +10,15 @@ export type Handler = (args: Args) => unknown;
 type Internals = { invoke: (cmd: string, args?: unknown, ...rest: unknown[]) => Promise<unknown> };
 
 /** A command refusal, as Rust sends it. */
-export function refuse(kind: CommandError["kind"], message: string, field?: CommandError["field"]) {
-  const error: CommandError = field ? { kind, message, field } : { kind, message };
+export function refuse(
+  kind: CommandError["kind"],
+  message: string,
+  field?: CommandError["field"],
+  index?: number,
+) {
+  const error: CommandError = { kind, message };
+  if (field) error.field = field;
+  if (index !== undefined) error.index = index;
   return Promise.reject(error);
 }
 
@@ -28,7 +35,8 @@ export function deferred<T = unknown>() {
 
 /**
  * Stands in for the Rust core: one normal deck ("Biology", with one card and
- * nothing due) and one note ("Mitosis"). Adding a card succeeds. `overrides`
+ * nothing due) and one note ("Mitosis"). Adding cards succeeds. Ollama has one
+ * model ("llama3.2:3b"), which suggests one card. `overrides`
  * replace or add commands; any command left unanswered rejects as a failure.
  * `calls` lists every command the app sent, Tauri's own included (listening
  * for events, closing the window), and `argsOf` the arguments of one.
@@ -77,6 +85,21 @@ export function fakeBackend(overrides: Record<string, Handler> = {}) {
       deck.cardCount = deck.cards.length;
       return deck;
     },
+    create_flashcards: (args) => {
+      const { cards } = args as { cards: CardText[] };
+      deck.cards = [...deck.cards, ...cards.map((card, n) => ({ id: 20 + n, ...card }))];
+      deck.cardCount = deck.cards.length;
+      return deck;
+    },
+    get_models: () => ["llama3.2:3b"],
+    suggest_cards: () => ({
+      status: "suggested",
+      cards: [
+        { front: "What are the phases of mitosis?", back: "Prophase, metaphase, anaphase, telophase." },
+      ],
+      leftOut: 0,
+    }),
+    stop_suggesting: () => null,
     "plugin:window|destroy": () => null,
     ...overrides,
   };
