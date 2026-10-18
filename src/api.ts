@@ -328,6 +328,42 @@ export function cancelImport(token: number): Promise<void> {
   return invoke<void>("cancel_import", { token });
 }
 
+/** Mirrors `FileKind` in `src-tauri/src/extract.rs`: the kinds of file that can be imported. */
+export type FileKind = "pdf" | "text" | "markdown" | "word" | "powerPoint";
+
+/**
+ * Mirrors `FileImport` in `src-tauri/src/commands.rs`: the text read from a
+ * file, ready to become a note, or the file window closed. `fileName` is the
+ * name only, never the folder. `pages` counts a PDF's pages or a
+ * presentation's slides; `pagesWithoutText` lists a PDF's pages (from 1) that
+ * had no text.
+ */
+export type FileImport =
+  | {
+      status: "read";
+      fileName: string;
+      kind: FileKind;
+      title: string;
+      body: string;
+      pages: number | null;
+      pagesWithoutText: number[];
+    }
+  | { status: "cancelled" };
+
+/** A file whose text has been read. */
+export type ImportedFile = FileImport & { status: "read" };
+
+/**
+ * Chooses a file (PDF, text, Markdown, Word, or PowerPoint) and reads its
+ * text. Rust opens the OS "open file" dialog; closing it resolves with
+ * `{ status: "cancelled" }`. Nothing is saved, and the file isn't kept: the
+ * text is for a new note. A file that can't be read rejects with kind
+ * "invalid" or "failed".
+ */
+export function importFile(): Promise<FileImport> {
+  return invoke<FileImport>("import_file");
+}
+
 /** Every active (not deleted) note, most recently saved first. */
 export function getNotes(): Promise<NoteSummary[]> {
   return invoke<NoteSummary[]>("get_notes");

@@ -26,9 +26,12 @@ migrations, validation, scheduling, and every business rule; React only calls ty
 - **Export** — save a `.zip` backup of all your study data wherever you choose.
 - **Import (restore)** — replace everything in Synapse with a backup made by Export, after Synapse
   has checked the whole file and you've confirmed. It never merges.
-- **Notes** — type up your own plain-text study notes, keep them in a local library, open and edit
-  them, and delete ones you're done with. A deleted note leaves the library but is kept under
+- **Notes** — type up your own plain-text study notes, or import them from a file, keep them in a
+  local library, open and edit them, and delete ones you're done with. A deleted note leaves the library but is kept under
   *Deleted notes*, where *Restore note* brings it back unchanged.
+- **Import files as notes** — make a note from the text of a PDF, text (`.txt`), Markdown (`.md`),
+  Word (`.docx`), or PowerPoint (`.pptx`) file. You check and edit the text before it's saved; the
+  file itself isn't kept.
 - **Cards from notes** — with a note on screen, write a card yourself and add it to one of your
   decks. The card is an ordinary card; it isn't linked to the note.
 - **Suggested cards (optional)** — have a model in Ollama, on your own computer, suggest up to ten
@@ -165,6 +168,30 @@ required. Line breaks and indentation are kept, and only blank space at the very
 trimmed. *Open note* shows it, *Edit note* changes it. The library lists the most recently edited
 note first.
 
+**Import a file as a note.** *Notes* → *Import file* → pick a PDF, text (`.txt`), Markdown (`.md`),
+Word (`.docx`), or PowerPoint (`.pptx`) file. Synapse reads its text and opens it in the new-note form,
+titled after the document (its own title if it has one, else the file name), with a line saying
+what was read. Check the text, edit it as you like, and *Save note*; nothing is saved before that,
+and leaving or closing first asks whether to discard it. The note is an ordinary note: Synapse
+doesn't keep the file, link to it, or remember where it was.
+
+What's taken from each kind of file:
+
+- **PDF** — the text of each page, in order, with lines that were only broken at the edge of the
+  page joined up again. Pages with no text (usually scanned images) are named, so you can check
+  nothing's missing; a PDF with no text at all, such as a scan, is refused, since Synapse can't
+  read pictures of text. Password-protected PDFs can't be read.
+- **Text and Markdown** — the whole file, as written (UTF-8, UTF-16, or older Windows text).
+- **Word** — the document's paragraphs, list items as `- ` lines, and tables a row per line. Headers,
+  footers, footnotes, comments, and images are left out.
+- **PowerPoint** — each slide's text in the order the slides are shown, under *Slide 1*, *Slide 2*,
+  and so on, followed by its speaker notes. Images are left out.
+
+Files up to 50 MB can be imported; a note holds up to 100,000 characters, so a longer text has to
+be shortened before it's saved (Synapse says so). Older `.doc` and `.ppt` files need saving in the
+newer format first. A PDF is read by a second, short-lived run of Synapse, so a damaged file can't
+crash the app: it's just reported as a file that couldn't be read.
+
 **Delete or restore a note.** Open a note → *Delete note* asks for confirmation, then takes the note
 out of your library: it can't be opened, edited, or used to write a card. Nothing is lost — the note
 appears under *Deleted notes* at the bottom of the library, with when it was deleted, and *Restore
@@ -216,9 +243,13 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
 - **Restoring is one card at a time.** *Deleted cards* lists a deck's deleted cards and restores
   them one by one; there's no "restore all", no undo of a restore beyond deleting the card again,
   and no way to move a card to a different deck on the way back.
-- **Notes are plain typed text.** No formatting, attachments, PDFs, OCR, audio, web clips, search,
-  tags, or folders. A card doesn't remember the note it was written or suggested from — so deleting
-  a note leaves its cards exactly where they are. A deleted note is
+- **Notes are plain text.** No formatting, attachments, audio, web clips, search, tags, or folders.
+  Importing a file takes only its text: the file isn't kept, layout and images are lost, and there's
+  no OCR for scanned pages. A card doesn't remember the note it was written or suggested from — so
+  deleting a note leaves its cards exactly where they are.
+- **Long imports and suggestions don't mix yet.** Suggestions work on notes of up to 12,000
+  characters, and an imported document is often longer; to suggest cards from part of one, put that
+  part in a note of its own. A deleted note is
   listed by title and dates only; there's no way to read its text again without restoring it.
 - **No sync, accounts, cloud, or collaboration.** By design.
 - **Default FSRS parameters only.** The optimizer that re-fits weights to your own history is
@@ -259,6 +290,9 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   - `notes.rs` — typed notes: writing, editing, soft-deleting, and restoring them.
   - `suggest.rs` — asking Ollama, on this computer, to suggest cards from a note, and checking
     its answer. It writes nothing; suggested cards are saved through `authoring.rs`.
+  - `extract.rs` — reading the text of a file to import as a note, and the PDF helper (Synapse
+    started with `--read-pdf-text`, see `main.rs`). `tests/pdf_helper.rs` runs the real binary as
+    the helper.
   - `export.rs` / `import.rs` — writing a `.zip` backup, and checking and restoring one.
 - **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0010`), embedded in the
   binary at compile time.

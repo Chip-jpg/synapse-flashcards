@@ -16,6 +16,7 @@ use tauri_plugin_dialog::DialogExt;
 use crate::authoring::{self, ArchivedDeck, AuthoringError, CardText, DeckDetail, InvalidInput};
 use crate::db::Database;
 use crate::export::{self, ExportError};
+use crate::extract::{self, ExtractError, ExtractedText, FileKind};
 use crate::import::{self, ImportError, ImportState, RestoreError};
 use crate::notes::{self, DeletedNote, InvalidNote, Note, NoteError, NoteSummary};
 use crate::scheduler::Rating;
@@ -844,6 +845,120 @@ pub fn stop_suggesting(suggesting: State<'_, Suggesting>) {
     suggesting.stop();
 }
 
+/// What choosing a file to import as a note did: `{ "status": "read", "fileName",
+/// "kind", "title", "body", "pages", "pagesWithoutText" }` or
+/// `{ "status": "cancelled" }`. Only the file's name is returned, never its
+/// folder.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum FileImport {
+    /// The file's text, for the user to check and save as a note.
+    Read {
+        file_name: String,
+        #[serde(flatten)]
+        text: ExtractedText,
+    },
+    /// The user closed the file window without choosing a file.
+    Cancelled,
+}
+
+/// Turns a file that couldn't be imported into a user-safe error, logging
+/// internal detail (never the file's text).
+fn extract_error(err: ExtractError) -> CommandError {
+    match err {
+        ExtractError::Unsupported => CommandError::invalid(
+            "Synapse can import PDF, text (.txt), Markdown (.md), Word (.docx), and PowerPoint \
+             (.pptx) files. Save older .doc and .ppt files in the newer format first.",
+        ),
+        ExtractError::TooLarge => {
+            CommandError::invalid("That file is too large to import: the limit is 50 MB.")
+        }
+        ExtractError::Unreadable(detail) => {
+            eprintln!("[synapse] opening a file to import failed: {detail}");
+            CommandError::failed("Synapse couldn't open that file.")
+        }
+        ExtractError::Damaged(detail) => {
+            eprintln!("[synapse] refused a file to import: {detail}");
+            CommandError::invalid(
+                "Synapse couldn't read that file. It may be damaged, password-protected, or not \
+                 the kind of file its name says.",
+            )
+        }
+        ExtractError::NoText => CommandError::invalid(
+            "That file has no text Synapse can import. If it's scanned, its pages are pictures \
+             of text, which Synapse can't read yet.",
+        ),
+        ExtractError::HelperFailed(detail) => {
+            eprintln!("[synapse] reading a PDF failed: {detail}");
+            CommandError::failed(
+                "Synapse couldn't read that PDF. It may be damaged, or made in a way Synapse \
+                 can't read.",
+            )
+        }
+    }
+}
+
+/// Chooses a file and reads its text, to import as a new note. Nothing is
+/// saved: the text goes to the new-note form, where the user checks it and
+/// saves it with `create_note` like a note they typed. The file isn't kept.
+///
+/// Opens the OS "open file" dialog for PDF, text, Markdown, Word, and
+/// PowerPoint files; closing it returns `{ status: "cancelled" }`. Takes no
+/// arguments. Returns [`FileImport`]; a file that can't be imported rejects
+/// with kind "invalid" or "failed".
+#[tauri::command]
+pub async fn import_file(app: AppHandle) -> Result<FileImport, CommandError> {
+    // As in `export_data`: the dialog answers through a callback.
+    let (sender, mut receiver) = tauri::async_runtime::channel(1);
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Choose a file to import as a note")
+        .add_filter("Notes and documents", &FileKind::EXTENSIONS);
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.pick_file(move |path| {
+        let _ = sender.try_send(path);
+    });
+
+    let Some(chosen) = receiver.recv().await else {
+        eprintln!("[synapse] the import file dialog closed without an answer");
+        return Err(CommandError::failed(
+            "Synapse couldn't open the file window.",
+        ));
+    };
+    let Some(chosen) = chosen else {
+        return Ok(FileImport::Cancelled);
+    };
+    let path = chosen.into_path().map_err(|err| {
+        eprintln!("[synapse] the chosen file's path was unusable: {err}");
+        CommandError::invalid("That file can't be used.")
+    })?;
+    // PDFs are read by Synapse itself, started as a helper (see `extract.rs`).
+    let helper = std::env::current_exe().map_err(|err| {
+        eprintln!("[synapse] finding Synapse's own program failed: {err}");
+        CommandError::failed("Synapse couldn't read that file.")
+    })?;
+
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "your file".to_string());
+    let text = tauri::async_runtime::spawn_blocking(move || extract::read_file(&path, &helper))
+        .await
+        .map_err(|err| {
+            eprintln!("[synapse] reading a file to import stopped: {err}");
+            CommandError::failed("Synapse couldn't read that file.")
+        })?
+        .map_err(extract_error)?;
+    Ok(FileImport::Read { file_name, text })
+}
+
 /// What an export attempt did: `{ "status": "saved", "fileName": "..." }` or
 /// `{ "status": "cancelled" }`.
 ///
@@ -1538,6 +1653,63 @@ mod tests {
                 " {} characters",
                 crate::suggest::SUGGESTION_NOTE_MAX_CHARS
             )));
+    }
+
+    #[test]
+    fn file_imports_serialize_to_the_shape_react_expects() {
+        assert_eq!(
+            serde_json::to_value(FileImport::Read {
+                file_name: "Lecture 3.pdf".to_string(),
+                text: ExtractedText {
+                    kind: FileKind::PowerPoint,
+                    title: "Lecture 3".to_string(),
+                    body: "Slide 1\nMitosis".to_string(),
+                    pages: Some(12),
+                    pages_without_text: vec![4, 7],
+                },
+            })
+            .unwrap(),
+            json!({
+                "status": "read",
+                "fileName": "Lecture 3.pdf",
+                "kind": "powerPoint",
+                "title": "Lecture 3",
+                "body": "Slide 1\nMitosis",
+                "pages": 12,
+                "pagesWithoutText": [4, 7]
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(FileImport::Cancelled).unwrap(),
+            json!({ "status": "cancelled" })
+        );
+    }
+
+    #[test]
+    fn files_that_cannot_be_imported_are_reported_without_detail() {
+        let detail = || -> crate::db::DbError { "C:\\Users\\someone\\secret.pdf: bad".into() };
+        for (err, kind) in [
+            (ExtractError::Unsupported, "invalid"),
+            (ExtractError::TooLarge, "invalid"),
+            (ExtractError::Unreadable(detail()), "failed"),
+            (ExtractError::Damaged(detail()), "invalid"),
+            (ExtractError::NoText, "invalid"),
+            (ExtractError::HelperFailed(detail()), "failed"),
+        ] {
+            let value = serde_json::to_value(extract_error(err)).unwrap();
+            assert_eq!(value["kind"], kind, "{value}");
+            let message = value["message"].as_str().unwrap();
+            assert!(
+                !message.contains("secret") && !message.contains('\\'),
+                "{message}"
+            );
+            assert!(value.get("field").is_none());
+        }
+        let too_large = serde_json::to_value(extract_error(ExtractError::TooLarge)).unwrap();
+        assert!(too_large["message"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("{} MB", extract::IMPORT_MAX_BYTES / 1024 / 1024)));
     }
 
     #[test]

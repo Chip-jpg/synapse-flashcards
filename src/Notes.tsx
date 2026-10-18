@@ -6,6 +6,7 @@ import {
   getDeletedNotes,
   getNote,
   getNotes,
+  importFile,
   restoreNote,
   toCommandError,
   updateNote,
@@ -13,6 +14,7 @@ import {
   type Deck,
   type DeckDetail,
   type DeletedNote,
+  type ImportedFile,
   type Note,
   type NoteSummary,
 } from "./api";
@@ -27,6 +29,7 @@ import {
   RestoreIcon,
   SparkleIcon,
   TrashIcon,
+  UploadIcon,
 } from "./icons";
 import { SuggestCards } from "./SuggestCards";
 import { formatDateTime, Message, useFocusOnMount } from "./ui";
@@ -36,19 +39,21 @@ import { useUnsavedChanges } from "./unsaved";
 type LibraryFocus =
   | { to: "screen" }
   | { to: "new" }
+  | { to: "import" }
   | { to: "note"; noteId: number }
   | { to: "notice" };
 
 /** Where in the notes area the user is. */
 type Place =
   | { screen: "library"; focus: LibraryFocus; notice: string | null }
-  | { screen: "new" }
+  | { screen: "new"; imported?: ImportedFile }
   | { screen: "note"; noteId: number; justCreated: boolean };
 
 /**
- * The notes area: the library of the user's typed notes, writing a new one,
- * opening one to read or edit it, and writing a card from it. Every screen
- * change follows a button press, so each new screen takes focus.
+ * The notes area: the library of the user's typed notes, writing a new one or
+ * importing one from a file, opening one to read or edit it, and writing a
+ * card from it. Every screen change follows a button press, so each new
+ * screen takes focus.
  */
 export function NotesArea({
   onBack,
@@ -65,9 +70,17 @@ export function NotesArea({
   });
 
   if (place.screen === "new") {
+    const imported = place.imported;
     return (
       <NoteForm
-        onCancel={() => setPlace({ screen: "library", focus: { to: "new" }, notice: null })}
+        imported={imported}
+        onCancel={() =>
+          setPlace({
+            screen: "library",
+            focus: { to: imported ? "import" : "new" },
+            notice: null,
+          })
+        }
         onSaved={(note) => setPlace({ screen: "note", noteId: note.id, justCreated: true })}
       />
     );
@@ -102,6 +115,7 @@ export function NotesArea({
       focus={place.focus}
       notice={place.notice}
       onNew={() => setPlace({ screen: "new" })}
+      onImported={(imported) => setPlace({ screen: "new", imported })}
       onOpen={(noteId) => setPlace({ screen: "note", noteId, justCreated: false })}
       onBack={onBack}
     />
@@ -133,6 +147,7 @@ function NoteLibrary({
   focus,
   notice,
   onNew,
+  onImported,
   onOpen,
   onBack,
 }: {
@@ -140,6 +155,8 @@ function NoteLibrary({
   /** A confirmation to announce when the library appears (e.g. after deleting). */
   notice: string | null;
   onNew: () => void;
+  /** A file's text was read, to become a new note. */
+  onImported: (imported: ImportedFile) => void;
   onOpen: (noteId: number) => void;
   onBack: () => void;
 }) {
@@ -205,6 +222,7 @@ function NoteLibrary({
       notice={view.notice}
       focus={view.focus}
       onNew={onNew}
+      onImported={onImported}
       onOpen={onOpen}
       onBack={onBack}
       onRestored={(title) => reload(`${title} restored. It's back in your notes.`)}
@@ -223,6 +241,7 @@ function NoteList({
   notice,
   focus,
   onNew,
+  onImported,
   onOpen,
   onBack,
   onRestored,
@@ -233,6 +252,7 @@ function NoteList({
   notice: string | null;
   focus: LibraryFocus;
   onNew: () => void;
+  onImported: (imported: ImportedFile) => void;
   onOpen: (noteId: number) => void;
   onBack: () => void;
   onRestored: (title: string) => void;
@@ -249,7 +269,33 @@ function NoteList({
       (focus.to === "notice" && !focusNotice)
   );
   const newRef = useFocusOnMount<HTMLButtonElement>(focus.to === "new");
+  const importRef = useFocusOnMount<HTMLButtonElement>(focus.to === "import");
   const noticeRef = useFocusOnMount<HTMLParagraphElement>(focusNotice);
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  // Blocks a second file window immediately, before the re-render lands.
+  const importingRef = useRef(false);
+
+  /** Chooses a file and reads it; its text opens as a new note to check. */
+  async function chooseFile() {
+    if (importingRef.current) return;
+    importingRef.current = true;
+    setImporting(true);
+    setImportError(null);
+
+    try {
+      const result = await importFile();
+      if (result.status === "read") {
+        onImported(result);
+        return; // This screen is replaced.
+      }
+    } catch (err) {
+      setImportError(toCommandError(err).message);
+    }
+
+    importingRef.current = false;
+    setImporting(false);
+  }
 
   return (
     <section ref={screenRef} className="notes" tabIndex={-1} aria-labelledby="notes-heading">
@@ -268,11 +314,36 @@ function NoteList({
             first.
           </p>
         </div>
-        <button ref={newRef} type="button" className="button button-primary" onClick={onNew}>
-          <PlusIcon />
-          New note
-        </button>
+        <div className="deck-actions page-actions">
+          <button
+            ref={importRef}
+            type="button"
+            className="button"
+            aria-disabled={importing}
+            aria-describedby="import-hint"
+            onClick={chooseFile}
+          >
+            <UploadIcon />
+            Import file
+          </button>
+          <button ref={newRef} type="button" className="button button-primary" onClick={onNew}>
+            <PlusIcon />
+            New note
+          </button>
+        </div>
       </div>
+      <p id="import-hint" className="field-hint">
+        Import a PDF, text, Markdown, Word, or PowerPoint file to make a note from its text. You
+        check the text before it's saved, and the file itself isn't kept.
+      </p>
+      <p className="form-status" role="status">
+        {importing ? "Choose a file. Synapse then reads its text…" : ""}
+      </p>
+      {importError && (
+        <p className="message-error" role="alert">
+          {importError}
+        </p>
+      )}
       {notice && (
         <p ref={noticeRef} className="notice" role="status" tabIndex={-1}>
           {notice}
@@ -847,18 +918,26 @@ function NoteView({
   );
 }
 
-/** Writing a new note, or editing `note` when one is given. All validation happens in Rust. */
+/**
+ * Writing a new note, editing `note` when one is given, or checking the text
+ * of an `imported` file before it's saved as a new note. All validation
+ * happens in Rust.
+ */
 function NoteForm({
   note,
+  imported,
   onCancel,
   onSaved,
 }: {
   note?: Note;
+  imported?: ImportedFile;
   onCancel: () => void;
   onSaved: (note: Note) => void;
 }) {
-  const [title, setTitle] = useState(note?.title ?? "");
-  const [body, setBody] = useState(note?.body ?? "");
+  const [title, setTitle] = useState(imported?.title ?? note?.title ?? "");
+  const [body, setBody] = useState(imported?.body ?? note?.body ?? "");
+  // Compared with what's saved: imported text isn't saved anywhere yet, so it
+  // counts as unsaved from the start.
   useUnsavedChanges(title !== (note?.title ?? "") || body !== (note?.body ?? ""));
   const { saving, submit, fieldError, formError, edited } = useFormSave(
     () => (note ? updateNote(note.id, title, body) : createNote(title, body)),
@@ -869,8 +948,9 @@ function NoteForm({
   return (
     <form className="card" aria-labelledby="note-form-heading" noValidate onSubmit={submit}>
       <h2 id="note-form-heading" className="form-title">
-        {note ? "Edit note" : "New note"}
+        {note ? "Edit note" : imported ? `New note from ${imported.fileName}` : "New note"}
       </h2>
+      {imported && <ImportSummary imported={imported} length={[...body].length} />}
 
       <TextField
         id="note-title"
@@ -879,7 +959,7 @@ function NoteForm({
         value={title}
         error={fieldError("title")}
         required
-        autoFocus
+        autoFocus={!imported}
         onChange={(value) => {
           setTitle(value);
           edited("title");
@@ -907,6 +987,57 @@ function NoteForm({
         onCancel={onCancel}
       />
     </form>
+  );
+}
+
+/** The most characters a note's text can hold: `NOTE_BODY_MAX_CHARS` in `notes.rs`. */
+const NOTE_BODY_MAX_CHARS = 100_000;
+
+/** "1 page", "12 slides". */
+function counted(count: number, thing: string): string {
+  return count === 1 ? `1 ${thing}` : `${count} ${thing}s`;
+}
+
+/** "2", "2 and 7", "2, 5, and 7". */
+function listed(numbers: number[]): string {
+  if (numbers.length <= 2) return numbers.join(" and ");
+  return `${numbers.slice(0, -1).join(", ")}, and ${numbers[numbers.length - 1]}`;
+}
+
+/**
+ * What was read from an imported file, said before the user checks its text:
+ * where it came from, any pages with no text, and whether the text (now
+ * `length` characters, as edited) is too long for a note. Focus goes to it,
+ * so it's read out first.
+ */
+function ImportSummary({ imported, length }: { imported: ImportedFile; length: number }) {
+  const summaryRef = useFocusOnMount<HTMLParagraphElement>(true);
+  const parts =
+    imported.pages === null
+      ? ""
+      : ` (${counted(imported.pages, imported.kind === "powerPoint" ? "slide" : "page")})`;
+  const missing = imported.pagesWithoutText;
+
+  return (
+    <>
+      <p ref={summaryRef} className="notice" role="status" tabIndex={-1}>
+        {`Synapse read the text of ${imported.fileName}${parts}. Check it and edit it as you like, then save it as a note. The file itself isn't kept.`}
+      </p>
+      {missing.length > 0 && (
+        <p className="import-warning">
+          {`${
+            missing.length > 12
+              ? `${missing.length} pages`
+              : `${missing.length === 1 ? "Page" : "Pages"} ${listed(missing)}`
+          } had no text Synapse could read. They may be scanned images, so check whether anything is missing.`}
+        </p>
+      )}
+      {length > NOTE_BODY_MAX_CHARS && (
+        <p className="import-warning">
+          {`This text is ${length.toLocaleString("en-US")} characters long, but a note can hold 100,000. Shorten it before you save it, for example by keeping one chapter.`}
+        </p>
+      )}
+    </>
   );
 }
 
