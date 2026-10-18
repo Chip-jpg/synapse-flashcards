@@ -1,25 +1,36 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { CardText, SuggestOutcome } from "./api";
+import type { CardText, SuggestedCard, SuggestOutcome } from "./api";
 import { NotesArea } from "./Notes";
 import { deferred, fakeBackend, refuse, type Handler } from "./test/backend";
 
-const PHASES: CardText = {
+const PHASES: SuggestedCard = {
   front: "What are the phases of mitosis?",
   back: "Prophase, metaphase, anaphase, telophase.",
+  source: "Prophase, metaphase, anaphase, telophase.",
+  unfamiliar: [],
 };
-const EQUATOR: CardText = {
+const EQUATOR: SuggestedCard = {
   front: "Where do chromosomes line up in metaphase?",
   back: "At the cell's equator.",
+  source: "In metaphase, chromosomes line up at the cell's equator.",
+  unfamiliar: [],
 };
-const RESULT: CardText = {
+const RESULT: SuggestedCard = {
   front: "What does mitosis produce?",
-  back: "Two identical daughter cells.",
+  back: "Two identical daughter cells, unlike meiosis.",
+  source: "Mitosis produces two identical daughter cells.",
+  unfamiliar: ["unlike", "meiosis"],
 };
 
-function suggested(cards: CardText[], leftOut = 0): SuggestOutcome {
-  return { status: "suggested", cards, leftOut };
+function suggested(cards: SuggestedCard[], leftOut = 0, unsupported = 0): SuggestOutcome {
+  return { status: "suggested", cards, leftOut, unsupported };
+}
+
+/** What is saved of a suggested card: its text only. */
+function text({ front, back }: CardText): CardText {
+  return { front, back };
 }
 
 /** Opens the Mitosis note and chooses *Suggest cards* on it. */
@@ -44,7 +55,7 @@ describe("suggesting cards from a note", () => {
   it("asks the chosen model, then saves the checked cards into the chosen deck", async () => {
     const { user, argsOf } = await openSuggestions({
       get_models: () => ["llama3.2:3b", "qwen3:4b"],
-      suggest_cards: () => suggested([PHASES, EQUATOR, RESULT], 1),
+      suggest_cards: () => suggested([PHASES, EQUATOR, RESULT], 1, 2),
     });
 
     // Two models and none used before, so the user chooses.
@@ -55,7 +66,10 @@ describe("suggesting cards from a note", () => {
 
     const notice = await screen.findByText(/^qwen3:4b suggested 3 cards\./);
     expect(document.activeElement).toBe(notice);
-    expect(notice.textContent).toContain("1 more suggestion was left out");
+    expect(notice.textContent).toContain(
+      "2 more suggestions were left out because they couldn't be traced back to your note."
+    );
+    expect(notice.textContent).toContain("1 more was left out because it was empty");
     expect(argsOf("suggest_cards")).toEqual([{ noteId: 5, model: "qwen3:4b" }]);
 
     // Edit the first card, and remove the second.
@@ -75,7 +89,7 @@ describe("suggesting cards from a note", () => {
     ).toBe(document.activeElement);
     expect(screen.getByRole("button", { name: "Open Biology" })).toBeTruthy();
     expect(argsOf("create_flashcards")).toEqual([
-      { deckId: 1, cards: [{ ...PHASES, front: "Name the four phases of mitosis." }, RESULT] },
+      { deckId: 1, cards: [text({ ...PHASES, front: "Name the four phases of mitosis." }), text(RESULT)] },
     ]);
   });
 
@@ -241,6 +255,25 @@ describe("waiting for a suggestion", () => {
 });
 
 describe("checking suggested cards", () => {
+  it("shows each card's passage from the note, and any words the note doesn't use", async () => {
+    const { user } = await openSuggestions({
+      suggest_cards: () => suggested([EQUATOR, RESULT]),
+    });
+    await user.click(await screen.findByRole("button", { name: "Suggest cards" }));
+
+    const first = await screen.findByRole("group", { name: "Card 1" });
+    expect(within(first).getByText(EQUATOR.source)).toBeTruthy();
+    expect(within(first).queryByText(/^Not in your note/)).toBeNull();
+
+    const second = screen.getByRole("group", { name: "Card 2" });
+    expect(within(second).getByText(RESULT.source)).toBeTruthy();
+    expect(
+      within(second).getByText(
+        "Not in your note: unlike, meiosis. The suggested answer may say more than your note does."
+      )
+    ).toBeTruthy();
+  });
+
   it("keeps a refused card's error with that card, and gives it focus", async () => {
     const { user, argsOf } = await openSuggestions({
       suggest_cards: () => suggested([PHASES, EQUATOR, RESULT]),
@@ -255,7 +288,7 @@ describe("checking suggested cards", () => {
 
     // Index 1 of what was sent: the card now shown second, once the first
     // was removed.
-    expect(argsOf("create_flashcards")[0].cards).toEqual([EQUATOR, RESULT]);
+    expect(argsOf("create_flashcards")[0].cards).toEqual([text(EQUATOR), text(RESULT)]);
     const refused = screen.getAllByLabelText("Back")[1];
     expect(await screen.findByText("Enter the back of the card.")).toBeTruthy();
     expect(document.activeElement).toBe(refused);

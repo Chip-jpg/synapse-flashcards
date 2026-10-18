@@ -32,8 +32,9 @@ migrations, validation, scheduling, and every business rule; React only calls ty
 - **Cards from notes** — with a note on screen, write a card yourself and add it to one of your
   decks. The card is an ordinary card; it isn't linked to the note.
 - **Suggested cards (optional)** — have a model in Ollama, on your own computer, suggest up to ten
-  cards from a note. You check, edit, and remove them, then save the ones you want into a deck.
-  Nothing is saved until you do, and the note never leaves your computer.
+  cards from a note, each shown with the passage of the note it comes from. You check, edit, and
+  remove them, then save the ones you want into a deck. Nothing is saved until you do, and the
+  note never leaves your computer.
 
 Everything works offline. Turning off networking changes nothing: suggestions use Ollama on this
 computer, and the rest of Synapse doesn't need it at all.
@@ -182,7 +183,16 @@ larger models write better cards but take longer). Open a note → *Suggest card
 *Suggest cards*. The model reads the note and suggests up to ten cards; this can take a minute or
 more without a fast graphics card, and *Stop* ends it. Then check every card, because models get
 things wrong: edit the front or back, *Remove card* for any you don't want, choose a deck, and
-*Save*. All the cards are saved together, checked exactly like cards you type, and are due
+*Save*.
+
+Cards are meant to come only from your note, not from what the model already knows. The model is
+told so, and must quote, for each card, the passage of your note its answer comes from. Synapse
+then checks every card, and leaves out (and tells you about) any whose quote isn't in your note
+word for word, or whose answer isn't taken from its quote. Each card you're shown has its passage
+under it, *From your note*, and if its answer uses words your note never does, they're listed
+(*Not in your note: …*), which often means the model added something. These checks catch most
+things a model brings in from outside, but a model can't be made to forget what it knows, so they
+can't catch everything: compare each card with its passage before you save it. All the cards are saved together, checked exactly like cards you type, and are due
 straight away; if any is refused, none is saved and the one to fix is pointed out. Until you save,
 nothing is stored anywhere: leaving or closing first asks whether to discard the suggestions.
 Synapse remembers which model you used last.
@@ -219,7 +229,9 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   note of up to 12,000 characters at a time, as front/back cards. There's no cloud option, no
   choice of how many cards, and no PDFs or other files to suggest from. Suggested cards aren't
   linked to the note, and suggestions aren't kept: once you leave without saving, they're gone.
-  How good they are depends on the model.
+  How good they are depends on the model: small ones often copy the passage as the answer. The
+  check that a card comes from your note compares words, so it's loosest for languages written
+  without spaces, such as Chinese or Japanese.
 - **Frontend tests cover the risky interactions, not every screen.** The Rust core has unit tests
   (`cargo test`). On the React side, `npm test` runs the screens against a stand-in for the Rust
   core and checks reviewing (reveal before rating, the keyboard shortcuts, never rating twice),

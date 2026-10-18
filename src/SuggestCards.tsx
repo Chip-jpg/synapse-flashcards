@@ -5,11 +5,11 @@ import {
   stopSuggesting,
   suggestCards,
   toCommandError,
-  type CardText,
   type CommandError,
   type Deck,
   type DeckDetail,
   type Note,
+  type SuggestedCard,
 } from "./api";
 import { loadDeckChoices } from "./deckChoices";
 import { FormActions, SelectField, TextField, useFormSave } from "./forms";
@@ -171,7 +171,7 @@ export function SuggestCards({
 }
 
 /** A suggested card being checked. `key` tells drafts apart as some are removed. */
-type Draft = CardText & { key: number };
+type Draft = SuggestedCard & { key: number };
 
 /** What takes focus when choosing a model appears. */
 type ChooseFocus = "model" | "suggest" | "notice";
@@ -190,7 +190,13 @@ type ChooseStage = {
 type Stage =
   | ChooseStage
   | { step: "suggesting"; model: string }
-  | { step: "review"; model: string; drafts: Draft[]; leftOut: number };
+  | {
+      step: "review";
+      model: string;
+      drafts: Draft[];
+      leftOut: number;
+      unsupported: number;
+    };
 
 /** Choosing a model, with `focus` on mount and any of its messages. */
 function choose(
@@ -286,6 +292,7 @@ function Suggester({
           model,
           drafts: outcome.cards.map((card) => ({ ...card, key: ++lastKey.current })),
           leftOut: outcome.leftOut,
+          unsupported: outcome.unsupported,
         };
       }
     } catch (err) {
@@ -315,9 +322,11 @@ function Suggester({
         <p className="note-body">{note.body}</p>
       </section>
       <p id="suggest-hint" className="field-hint">
-        A model in Ollama, on this computer, reads the note and suggests up to 10 cards. The note
-        doesn't leave this computer, and nothing is saved until you save the cards. Models get
-        things wrong, so check each card before you save it.
+        A model in Ollama, on this computer, reads the note and suggests up to 10 cards, each with
+        the passage of your note it comes from. Cards that can't be traced back to your note are
+        left out. The note doesn't leave this computer, and nothing is saved until you save the
+        cards. Models still get things wrong, so check each card against its passage before you
+        save it.
       </p>
 
       {stage.step === "choose" && (
@@ -345,6 +354,7 @@ function Suggester({
           model={stage.model}
           drafts={stage.drafts}
           leftOut={stage.leftOut}
+          unsupported={stage.unsupported}
           decks={decks}
           onSaved={onSaved}
           onCancel={onCancel}
@@ -463,6 +473,7 @@ function ReviewSuggestions({
   model,
   drafts: suggested,
   leftOut,
+  unsupported,
   decks: initialDecks,
   onSaved,
   onCancel,
@@ -472,6 +483,7 @@ function ReviewSuggestions({
   model: string;
   drafts: Draft[];
   leftOut: number;
+  unsupported: number;
   decks: Deck[];
   onSaved: (deck: DeckDetail, count: number) => void;
   onCancel: () => void;
@@ -567,17 +579,23 @@ function ReviewSuggestions({
     }));
   }
 
+  const unsupportedText =
+    unsupported === 0
+      ? ""
+      : unsupported === 1
+        ? " 1 more suggestion was left out because it couldn't be traced back to your note."
+        : ` ${unsupported} more suggestions were left out because they couldn't be traced back to your note.`;
   const leftOutText =
     leftOut === 0
       ? ""
       : leftOut === 1
-        ? " 1 more suggestion was left out because it was empty, too long, or a repeat."
-        : ` ${leftOut} more suggestions were left out because they were empty, too long, or repeats.`;
+        ? " 1 more was left out because it was empty, too long, or a repeat."
+        : ` ${leftOut} more were left out because they were empty, too long, or repeats.`;
 
   return (
     <form className="suggest-step" aria-label="Suggested cards" noValidate onSubmit={submit}>
       <p ref={noticeRef} className="notice" role="status" tabIndex={-1}>
-        {`${model} suggested ${cardCount(suggested.length)}. Check each one, edit or remove any you don't want, then choose a deck and save.${leftOutText}`}
+        {`${model} suggested ${cardCount(suggested.length)}. Check each one against the passage it comes from, edit or remove any you don't want, then choose a deck and save.${unsupportedText}${leftOutText}`}
       </p>
       <p className="field-hint">
         Each card needs a front (the question) and a back (the answer), each up to 2,000
@@ -614,6 +632,15 @@ function ReviewSuggestions({
                   rows={3}
                   onChange={(value) => change(draft.key, "back", value)}
                 />
+                <figure className="draft-source">
+                  <figcaption className="side-label">From your note</figcaption>
+                  <blockquote className="draft-quote">{draft.source}</blockquote>
+                  {draft.unfamiliar.length > 0 && (
+                    <p className="draft-check">
+                      {`Not in your note: ${draft.unfamiliar.join(", ")}. The suggested answer may say more than your note does.`}
+                    </p>
+                  )}
+                </figure>
                 <div className="deck-actions item-actions">
                   <button
                     type="button"

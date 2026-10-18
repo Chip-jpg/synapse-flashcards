@@ -1057,6 +1057,30 @@ html:has(.note-context) {
   animation: spin 0.9s linear infinite;
 }
 
+/* The passage of the note a suggested card comes from, to check it against.
+   Amber, like notes. */
+.draft-source {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  background-color: var(--amber-soft);
+  border-left: 3px solid var(--amber);
+  border-radius: var(--radius-sm);
+}
+
+.draft-quote {
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.6;
+}
+
+/* Words of the answer the note never uses. */
+.draft-check {
+  margin: 0.5rem 0 0;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--amber-ink);
+}
+
 /* The name of a suggested card ("Card 2"), styled like a side label. */
 .draft-label {
   margin: 0;

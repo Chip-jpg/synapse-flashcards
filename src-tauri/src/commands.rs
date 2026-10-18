@@ -20,7 +20,7 @@ use crate::import::{self, ImportError, ImportState, RestoreError};
 use crate::notes::{self, DeletedNote, InvalidNote, Note, NoteError, NoteSummary};
 use crate::scheduler::Rating;
 use crate::study::{self, DeckSummary, SessionCard, StartedSession, StudyError};
-use crate::suggest::{Ollama, SuggestError, Suggesting};
+use crate::suggest::{Ollama, SuggestError, SuggestedCard, Suggesting};
 
 /// Error sent to React: `{ "kind": "failed" | "stale" | "invalid", "message": "..." }`,
 /// plus `"field": "name" | "description" | "front" | "back" | "title" | "body"`
@@ -748,6 +748,10 @@ fn suggest_error(err: SuggestError) -> CommandError {
                  another model.",
             )
         }
+        SuggestError::Ungrounded => CommandError::failed(
+            "None of the cards the model suggested could be traced back to your note, so none \
+             are shown. Try again, or choose a larger model.",
+        ),
         SuggestError::Internal(detail) => {
             eprintln!("[synapse] setting up a request to Ollama failed: {detail}");
             CommandError::failed("Synapse couldn't ask Ollama for suggestions.")
@@ -765,8 +769,9 @@ pub async fn get_models() -> Result<Vec<String>, CommandError> {
     ollama.models().await.map_err(suggest_error)
 }
 
-/// What a suggestion did: `{ "status": "suggested", "cards": [{ front, back }],
-/// "leftOut": 2 }` or `{ "status": "stopped" }`.
+/// What a suggestion did: `{ "status": "suggested", "cards": [{ front, back,
+/// source, unfamiliar }], "leftOut": 2, "unsupported": 1 }` or
+/// `{ "status": "stopped" }`.
 #[derive(Debug, PartialEq, serde::Serialize)]
 #[serde(
     tag = "status",
@@ -776,9 +781,11 @@ pub async fn get_models() -> Result<Vec<String>, CommandError> {
 pub enum SuggestOutcome {
     Suggested {
         /// Drafts for the user to check: nothing has been saved.
-        cards: Vec<CardText>,
+        cards: Vec<SuggestedCard>,
         /// Suggestions left out as unusable, so the user can be told.
         left_out: usize,
+        /// Suggestions left out as not coming from the note.
+        unsupported: usize,
     },
     /// `stop_suggesting` was called first.
     Stopped,
@@ -825,6 +832,7 @@ pub async fn suggest_cards(
         Some(result) => result.map(|suggestions| SuggestOutcome::Suggested {
             cards: suggestions.cards,
             left_out: suggestions.left_out,
+            unsupported: suggestions.unsupported,
         }),
     }
 }
@@ -1469,17 +1477,26 @@ mod tests {
     fn suggestions_serialize_to_the_shape_react_expects() {
         assert_eq!(
             serde_json::to_value(SuggestOutcome::Suggested {
-                cards: vec![CardText {
-                    front: "What is mitosis?".to_string(),
-                    back: "Cell division.".to_string(),
+                cards: vec![SuggestedCard {
+                    front: "What does mitosis produce?".to_string(),
+                    back: "Two identical cells, unlike meiosis.".to_string(),
+                    source: "It produces two identical cells.".to_string(),
+                    unfamiliar: vec!["unlike".to_string(), "meiosis".to_string()],
                 }],
                 left_out: 2,
+                unsupported: 1,
             })
             .unwrap(),
             json!({
                 "status": "suggested",
-                "cards": [{ "front": "What is mitosis?", "back": "Cell division." }],
-                "leftOut": 2
+                "cards": [{
+                    "front": "What does mitosis produce?",
+                    "back": "Two identical cells, unlike meiosis.",
+                    "source": "It produces two identical cells.",
+                    "unfamiliar": ["unlike", "meiosis"]
+                }],
+                "leftOut": 2,
+                "unsupported": 1
             })
         );
         assert_eq!(
@@ -1500,6 +1517,7 @@ mod tests {
             (SuggestError::TimedOut, "failed"),
             (SuggestError::ModelFailed(detail()), "failed"),
             (SuggestError::Unusable(detail()), "failed"),
+            (SuggestError::Ungrounded, "failed"),
             (SuggestError::Internal(detail()), "failed"),
         ] {
             let value = serde_json::to_value(suggest_error(err)).unwrap();

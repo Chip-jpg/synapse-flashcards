@@ -95,9 +95,15 @@ export function fakeBackend(overrides: Record<string, Handler> = {}) {
     suggest_cards: () => ({
       status: "suggested",
       cards: [
-        { front: "What are the phases of mitosis?", back: "Prophase, metaphase, anaphase, telophase." },
+        {
+          front: "What are the phases of mitosis?",
+          back: "Prophase, metaphase, anaphase, telophase.",
+          source: "Prophase, metaphase, anaphase, telophase.",
+          unfamiliar: [],
+        },
       ],
       leftOut: 0,
+      unsupported: 0,
     }),
     stop_suggesting: () => null,
     "plugin:window|destroy": () => null,

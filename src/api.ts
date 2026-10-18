@@ -176,12 +176,20 @@ export type CommandError = {
 export type CardText = { front: string; back: string };
 
 /**
+ * Mirrors `SuggestedCard` in `src-tauri/src/suggest.rs`: a suggested card, with
+ * the passage of the note it comes from (checked to be in the note) and the
+ * words of its answer that the note never uses, for the user to check.
+ */
+export type SuggestedCard = CardText & { source: string; unfamiliar: string[] };
+
+/**
  * Mirrors `SuggestOutcome` in `src-tauri/src/commands.rs`. Suggested cards are
  * drafts: nothing has been saved. `leftOut` counts suggestions dropped as
- * unusable (blank, too long, or repeated).
+ * unusable (blank, too long, or repeated), and `unsupported` those dropped as
+ * not coming from the note.
  */
 export type SuggestOutcome =
-  | { status: "suggested"; cards: CardText[]; leftOut: number }
+  | { status: "suggested"; cards: SuggestedCard[]; leftOut: number; unsupported: number }
   | { status: "stopped" };
 
 /** Every active (not archived) deck with its due-card count. */
