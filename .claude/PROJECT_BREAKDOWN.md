@@ -101,8 +101,8 @@ ______________________________________________________________________
 
 The v0.5.0 release assets are uploaded:
 
-- EXE: @EXE_SIZE@ bytes, SHA-256 `@EXE_HASH@`.
-- MSI: @MSI_SIZE@ bytes, SHA-256 `@MSI_HASH@`.
+- EXE: 3,245,341 bytes, SHA-256 `e41bfaece7a7d463c052f825df8154813348a480cc1a847117bf7cf9b860048f`.
+- MSI: 4,505,600 bytes, SHA-256 `a1ad56d1172b8c6aa8b8dc44a9c3e9f1f46b603d7ec8160918a05d0a67b6a37d`.
 
 The published files were downloaded and their hashes matched the ones the Windows build logged (and GitHub's own asset digests). That is verified release metadata, not a fresh installation test: none of v0.3.2, v0.4.0, or v0.5.0 has been installed on Windows yet.
 
