@@ -149,7 +149,7 @@ function RetentionPanel({
 
   function label(target: Target, value: number | null): string {
     if (value !== null) return `${value}%`;
-    return target.deckId === null ? `${settings.global}%` : `all decks (${settings.global}%)`;
+    return target.deckId === null ? `${settings.global}%` : `${settings.global}%, all decks`;
   }
 
   function open(target: Target) {
@@ -296,7 +296,7 @@ function RetentionPanel({
 
       {editing && (
         <div className="settings-result">
-          <div className="field">
+          <div className="field retention-choice">
             <label className="field-label" htmlFor="retention-choice">
               {editing.target.deckId === null
                 ? "Desired retention for all decks"
@@ -486,12 +486,19 @@ function Estimate({
   );
 }
 
-/** Reviews a day as words, e.g. "0.4", "3.5", "12". */
+/** Reviews a day as words, e.g. "0.4", "4.0", "12". */
 export function formatReviews(perDay: number): string {
-  return perDay < 10 ? (Math.round(perDay * 10) / 10).toString() : Math.round(perDay).toString();
+  return perDay < 9.95 ? perDay.toFixed(1) : Math.round(perDay).toLocaleString();
 }
 
-/** Cards remembered, rounded, out of all of them, e.g. "131 of 141". */
+/**
+ * Cards remembered out of all of them, with the share, which still shows a
+ * difference when the counts round the same: e.g. "131 of 141 (93.0%)".
+ */
 export function formatRemembered(remembered: number, cards: number): string {
-  return `${Math.round(remembered).toLocaleString()} of ${cards.toLocaleString()}`;
+  const share = cards > 0 ? (remembered / cards) * 100 : 0;
+  return (
+    `${Math.round(remembered).toLocaleString()} of ${cards.toLocaleString()} ` +
+    `(${share.toFixed(1)}%)`
+  );
 }

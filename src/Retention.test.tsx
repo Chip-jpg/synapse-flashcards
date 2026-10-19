@@ -101,7 +101,10 @@ describe("desired retention", () => {
     expect(within(table).getByRole("columnheader", { name: "In use (90%)" })).toBeTruthy();
     expect(within(table).getByRole("columnheader", { name: "Chosen (80%)" })).toBeTruthy();
     expect(rowValues(table, /^Reviews a day/)).toEqual(["3.5", "2.8"]);
-    expect(rowValues(table, /^Cards you'd remember on day 90/)).toEqual(["132 of 141", "131 of 141"]);
+    expect(rowValues(table, /^Cards you'd remember on day 90/)).toEqual([
+      "132 of 141 (93.7%)",
+      "131 of 141 (93.0%)",
+    ]);
     expect(within(panel).getByText(/^An estimate, not a promise/).textContent).toMatch(
       /simulated your 141 cards .* how often you choose each rating/
     );
@@ -135,7 +138,7 @@ describe("desired retention", () => {
 
     expect(await within(panel).findByText(/FSRS's average mix of ratings/)).toBeTruthy();
     expect(
-      within(panel).getByRole("columnheader", { name: "Chosen (all decks (90%))" })
+      within(panel).getByRole("columnheader", { name: "Chosen (90%, all decks)" })
     ).toBeTruthy();
     expect(
       within(panel).getByText("Have History follow the value for all decks (90%)?")
@@ -257,9 +260,10 @@ describe("desired retention", () => {
 describe("formatting estimates", () => {
   it("writes reviews and remembered cards in words", () => {
     expect(formatReviews(0.44)).toBe("0.4");
-    expect(formatReviews(3.5027)).toBe("3.5");
+    expect(formatReviews(3.96)).toBe("4.0");
     expect(formatReviews(9.96)).toBe("10");
-    expect(formatReviews(12.4)).toBe("12");
-    expect(formatRemembered(131.6, 1410)).toBe("132 of 1,410");
+    expect(formatReviews(1234.4)).toBe("1,234");
+    expect(formatRemembered(131.6, 1410)).toBe("132 of 1,410 (9.3%)");
+    expect(formatRemembered(0, 0)).toBe("0 of 0 (0.0%)");
   });
 });
