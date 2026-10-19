@@ -2,7 +2,7 @@
 
 A local-first desktop flashcard app. Everything lives in one SQLite file on your own machine: no
 account, no server, and nothing sent over the internet. Reviews are scheduled with [FSRS](https://github.com/open-spaced-repetition/fsrs-rs)
-using its default parameters. If you run [Ollama](https://ollama.com) on the same computer, a model
+using its default parameters, or ones fitted to your own review history if you choose. If you run [Ollama](https://ollama.com) on the same computer, a model
 there can suggest cards from your notes; Synapse talks to nothing else.
 
 Tauri 2 + React + TypeScript on the front, Rust + `sqlx` on the back. Rust owns the database,
@@ -21,6 +21,14 @@ migrations, validation, scheduling, and every business rule; React only calls ty
   every rating is appended to `review_logs`.
 - **Today** — the Study Desk shows how many reviews you've recorded today and for how many
   different cards (*Today: 12 reviews · 9 cards*), counted since midnight on your computer's clock.
+- **Statistics** — reviews per day over the last 30 days, true retention (the share of reviews of
+  cards in the Review state not rated *Again*, with how many reviews it's based on), your cards by
+  state (New, Learning, Review, Relearning), and how many cards fall due on each of the next 14
+  days. All decks or one deck.
+- **Personal scheduling** — under *Settings*, fit FSRS's parameters to your own review history
+  once there are at least 400 reviews to learn from. Synapse shows how well the parameters in use
+  and the fitted ones predict your reviews, and how the intervals would change; nothing changes
+  until you apply them, and then only future ratings use them. *Reset to defaults* goes back.
 - **History is kept** — deleting a card, archiving a deck, and deleting a note are all *soft*: the
   rows stay in the database, a card keeps its FSRS state and review log, and a note keeps its text
   and its times. Every one of them can be brought back: a deleted card restored, an archived deck
@@ -31,6 +39,8 @@ migrations, validation, scheduling, and every business rule; React only calls ty
 - **Notes** — type up your own plain-text study notes, or import them from a file, keep them in a
   local library, open and edit them, and delete ones you're done with. A deleted note leaves the library but is kept under
   *Deleted notes*, where *Restore note* brings it back unchanged.
+- **Cards from a spreadsheet** — add front/back cards to a deck from a CSV or TSV file, after
+  checking every row, and save a deck's cards as a CSV file.
 - **Import files as notes** — make a note from the text of a PDF, text (`.txt`), Markdown (`.md`),
   Word (`.docx`), or PowerPoint (`.pptx`) file. You check and edit the text before it's saved; the
   file itself isn't kept.
@@ -104,8 +114,9 @@ thing that replaces it is *Import data*, and only after you confirm.
 
 ## Using it
 
-**Find your way around.** The sidebar has four places: the **Study Desk** (your decks, with the
-first one that has cards due at the top), **Notes**, **Archived decks**, and **Backup & restore**.
+**Find your way around.** The sidebar has five places: the **Study Desk** (your decks, with the
+first one that has cards due at the top), **Notes**, **Statistics**, **Archived decks**, and
+**Backup & restore**.
 In a narrow window it becomes a bar across the top.
 
 **Unsaved changes are never dropped silently.** If you've typed something in a form (a deck, card,
@@ -146,6 +157,16 @@ and the Sample deck's cards stay out of this entirely. With two or more deleted 
 asks for confirmation, naming how many, then restores every one of them the same way, all together
 or not at all.
 
+**Search, select, and change several cards.** With two or more cards, the deck screen has *Search
+cards*, which shows only the cards whose front or back contains what you type (ignoring capitals).
+Tick *Select* on any cards, or *Select all* for every card the search shows, then *Delete selected*
+or *Move selected*. Both ask first, naming how many (and saying if the search is hiding some of
+them). Deleting works as deleting one card does. Moving takes the cards to another of your decks
+with the same id, text, FSRS state, due date, reps, lapses, and review log, so each is due there
+exactly when it would have been here. All the selected cards change together, or none do: if any
+of them was changed meanwhile, nothing happens and the screen reloads. The Sample deck and
+archived decks can't be moved to or from.
+
 **Rename or archive a deck.** Also on the deck screen. Archiving asks for confirmation, then moves
 the deck to *Archived decks*: it can't be reviewed, changed, or given new cards, and any unfinished
 session in it is closed. Its cards and history are kept, and its name stays taken.
@@ -170,6 +191,19 @@ Desk then reloads from the backup. A backup from an older version of Synapse is 
 restored; one from a newer version is refused. While a backup is being checked, waits for your
 answer, or is being restored — and while an export is being saved — the sidebar can't be used, so
 nothing else can start in the meantime.
+
+**Import cards from a spreadsheet.** *Backup & restore* → *Cards in a spreadsheet* → choose a deck
+→ *Choose a CSV file*. The front goes in the first column and the back in the second; other columns
+are ignored. Commas, semicolons, and tabs all work, as do quoted cells with line breaks, a header
+row such as *Front, Back*, and files saved as UTF-8 or by older versions of Excel. Synapse shows
+every row before adding anything: rows that break a card's rules (a blank side, more than 2,000
+characters) are named and left out, and so, unless you untick the box, are cards whose front is
+already in the deck or on an earlier row. *Add* saves the rest all together, as new cards due
+straight away. Up to 5,000 cards and 10 MB per file.
+
+**Export cards to a spreadsheet.** In the same place, choose a deck → *Export as CSV*. You get a
+standard CSV file with a *front* and a *back* column, which spreadsheets open and Synapse can import
+again. Only the cards' text is saved, not their schedules or reviews, so it isn't a backup.
 
 **Write notes.** *Notes* (in the sidebar, or *Open notes* on the Study Desk) → *New note*. A note
 has a title (up to 200 characters) and a plain-text body (up to 100,000 characters); both are
@@ -282,14 +316,24 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   deleting a note leaves its cards exactly where they are. A deleted note is listed by title and
   dates only; there's no way to read its text again without restoring it.
 - **No sync, accounts, cloud, or collaboration.** By design.
-- **Default FSRS parameters only.** The optimizer that re-fits weights to your own history is
-  future work and isn't built.
+- **Personal scheduling is all or nothing.** One set of parameters is fitted to every review ever
+  recorded (deleted cards and archived decks included) and used for every deck; there's no
+  per-deck set, no choice of desired retention (always 90%), and no automatic re-fitting: you
+  optimize again yourself. Fitted parameters apply only to ratings made afterwards; cards already
+  scheduled keep their due dates. Fitted parameters are only offered when they predict your own
+  reviews better than the ones in use, measured on those same reviews.
 - **One card type.** Front/back text only: no images, audio, cloze, or tags.
-- **No card search, bulk actions, or folders.** Only notes can be searched.
-- **Statistics are one daily count.** The Study Desk counts today's reviews and the different
-  cards they were for, nothing more: no history of earlier days, no streaks, no percentages. It
-  counts every rating made today, including ones of cards deleted or decks archived since. "Today"
-  is the computer's current time zone, so changing it (or travelling) moves where the day begins.
+- **Card search is per deck, and bulk actions are delete and move.** Searching cards is exact
+  text within one deck's active cards; there's no search across decks or of deleted cards, no
+  tags or folders, and restoring several cards at once is only *Restore all*.
+- **Statistics are counts, not scores.** The Study Desk counts today's reviews and the different
+  cards they were for; the *Statistics* screen adds the last 30 days, true retention, cards by
+  state, and a 14-day due forecast. There are no streaks, XP, or mastery percentages. Review
+  history counts every rating made, including ones of cards deleted or decks archived since; cards
+  by state and the forecast count only cards you can study now, and today's forecast also holds
+  overdue cards and new cards not yet studied. Retention counts only reviews of cards in the Review
+  state, so it's empty until cards have graduated. Days are the computer's current time zone, so
+  changing it (or travelling) moves where each day begins. Only active decks can be chosen.
 - **Suggestions are a first step.** They come only from Ollama on this computer, from one note
   at a time, and from one part of up to 12,000 characters of a longer note, as front/back cards.
   A file is suggested from once it's imported as a note. There's no cloud option, no choice of how
@@ -311,7 +355,8 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
 - **`src/`** — the React UI. `api.ts` is the only file that calls Rust, through typed Tauri
   commands (and the window, to hold it open while something is unsaved). `Shell.tsx` is the
   sidebar and the bar above each screen. The screens are `Dashboard.tsx` (the Study Desk),
-  `DeckDetail.tsx`, `ReviewSession.tsx`, `Notes.tsx`, `ArchivedDecks.tsx`, and `Backup.tsx`;
+  `DeckDetail.tsx`, `ReviewSession.tsx`, `Notes.tsx`, `Statistics.tsx`, `ArchivedDecks.tsx`,
+  `Backup.tsx`, and `Settings.tsx`;
   `CardHelp.tsx` is the review screen's *Get help with this card*,
   `SuggestCards.tsx` is the note screen's *Suggest cards*, and `noteParts.ts` splits a note too
   long to suggest from whole into parts.
@@ -322,7 +367,12 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   - `commands.rs` — the Tauri commands, the only way the frontend reaches the core.
   - `db.rs` — where the database lives, opening it, running migrations, and the one-time seed.
   - `scheduler.rs` — FSRS scheduling via the `fsrs` crate, with no database access.
+  - `optimizer.rs` — fitting FSRS's parameters to the review history (off the UI thread, stoppable,
+    and stopped after two minutes), and which parameters are in use. Each apply or reset is a new
+    row in `fsrs_parameters`; nothing already scheduled is rewritten.
   - `study.rs` — the deck dashboard, review sessions, recording reviews, and today's count.
+  - `stats.rs` — the Statistics screen's numbers, read from the review log and the cards. It
+    writes nothing.
   - `authoring.rs` — creating, renaming, archiving, and unarchiving decks; adding, editing,
     deleting, and restoring cards.
   - `notes.rs` — typed notes: writing, editing, searching, soft-deleting, and restoring them.
@@ -334,5 +384,5 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
     started with `--read-pdf-text`, see `main.rs`). `tests/pdf_helper.rs` runs the real binary as
     the helper.
   - `export.rs` / `import.rs` — writing a `.zip` backup, and checking and restoring one.
-- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0010`), embedded in the
+- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0011`), embedded in the
   binary at compile time.

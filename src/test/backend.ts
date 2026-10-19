@@ -3,6 +3,12 @@ import type { CardText, CommandError, Deck, DeckDetail, Note, NoteSummary } from
 
 export const CREATED = "2026-10-01T09:00:00Z";
 
+/** FSRS's 21 default parameters, as `get_scheduling` sends them. */
+export const DEFAULTS = [
+  0.212, 1.2931, 2.3065, 8.2956, 6.4133, 0.8334, 3.0194, 0.001, 1.8722, 0.1666, 0.796, 1.4835,
+  0.0614, 0.2629, 1.6483, 0.6014, 1.8729, 0.5425, 0.0912, 0.0658, 0.1542,
+];
+
 type Args = Record<string, unknown>;
 /** Answers one command: a value, a promise of one, or a rejected promise for a refusal. */
 export type Handler = (args: Args) => unknown;
@@ -36,7 +42,8 @@ export function deferred<T = unknown>() {
 /**
  * Stands in for the Rust core: one normal deck ("Biology", with one card and
  * nothing due) and one note ("Mitosis"). Adding cards succeeds. Ollama has one
- * model ("llama3.2:3b"), which suggests one card. `overrides`
+ * model ("llama3.2:3b"), which suggests one card. Scheduling uses FSRS's
+ * defaults, with no reviews to optimize from yet. `overrides`
  * replace or add commands; any command left unanswered rejects as a failure.
  * `calls` lists every command the app sent, Tauri's own included (listening
  * for events, closing the window), and `argsOf` the arguments of one.
@@ -112,6 +119,17 @@ export function fakeBackend(overrides: Record<string, Handler> = {}) {
       help: { kind: args.kind, text: "Mighty Mito makes the power.", unfamiliar: [] },
     }),
     stop_card_help: () => null,
+    get_scheduling: () => ({
+      version: 0,
+      personal: false,
+      parameters: DEFAULTS,
+      defaults: DEFAULTS,
+      reviewsUsed: null,
+      appliedAt: null,
+      usableReviews: 0,
+      minimumReviews: 400,
+    }),
+    stop_optimizing: () => null,
     "plugin:window|destroy": () => null,
     ...overrides,
   };

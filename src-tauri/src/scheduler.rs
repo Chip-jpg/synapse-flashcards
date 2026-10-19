@@ -94,11 +94,15 @@ pub struct ReviewOutcome {
     pub elapsed_days: f64,
 }
 
-/// Applies one review using FSRS with its default parameters.
+/// Applies one review using FSRS with `parameters`: the user's own, fitted
+/// to their history (see `optimizer.rs`), or an empty slice for FSRS's
+/// defaults. Only this review is scheduled with them; nothing recorded
+/// before it changes.
 pub fn review(
     current: &Schedule,
     rating: Rating,
     now: DateTime<Utc>,
+    parameters: &[f32],
 ) -> Result<ReviewOutcome, DbError> {
     let elapsed_days = match current.last_review {
         Some(last) => ((now - last).num_milliseconds().max(0) as f64) / MS_PER_DAY,
@@ -107,7 +111,8 @@ pub fn review(
 
     // FSRS counts whole days since the last review. `as u32` rounds down
     // (and can't overflow: it saturates at u32::MAX).
-    let fsrs = FSRS::default();
+    let fsrs = FSRS::new(parameters)
+        .map_err(|err| format!("FSRS refused the parameters in use: {err:?}"))?;
     let next = fsrs
         .next_states(current.memory, DESIRED_RETENTION, elapsed_days as u32)
         .map_err(|err| format!("FSRS failed to compute next states: {err:?}"))?;
@@ -200,7 +205,7 @@ mod tests {
     #[test]
     fn good_on_a_new_card_schedules_a_sensible_future_review() {
         let now = at("2026-09-15T12:00:00Z");
-        let out = review(&new_card(), Rating::Good, now).unwrap();
+        let out = review(&new_card(), Rating::Good, now, &[]).unwrap();
 
         assert_eq!(out.state, CardState::Review);
         assert_eq!(out.reps, 1);
@@ -216,7 +221,7 @@ mod tests {
         let now = at("2026-09-15T12:00:00Z");
         let dues: Vec<_> = [Rating::Again, Rating::Hard, Rating::Good, Rating::Easy]
             .into_iter()
-            .map(|r| review(&new_card(), r, now).unwrap().due)
+            .map(|r| review(&new_card(), r, now, &[]).unwrap().due)
             .collect();
         assert!(dues.windows(2).all(|pair| pair[0] <= pair[1]), "{dues:?}");
     }
@@ -224,7 +229,7 @@ mod tests {
     #[test]
     fn again_on_a_review_card_is_a_lapse() {
         let first = at("2026-09-15T12:00:00Z");
-        let learned = review(&new_card(), Rating::Good, first).unwrap();
+        let learned = review(&new_card(), Rating::Good, first, &[]).unwrap();
         let current = Schedule {
             state: learned.state,
             memory: Some(learned.memory),
@@ -234,11 +239,34 @@ mod tests {
         };
 
         let later = first + TimeDelta::days(3);
-        let out = review(&current, Rating::Again, later).unwrap();
+        let out = review(&current, Rating::Again, later, &[]).unwrap();
 
         assert_eq!(out.state, CardState::Relearning);
         assert_eq!(out.reps, 2);
         assert_eq!(out.lapses, 1);
         assert_eq!(out.elapsed_days, 3.0);
+    }
+
+    #[test]
+    fn personal_parameters_change_the_schedule_and_bad_ones_are_refused() {
+        let now = at("2026-09-15T12:00:00Z");
+        let default = review(&new_card(), Rating::Good, now, &[]).unwrap();
+        let same = review(&new_card(), Rating::Good, now, &fsrs::DEFAULT_PARAMETERS).unwrap();
+        assert_eq!(default.due, same.due);
+
+        // A larger initial stability for Good (the third parameter) means a
+        // longer first interval.
+        let mut longer = fsrs::DEFAULT_PARAMETERS;
+        longer[2] *= 4.0;
+        let personal = review(&new_card(), Rating::Good, now, &longer).unwrap();
+        assert!(
+            personal.due > default.due,
+            "{} vs {}",
+            personal.due,
+            default.due
+        );
+
+        assert!(review(&new_card(), Rating::Good, now, &[1.0; 3]).is_err());
+        assert!(review(&new_card(), Rating::Good, now, &[f32::NAN; 21]).is_err());
     }
 }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { cancelImport, confirmImport, exportData, prepareImport, toCommandError } from "./api";
+import { CardsCsv } from "./CardsCsv";
 import { DownloadIcon, UploadIcon } from "./icons";
 import { formatDateTime, useFocusOnMount } from "./ui";
 
@@ -23,7 +24,7 @@ export function Backup({
   onRestored: (fileName: string) => void;
 }) {
   const screenRef = useFocusOnMount<HTMLElement>(true);
-  const [running, setRunning] = useState<"export" | "import" | null>(null);
+  const [running, setRunning] = useState<"export" | "import" | "cards" | null>(null);
   const [importing, setImporting] = useState(false);
   const locked = importing || running === "export";
 
@@ -58,7 +59,7 @@ export function Backup({
           </h3>
         </div>
         <ExportData
-          blocked={running === "import"}
+          blocked={running === "import" || running === "cards"}
           onRunning={(busy) => setRunning(busy ? "export" : null)}
         />
       </section>
@@ -73,12 +74,18 @@ export function Backup({
           </h3>
         </div>
         <ImportData
-          blocked={running === "export"}
+          blocked={running === "export" || running === "cards"}
           onRunning={(busy) => setRunning(busy ? "import" : null)}
           onImporting={setImporting}
           onRestored={onRestored}
         />
       </section>
+
+      {/* Waits while a backup is saved or restored, or waits to be confirmed. */}
+      <CardsCsv
+        blocked={importing || running === "export" || running === "import"}
+        onRunning={(busy) => setRunning(busy ? "cards" : null)}
+      />
     </section>
   );
 }

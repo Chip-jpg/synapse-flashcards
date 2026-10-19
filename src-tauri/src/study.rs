@@ -23,6 +23,7 @@ use sqlx::{SqliteConnection, SqlitePool};
 
 use crate::aid;
 use crate::db::{to_db_time, DbError};
+use crate::optimizer;
 use crate::scheduler::{self, CardState, Rating, Schedule};
 
 /// One deck on the dashboard: `{ id, name, description, isSample, dueCount }`.
@@ -424,7 +425,10 @@ pub async fn record_review(
     };
 
     let current = row.into_schedule()?;
-    let outcome = scheduler::review(&current, rating, now_time)?;
+    // The user's own FSRS parameters if they applied some, read for this
+    // rating only: nothing scheduled before changes.
+    let parameters = optimizer::parameters_for_review(&mut tx).await?;
+    let outcome = scheduler::review(&current, rating, now_time, &parameters)?;
 
     let updated = sqlx::query(
         "UPDATE flashcards

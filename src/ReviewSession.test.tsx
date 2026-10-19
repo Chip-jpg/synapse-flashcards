@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { Flashcard } from "./api";
@@ -225,7 +225,9 @@ describe("a review session", () => {
 
     const summary = await screen.findByText(/You reviewed 2 cards\./);
     expect(screen.getByText("Session complete.")).toBeTruthy();
-    expect(document.activeElement).toBe(summary);
+    // Focus moves in an effect after the summary renders, which a slow runner
+    // can observe in between.
+    await waitFor(() => expect(document.activeElement).toBe(summary));
 
     await user.click(screen.getByRole("button", { name: "Back to Study Desk" }));
     expect(session.onExit).toHaveBeenCalledOnce();

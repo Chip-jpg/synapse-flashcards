@@ -15,12 +15,15 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::aid::{self, CardHelp, HelpKind, Helping};
 use crate::authoring::{self, ArchivedDeck, AuthoringError, CardText, DeckDetail, InvalidInput};
+use crate::cards_csv::{self, CardsImported, CsvError, Delimiter, Duplicate, RowProblem};
 use crate::db::Database;
 use crate::export::{self, ExportError};
 use crate::extract::{self, ExtractError, ExtractedText, FileKind};
 use crate::import::{self, ImportError, ImportState, RestoreError};
 use crate::notes::{self, DeletedNote, InvalidNote, Note, NoteError, NoteSummary};
+use crate::optimizer::{self, IntervalChange, Optimized, OptimizerError, Optimizing, Settings};
 use crate::scheduler::Rating;
+use crate::stats::{self, Statistics};
 use crate::study::{self, DeckSummary, SessionCard, StartedSession, StudyError, TodaySummary};
 use crate::suggest::{self, NotePart, Ollama, SuggestError, SuggestedCard, Suggesting};
 
@@ -208,6 +211,25 @@ fn authoring_error(err: AuthoringError, context: &str, failed: &'static str) -> 
         AuthoringError::DeletedCardsChanged => {
             CommandError::stale("This deck's deleted cards have changed.")
         }
+        AuthoringError::NoneSelected => CommandError::invalid("Select at least one card."),
+        AuthoringError::TooManySelected => {
+            CommandError::invalid("At most 10,000 cards can be changed at once.")
+        }
+        AuthoringError::DuplicateSelected => {
+            CommandError::invalid("The same card was selected twice.")
+        }
+        // The cards on screen aren't the ones the deck has now: reload rather
+        // than retry. Nothing was written.
+        AuthoringError::SelectionChanged => {
+            CommandError::stale("Some of the selected cards have changed.")
+        }
+        AuthoringError::SameDeck => CommandError::invalid("The cards are already in that deck."),
+        // The deck list the user chose from is out of date (the deck was
+        // archived since), so React reloads it. The sample deck and a missing
+        // deck are never offered, so they only arrive here from a stale list.
+        AuthoringError::MoveTargetUnavailable => {
+            CommandError::stale("That deck can't take cards any more.")
+        }
         AuthoringError::Internal(detail) => {
             eprintln!("[synapse] {context} failed: {detail}");
             CommandError::failed(failed)
@@ -260,6 +282,32 @@ pub async fn get_today(
         .map_err(|err| {
             eprintln!("[synapse] loading today's reviews failed: {err}");
             CommandError::failed("Synapse couldn't count today's reviews.")
+        })
+}
+
+/// The Statistics screen: review history over the last 30 days and the
+/// current cards' states and due dates, on this computer's calendar, for
+/// every deck or only `deckId` (an active deck). Reads only.
+/// Returns `{ reviewsByDay, retention, cardStates, forecast }`.
+#[tauri::command]
+pub async fn get_statistics(
+    app: AppHandle,
+    database: State<'_, Database>,
+    deck_id: Option<i64>,
+) -> Result<Statistics, CommandError> {
+    if deck_id.is_some_and(|id| id < 1) {
+        return Err(CommandError::invalid(DECK_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    stats::statistics(&pool, deck_id, Utc::now(), &chrono::Local)
+        .await
+        .map_err(|err| {
+            study_error(
+                err,
+                "loading statistics",
+                DECK_NOT_FOUND,
+                "Synapse couldn't load your statistics.",
+            )
         })
 }
 
@@ -553,6 +601,60 @@ pub async fn restore_deleted_cards(
                 "Synapse couldn't restore the cards.",
             )
         })
+}
+
+/// Soft-deletes several cards of one deck at once, each exactly as
+/// `delete_flashcard` deletes one.
+///
+/// Arguments: `{ deckId, cardIds }`, the cards the user selected and
+/// confirmed. Returns `{ changed, deck }`: how many were deleted, and the deck
+/// now listing them under `deletedCards` (same shape as `get_deck_detail`).
+/// Rejects with kind "stale" if any of them is no longer an active card of the
+/// deck, or the deck has been archived, writing nothing either way.
+#[tauri::command]
+pub async fn delete_flashcards(
+    app: AppHandle,
+    database: State<'_, Database>,
+    deck_id: i64,
+    card_ids: Vec<i64>,
+) -> Result<authoring::ChangedCards, CommandError> {
+    if deck_id < 1 {
+        return Err(CommandError::invalid(DECK_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    authoring::delete_flashcards(&pool, deck_id, &card_ids, Utc::now())
+        .await
+        .map_err(|err| {
+            authoring_error(
+                err,
+                "deleting selected cards",
+                "Synapse couldn't delete the cards.",
+            )
+        })
+}
+
+/// Moves several cards of one deck into another active normal deck. Each card
+/// keeps its id, text, FSRS state, due date, counts, and review history.
+///
+/// Arguments: `{ deckId, cardIds, toDeckId }`. Returns `{ changed, deck }`:
+/// how many moved, and the deck they came from, without them. Rejects with
+/// kind "stale" if any card is no longer an active card of `deckId`, or either
+/// deck has been archived, writing nothing either way.
+#[tauri::command]
+pub async fn move_flashcards(
+    app: AppHandle,
+    database: State<'_, Database>,
+    deck_id: i64,
+    card_ids: Vec<i64>,
+    to_deck_id: i64,
+) -> Result<authoring::ChangedCards, CommandError> {
+    if deck_id < 1 || to_deck_id < 1 {
+        return Err(CommandError::invalid(DECK_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    authoring::move_flashcards(&pool, deck_id, &card_ids, to_deck_id, Utc::now())
+        .await
+        .map_err(|err| authoring_error(err, "moving cards", "Synapse couldn't move the cards."))
 }
 
 /// Renames an active normal deck; its cards, schedule, and history are kept.
@@ -1403,6 +1505,7 @@ pub async fn confirm_import(
     app: AppHandle,
     database: State<'_, Database>,
     imports: State<'_, ImportState>,
+    optimizing: State<'_, Optimizing>,
     token: u64,
 ) -> Result<(), CommandError> {
     let (db_path, workspace) = import_paths(&app)?;
@@ -1425,6 +1528,9 @@ pub async fn confirm_import(
 
     // Whatever happened, the checked copy is now the database or not needed.
     import::discard_staged(&workspace);
+    // Parameters fitted to the history that was just replaced don't belong
+    // to the restored one.
+    optimizing.forget();
     result
 }
 
@@ -1444,11 +1550,471 @@ pub async fn cancel_import(
     Ok(())
 }
 
+/// Turns a failed optimization, apply, or reset into a user-safe error,
+/// logging internal detail.
+fn optimizer_error(err: OptimizerError, context: &str, failed: &'static str) -> CommandError {
+    match err {
+        OptimizerError::NotEnoughReviews => CommandError::invalid(
+            "There aren't enough reviews yet to fit FSRS to your history. Keep reviewing and \
+             try again later.",
+        ),
+        OptimizerError::Stale => CommandError::stale(
+            "The scheduling parameters changed since this was shown. Synapse has reloaded them.",
+        ),
+        OptimizerError::NotBetter => CommandError::invalid(
+            "These parameters don't predict your reviews better than the ones in use, so they \
+             weren't applied.",
+        ),
+        OptimizerError::TimedOut => CommandError::failed(
+            "Optimizing took too long, so Synapse stopped it. Nothing was changed.",
+        ),
+        OptimizerError::Internal(detail) => {
+            eprintln!("[synapse] {context} failed: {detail}");
+            CommandError::failed(failed)
+        }
+    }
+}
+
+/// The scheduling settings: which FSRS parameters are in use, and how many
+/// reviews an optimization could learn from. Returns [`Settings`].
+#[tauri::command]
+pub async fn get_scheduling(
+    app: AppHandle,
+    database: State<'_, Database>,
+) -> Result<Settings, CommandError> {
+    let pool = pool(&app, &database).await?;
+    optimizer::settings(&pool).await.map_err(|err| {
+        eprintln!("[synapse] loading scheduling settings failed: {err}");
+        CommandError::failed("Synapse couldn't load the scheduling settings.")
+    })
+}
+
+/// What an optimization did: `{ "status": "optimized", token, reviewsUsed,
+/// current, proposed, currentError, proposedError, better, intervals }` or
+/// `{ "status": "stopped" }`. `current` and `proposed` are FSRS's 21
+/// parameters; the errors are how far predicted recall is from actual
+/// recall on average (0 to 1, lower is better); `intervals` is
+/// `[{ case, current, proposed }]` in days.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum OptimizeOutcome {
+    Optimized {
+        /// Pass to `apply_parameters` to use the proposed parameters.
+        token: u64,
+        reviews_used: usize,
+        current: Vec<f32>,
+        proposed: Vec<f32>,
+        current_error: f32,
+        proposed_error: f32,
+        /// Whether the proposed parameters predict the history better. Only
+        /// then can they be applied.
+        better: bool,
+        intervals: Vec<IntervalChange>,
+    },
+    /// `stop_optimizing` was called, or another optimization started.
+    Stopped,
+}
+
+/// Fits FSRS's parameters to the whole review history, off the UI thread,
+/// and compares them with the ones in use. Nothing is saved: the result
+/// waits for `apply_parameters`. Takes no arguments. Returns
+/// [`OptimizeOutcome`]; rejects with kind "invalid" below the minimum number
+/// of reviews, or "failed" if it took too long.
+#[tauri::command]
+pub async fn optimize_parameters(
+    app: AppHandle,
+    database: State<'_, Database>,
+    optimizing: State<'_, Optimizing>,
+) -> Result<OptimizeOutcome, CommandError> {
+    let pool = pool(&app, &database).await?;
+    let outcome = optimizer::optimize(&pool, &optimizing, optimizer::TIME_LIMIT)
+        .await
+        .map_err(|err| {
+            optimizer_error(
+                err,
+                "optimizing FSRS parameters",
+                "Synapse couldn't optimize the scheduling parameters. Nothing was changed.",
+            )
+        })?;
+    Ok(match outcome {
+        Optimized::Stopped => OptimizeOutcome::Stopped,
+        Optimized::Proposed { token, proposal } => OptimizeOutcome::Optimized {
+            token,
+            reviews_used: proposal.reviews_used,
+            current: proposal.current,
+            proposed: proposal.proposed,
+            current_error: proposal.current_fit.error,
+            proposed_error: proposal.proposed_fit.error,
+            better: proposal.better,
+            intervals: proposal.intervals,
+        },
+    })
+}
+
+/// Stops the optimization running now, if any. Returns `null`.
+#[tauri::command]
+pub fn stop_optimizing(optimizing: State<'_, Optimizing>) {
+    optimizing.stop();
+}
+
+/// Uses the parameters from the optimization held under `{ token }` for
+/// every rating from now on. Past schedules and reviews don't change.
+/// Returns the new [`Settings`]; rejects with kind "stale" if that result is
+/// no longer waiting or the parameters in use changed since.
+#[tauri::command]
+pub async fn apply_parameters(
+    app: AppHandle,
+    database: State<'_, Database>,
+    optimizing: State<'_, Optimizing>,
+    token: u64,
+) -> Result<Settings, CommandError> {
+    let pool = pool(&app, &database).await?;
+    let Some(proposal) = optimizing.take(token) else {
+        return Err(CommandError::stale(
+            "That optimization is no longer ready to apply. Optimize again.",
+        ));
+    };
+    let failed = "Synapse couldn't apply the new parameters. Nothing was changed.";
+    optimizer::apply(&pool, &proposal, Utc::now())
+        .await
+        .map_err(|err| optimizer_error(err, "applying FSRS parameters", failed))?;
+    get_scheduling(app, database).await
+}
+
+/// Goes back to FSRS's default parameters for every rating from now on.
+/// `{ version }` is the `version` of the settings shown. Returns the new
+/// [`Settings`]; rejects with kind "stale" if they changed since, or the
+/// defaults are already in use.
+#[tauri::command]
+pub async fn reset_parameters(
+    app: AppHandle,
+    database: State<'_, Database>,
+    version: i64,
+) -> Result<Settings, CommandError> {
+    let pool = pool(&app, &database).await?;
+    let failed = "Synapse couldn't reset the parameters. Nothing was changed.";
+    optimizer::reset(&pool, version, Utc::now())
+        .await
+        .map_err(|err| optimizer_error(err, "resetting FSRS parameters", failed))?;
+    get_scheduling(app, database).await
+}
+
+/// One row of a cards file, checked: `{ line, front, back, problem, duplicate }`.
+/// `problem` is `{ field, message }` when the row can't become a card, and
+/// `duplicate` says why its card may already be there (see `cards_csv.rs`).
+#[derive(Debug, serde::Serialize)]
+pub struct CardsFileRow {
+    line: usize,
+    front: String,
+    back: String,
+    problem: Option<RowProblemMessage>,
+    duplicate: Option<Duplicate>,
+}
+
+/// Why a row of a cards file can't become a card, as a typed card's error.
+#[derive(Debug, serde::Serialize)]
+pub struct RowProblemMessage {
+    field: Field,
+    message: &'static str,
+}
+
+impl RowProblemMessage {
+    fn of(problem: RowProblem) -> Self {
+        let (field, message) = match problem {
+            RowProblem::NoBack => (
+                Field::Back,
+                "This row has no back: put the back in a second column.",
+            ),
+            RowProblem::Card(problem) => {
+                let error = CommandError::invalid_input(problem);
+                (error.field.unwrap_or(Field::Front), error.message)
+            }
+        };
+        RowProblemMessage { field, message }
+    }
+}
+
+/// What choosing a cards file did:
+/// `{ "status": "read", "fileName", "delimiter", "header", "rows", "rowsWithExtraColumns" }`
+/// or `{ "status": "cancelled" }`. Nothing has been saved.
+#[derive(Debug, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum CardsFile {
+    Read {
+        file_name: String,
+        delimiter: Delimiter,
+        /// The first row was column names, so it isn't among `rows`.
+        header: bool,
+        rows: Vec<CardsFileRow>,
+        /// Rows with something in a third or later column, which is ignored.
+        rows_with_extra_columns: usize,
+    },
+    /// The user closed the file window without choosing a file.
+    Cancelled,
+}
+
+/// Turns a cards file or import that was refused into a user-safe error,
+/// logging internal detail (never a card's text). The limits in these
+/// messages must match `cards_csv.rs` (checked by a test below).
+fn csv_error(err: CsvError, context: &str, failed: &'static str) -> CommandError {
+    match err {
+        CsvError::TooLarge => {
+            CommandError::invalid("That file is too large to import: the limit is 10 MB.")
+        }
+        CsvError::TooManyRows => CommandError::invalid(
+            "A file can hold at most 5,000 cards. Split it into smaller files.",
+        ),
+        CsvError::NoRows => CommandError::invalid("That file has no cards in it."),
+        CsvError::UnclosedQuote { line } => {
+            eprintln!("[synapse] a cards file has an unclosed quote from line {line}");
+            CommandError::invalid(
+                "A quoted cell in that file never ends, so Synapse can't tell where the cards \
+                 are. Check the file's quote marks.",
+            )
+        }
+        CsvError::OnlyDuplicates => CommandError::stale(
+            "Every one of these cards is already in the deck, so nothing was added.",
+        ),
+        CsvError::Authoring(err) => authoring_error(err, context, failed),
+    }
+}
+
+/// Chooses a CSV or TSV file of cards for an active normal deck and checks
+/// every row, without saving anything: the rows go to the screen, where the
+/// user sees which can be added and saves them with `import_cards_csv`.
+///
+/// Arguments: `{ deckId }`. The deck is checked before the file window opens.
+/// Returns [`CardsFile`]; a file that can't be used rejects with kind
+/// "invalid" or "failed".
+#[tauri::command]
+pub async fn read_cards_csv(
+    app: AppHandle,
+    database: State<'_, Database>,
+    deck_id: i64,
+) -> Result<CardsFile, CommandError> {
+    if deck_id < 1 {
+        return Err(CommandError::invalid(DECK_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    // Refuse a deck that can't take cards before asking for a file.
+    authoring::deck_detail(&pool, deck_id, Utc::now())
+        .await
+        .map_err(|err| {
+            authoring_error(err, "loading a deck", "Synapse couldn't load this deck.")
+        })?;
+
+    // As in `export_data`: the dialog answers through a callback.
+    let (sender, mut receiver) = tauri::async_runtime::channel(1);
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Choose a file of cards to import")
+        .add_filter("Spreadsheet files (CSV, TSV)", &["csv", "tsv", "txt"]);
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.pick_file(move |path| {
+        let _ = sender.try_send(path);
+    });
+
+    let Some(chosen) = receiver.recv().await else {
+        eprintln!("[synapse] the cards file dialog closed without an answer");
+        return Err(CommandError::failed(
+            "Synapse couldn't open the file window.",
+        ));
+    };
+    let Some(chosen) = chosen else {
+        return Ok(CardsFile::Cancelled);
+    };
+    let path = chosen.into_path().map_err(|err| {
+        eprintln!("[synapse] the chosen cards file's path was unusable: {err}");
+        CommandError::invalid("That file can't be used.")
+    })?;
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "your file".to_string());
+    let tsv = path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("tsv"));
+
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        // The size first, so a huge file is refused without reading it.
+        let size = std::fs::metadata(&path)?.len();
+        if size > cards_csv::CSV_FILE_MAX_BYTES {
+            return Ok(None);
+        }
+        std::fs::read(&path).map(Some)
+    })
+    .await
+    .map_err(|err| {
+        eprintln!("[synapse] reading a cards file stopped: {err}");
+        CommandError::failed("Synapse couldn't read that file.")
+    })?
+    .map_err(|err: std::io::Error| {
+        eprintln!("[synapse] reading a cards file failed: {err}");
+        CommandError::failed("Synapse couldn't open that file.")
+    })?
+    .ok_or_else(|| csv_error(CsvError::TooLarge, "", ""))?;
+
+    let preview = cards_csv::read_cards(&pool, deck_id, &bytes, tsv, Utc::now())
+        .await
+        .map_err(|err| {
+            csv_error(
+                err,
+                "reading a cards file",
+                "Synapse couldn't read that file.",
+            )
+        })?;
+    Ok(CardsFile::Read {
+        file_name,
+        delimiter: preview.delimiter,
+        header: preview.header,
+        rows: preview
+            .rows
+            .into_iter()
+            .map(|row| CardsFileRow {
+                line: row.line,
+                front: row.front,
+                back: row.back,
+                problem: row.problem.map(RowProblemMessage::of),
+                duplicate: row.duplicate,
+            })
+            .collect(),
+        rows_with_extra_columns: preview.rows_with_extra_columns,
+    })
+}
+
+/// Adds the cards the user kept from a cards file to an active normal deck,
+/// each checked as `create_flashcard` checks one. All or nothing. With
+/// `skipDuplicates`, cards whose front is already in the deck (or on an
+/// earlier card sent) are left out, judged afresh at saving.
+///
+/// Arguments: `{ deckId, cards: [{ front, back }], skipDuplicates }`. Returns
+/// `{ added, skipped, cardCount }`. A refused card rejects with kind
+/// "invalid", its `field`, and its `index` in `cards`; nothing new to add
+/// rejects with kind "stale".
+#[tauri::command]
+pub async fn import_cards_csv(
+    app: AppHandle,
+    database: State<'_, Database>,
+    deck_id: i64,
+    cards: Vec<CardText>,
+    skip_duplicates: bool,
+) -> Result<CardsImported, CommandError> {
+    if deck_id < 1 {
+        return Err(CommandError::invalid(DECK_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    cards_csv::import_cards(&pool, deck_id, &cards, skip_duplicates, Utc::now())
+        .await
+        .map_err(|err| csv_error(err, "importing cards", "Synapse couldn't save the cards."))
+}
+
+/// Saves an active deck's cards (front and back only) as a CSV file the user
+/// chooses. The sample deck can be exported too. Opens the OS "save as"
+/// dialog, as `export_data` does; closing it returns `{ status: "cancelled" }`
+/// and writes nothing.
+///
+/// Arguments: `{ deckId }`. Returns [`ExportOutcome`]. A deck with no cards
+/// rejects with kind "invalid" before the dialog opens.
+#[tauri::command]
+pub async fn export_cards_csv(
+    app: AppHandle,
+    database: State<'_, Database>,
+    deck_id: i64,
+) -> Result<ExportOutcome, CommandError> {
+    if deck_id < 1 {
+        return Err(CommandError::invalid(DECK_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    let (deck_name, cards) =
+        cards_csv::deck_cards(&pool, deck_id)
+            .await
+            .map_err(|err| match err {
+                AuthoringError::NoCards => {
+                    CommandError::invalid("This deck has no cards to export.")
+                }
+                err => {
+                    authoring_error(err, "exporting cards", "Synapse couldn't export the cards.")
+                }
+            })?;
+
+    let (sender, mut receiver) = tauri::async_runtime::channel(1);
+    let mut dialog = app
+        .dialog()
+        .file()
+        .add_filter("CSV file", &["csv"])
+        .set_file_name(cards_csv::suggested_file_name(&deck_name));
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.save_file(move |path| {
+        let _ = sender.try_send(path);
+    });
+
+    let Some(chosen) = receiver.recv().await else {
+        eprintln!("[synapse] the cards export save dialog closed without an answer");
+        return Err(CommandError::failed(
+            "Synapse couldn't open the save window.",
+        ));
+    };
+    let Some(chosen) = chosen else {
+        return Ok(ExportOutcome::Cancelled);
+    };
+    let destination = chosen.into_path().map_err(|err| {
+        eprintln!("[synapse] the chosen cards export path was unusable: {err}");
+        CommandError::invalid("That save location can't be used.")
+    })?;
+    // As in `export_data`: never write over Synapse's own database.
+    if database.is_database_file(&app, &destination) {
+        return Err(CommandError::invalid(
+            "That's Synapse's own data file. Choose another name.",
+        ));
+    }
+
+    let file_name = destination
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "your file".to_string());
+    let csv = cards_csv::write_csv(&cards);
+    // Written beside the destination first and then moved into place, so a
+    // failed write never leaves half a file where the user's file was.
+    let partial = destination.with_file_name(format!(".{file_name}.synapse-partial"));
+    tauri::async_runtime::spawn_blocking(move || {
+        let written =
+            std::fs::write(&partial, csv).and_then(|()| std::fs::rename(&partial, &destination));
+        if written.is_err() {
+            let _ = std::fs::remove_file(&partial);
+        }
+        written
+    })
+    .await
+    .map_err(|err| {
+        eprintln!("[synapse] writing a cards export stopped: {err}");
+        CommandError::failed("Synapse couldn't save the file there. Try another folder.")
+    })?
+    .map_err(|err| {
+        eprintln!("[synapse] writing a cards export failed: {err}");
+        CommandError::failed("Synapse couldn't save the file there. Try another folder.")
+    })?;
+    Ok(ExportOutcome::Saved { file_name })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::authoring::{
-        CARD_BATCH_MAX, CARD_TEXT_MAX_CHARS, DECK_DESCRIPTION_MAX_CHARS, DECK_NAME_MAX_CHARS,
+        CARD_BATCH_MAX, CARD_SELECTION_MAX, CARD_TEXT_MAX_CHARS, DECK_DESCRIPTION_MAX_CHARS,
+        DECK_NAME_MAX_CHARS,
     };
     use crate::notes::{NOTE_BODY_MAX_CHARS, NOTE_TITLE_MAX_CHARS};
     use serde_json::json;
@@ -1502,6 +2068,33 @@ mod tests {
         assert_eq!(
             to_json(AuthoringError::DeckNotFound),
             json!({ "kind": "invalid", "message": "That deck doesn't exist." })
+        );
+    }
+
+    #[test]
+    fn bulk_card_errors_tell_react_whether_to_reload() {
+        let to_json = |err| serde_json::to_value(authoring_error(err, "test", "failed")).unwrap();
+        assert_eq!(
+            to_json(AuthoringError::SelectionChanged),
+            json!({ "kind": "stale", "message": "Some of the selected cards have changed." })
+        );
+        assert_eq!(
+            to_json(AuthoringError::MoveTargetUnavailable),
+            json!({ "kind": "stale", "message": "That deck can't take cards any more." })
+        );
+        assert_eq!(
+            to_json(AuthoringError::NoneSelected),
+            json!({ "kind": "invalid", "message": "Select at least one card." })
+        );
+        assert_eq!(
+            to_json(AuthoringError::SameDeck),
+            json!({ "kind": "invalid", "message": "The cards are already in that deck." })
+        );
+        // The limit in the message must match `authoring.rs`.
+        assert_eq!(CARD_SELECTION_MAX, 10_000);
+        assert_eq!(
+            to_json(AuthoringError::TooManySelected),
+            json!({ "kind": "invalid", "message": "At most 10,000 cards can be changed at once." })
         );
     }
 
@@ -1769,6 +2362,101 @@ mod tests {
     }
 
     #[test]
+    fn cards_files_serialize_to_the_shape_react_expects() {
+        let file = CardsFile::Read {
+            file_name: "biology.csv".to_string(),
+            delimiter: Delimiter::Semicolon,
+            header: true,
+            rows: vec![
+                CardsFileRow {
+                    line: 2,
+                    front: "What is DNA?".to_string(),
+                    back: "A molecule.".to_string(),
+                    problem: None,
+                    duplicate: Some(Duplicate::InFile { line: 1 }),
+                },
+                CardsFileRow {
+                    line: 3,
+                    front: "Alone".to_string(),
+                    back: String::new(),
+                    problem: Some(RowProblemMessage::of(RowProblem::NoBack)),
+                    duplicate: Some(Duplicate::InDeck),
+                },
+                CardsFileRow {
+                    line: 4,
+                    front: String::new(),
+                    back: "b".to_string(),
+                    problem: Some(RowProblemMessage::of(RowProblem::Card(
+                        InvalidInput::FrontBlank,
+                    ))),
+                    duplicate: None,
+                },
+            ],
+            rows_with_extra_columns: 0,
+        };
+        assert_eq!(
+            serde_json::to_value(file).unwrap(),
+            json!({
+                "status": "read",
+                "fileName": "biology.csv",
+                "delimiter": "semicolon",
+                "header": true,
+                "rows": [
+                    {
+                        "line": 2, "front": "What is DNA?", "back": "A molecule.",
+                        "problem": null, "duplicate": { "kind": "inFile", "line": 1 }
+                    },
+                    {
+                        "line": 3, "front": "Alone", "back": "",
+                        "problem": {
+                            "field": "back",
+                            "message": "This row has no back: put the back in a second column."
+                        },
+                        "duplicate": { "kind": "inDeck" }
+                    },
+                    {
+                        "line": 4, "front": "", "back": "b",
+                        "problem": { "field": "front", "message": "Enter the front of the card." },
+                        "duplicate": null
+                    }
+                ],
+                "rowsWithExtraColumns": 0
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(CardsFile::Cancelled).unwrap(),
+            json!({ "status": "cancelled" })
+        );
+        assert_eq!(
+            serde_json::to_value(CardsImported {
+                added: 2,
+                skipped: 1,
+                card_count: 5
+            })
+            .unwrap(),
+            json!({ "added": 2, "skipped": 1, "cardCount": 5 })
+        );
+    }
+
+    #[test]
+    fn cards_file_errors_state_the_real_limits() {
+        use crate::cards_csv::{CSV_FILE_MAX_BYTES, CSV_ROWS_MAX};
+        let message = |err| csv_error(err, "test", "failed").message;
+        assert!(message(CsvError::TooLarge)
+            .contains(&format!("{} MB", CSV_FILE_MAX_BYTES / 1024 / 1024)));
+        assert!(message(CsvError::TooManyRows).contains("5,000"));
+        assert_eq!(CSV_ROWS_MAX, 5_000);
+        // Nothing new to add: the deck changed, so React says so and reloads.
+        let only = serde_json::to_value(csv_error(CsvError::OnlyDuplicates, "test", "failed"));
+        assert_eq!(only.unwrap()["kind"], "stale");
+        // A deck refusal is the same as when adding typed cards.
+        assert_eq!(
+            message(CsvError::Authoring(AuthoringError::DeckArchived)),
+            DECK_ARCHIVED
+        );
+    }
+
+    #[test]
     fn suggestions_serialize_to_the_shape_react_expects() {
         assert_eq!(
             serde_json::to_value(SuggestOutcome::Suggested {
@@ -1938,5 +2626,79 @@ mod tests {
                 "deletedAt": "2026-09-16T14:00:00.000Z"
             })
         );
+    }
+
+    #[test]
+    fn optimizations_serialize_to_the_shape_react_expects() {
+        assert_eq!(
+            serde_json::to_value(OptimizeOutcome::Optimized {
+                token: 3,
+                reviews_used: 600,
+                current: vec![0.5],
+                proposed: vec![1.5],
+                current_error: 0.25,
+                proposed_error: 0.125,
+                better: true,
+                intervals: vec![IntervalChange {
+                    case: optimizer::IntervalCase::SecondGood,
+                    current: 2.0,
+                    proposed: 4.0,
+                }],
+            })
+            .unwrap(),
+            json!({
+                "status": "optimized",
+                "token": 3,
+                "reviewsUsed": 600,
+                "current": [0.5],
+                "proposed": [1.5],
+                "currentError": 0.25,
+                "proposedError": 0.125,
+                "better": true,
+                "intervals": [{ "case": "secondGood", "current": 2.0, "proposed": 4.0 }]
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(OptimizeOutcome::Stopped).unwrap(),
+            json!({ "status": "stopped" })
+        );
+        assert_eq!(
+            serde_json::to_value(Settings {
+                version: 2,
+                personal: true,
+                parameters: vec![1.5],
+                defaults: vec![0.5],
+                reviews_used: Some(600),
+                applied_at: Some("2026-10-19T09:00:00.000Z".to_string()),
+                usable_reviews: 650,
+                minimum_reviews: 400,
+            })
+            .unwrap(),
+            json!({
+                "version": 2,
+                "personal": true,
+                "parameters": [1.5],
+                "defaults": [0.5],
+                "reviewsUsed": 600,
+                "appliedAt": "2026-10-19T09:00:00.000Z",
+                "usableReviews": 650,
+                "minimumReviews": 400
+            })
+        );
+    }
+
+    #[test]
+    fn optimizer_errors_tell_react_what_to_do() {
+        for (err, kind) in [
+            (OptimizerError::NotEnoughReviews, "invalid"),
+            (OptimizerError::NotBetter, "invalid"),
+            (OptimizerError::Stale, "stale"),
+            (OptimizerError::TimedOut, "failed"),
+            (OptimizerError::Internal("detail".into()), "failed"),
+        ] {
+            let value = serde_json::to_value(optimizer_error(err, "testing", "Failed.")).unwrap();
+            assert_eq!(value["kind"], kind, "{value}");
+            assert!(!value["message"].as_str().unwrap().contains("detail"));
+        }
     }
 }
