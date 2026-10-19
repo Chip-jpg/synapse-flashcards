@@ -41,6 +41,8 @@ migrations, validation, scheduling, and every business rule; React only calls ty
   *Deleted notes*, where *Restore note* brings it back unchanged.
 - **Cards from a spreadsheet** — add front/back cards to a deck from a CSV or TSV file, after
   checking every row, and save a deck's cards as a CSV file.
+- **Decks from Anki** — add the front/back notes of an Anki package (`.apkg` or `.colpkg`) as new
+  decks of new cards, after a preview of what comes across and what's left out.
 - **Import files as notes** — make a note from the text of a PDF, text (`.txt`), Markdown (`.md`),
   Word (`.docx`), or PowerPoint (`.pptx`) file. You check and edit the text before it's saved; the
   file itself isn't kept.
@@ -208,6 +210,22 @@ straight away. Up to 5,000 cards and 10 MB per file.
 **Export cards to a spreadsheet.** In the same place, choose a deck → *Export as CSV*. You get a
 standard CSV file with a *front* and a *back* column, which spreadsheets open and Synapse can import
 again. Only the cards' text is saved, not their schedules or reviews, so it isn't a backup.
+A cell that starts with `=`, `+`, `-`, `@`, a tab or a line break gets a `'` in front, so a
+spreadsheet shows it as text instead of running it as a formula; Synapse takes that `'` off again
+when it imports the file, so its own exports come back exactly.
+
+**Import decks from Anki.** *Backup & restore* → *Decks from Anki* → *Choose an Anki file*, and pick
+an `.apkg` (exported from Anki, in its current format or "for older Anki versions") or a `.colpkg`
+(a whole collection). Synapse reads the file without changing anything and shows what it found:
+each Anki deck with the name of the new deck it becomes (a deck named like one you already have,
+archived ones included, gets " (2)" added), how many cards it brings, and how many notes are left
+out and why. Notes come across when their type has one front and one back, such as Anki's *Basic*,
+*Basic (and reversed card)*, *Basic (optional reversed card)* and *Basic (type in the answer)*, or
+your own types built the same way. A note becomes one card; tick the box to also add the reversed
+card for notes that have one in Anki. Formatting becomes plain text with its line breaks. Left out:
+cloze and image-occlusion notes, other note types, notes with an empty side, and sides over 2,000
+characters. *Add* creates every deck and card together, or nothing. Up to 50,000 cards and 1,000
+decks at a time.
 
 **Write notes.** *Notes* (in the sidebar, or *Open notes* on the Study Desk) → *New note*. A note
 has a title (up to 200 characters) and a plain-text body (up to 100,000 characters); both are
@@ -318,8 +336,8 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
 ## Current limitations
 
 - **Import replaces; it never merges.** Restoring a backup replaces all current data, and that can't
-  be undone from the app. Only Synapse's own exports are accepted (no Anki files, CSV, or raw
-  `.sqlite` files), a backup whose database unpacks to more than 1 GiB is refused, and there's no
+  be undone from the app. Only Synapse's own exports are accepted (Anki files and CSV are added as
+  new cards elsewhere, never restored; raw `.sqlite` files aren't accepted), a backup whose database unpacks to more than 1 GiB is refused, and there's no
   preview of a backup's contents beyond its file name and export time. A restore that's interrupted
   (the process killed mid-swap) can leave a rollback copy in Synapse's data folder
   (`import-workspace/rollback.sqlite`, later renamed `rollback-kept-<time>.sqlite`); these are never
@@ -353,9 +371,16 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   overdue cards and new cards not yet studied. Retention counts only reviews of cards in the Review
   state, so it's empty until cards have graduated. Days are the computer's current time zone, so
   changing it (or travelling) moves where each day begins. Only active decks can be chosen.
-- **Spreadsheet export writes text as it is.** A card side that starts with `=`, `+`, `-` or `@`
-  is written unchanged, so a spreadsheet app may read it as a formula. Importing reads only the
-  first two columns as text and keeps no schedules, so it isn't a way to move a deck with its history.
+- **Spreadsheet files carry text only.** Importing reads only the first two columns as text and
+  keeps no schedules, so it isn't a way to move a deck with its history. A cell another program
+  wrote as `'=…` (a `'` and then a formula character) loses its first `'` on import, as Synapse's
+  own exports need.
+- **Anki imports bring text, not history.** Every imported card starts as new: Anki's schedule,
+  review history, tags, flags, suspended state and note links aren't imported, and neither are
+  pictures, sounds, LaTeX images or styling (text beside them is kept). Cloze and image-occlusion
+  notes, and note types with more than one field on either side, are left out and counted.
+  Subdecks become separate decks named like `Parent::Child`. Importing the same file twice makes
+  a second set of decks; nothing is merged or deduplicated.
 - **Suggestions are a first step.** They come only from Ollama on this computer, from one note
   at a time, and from one part of up to 12,000 characters of a longer note, as front/back cards.
   A file is suggested from once it's imported as a note. There's no cloud option, no choice of how
@@ -387,6 +412,8 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   `CardHelp.tsx` is the review screen's *Get help with this card*,
   `SuggestCards.tsx` is the note screen's *Suggest cards*, `Quiz.tsx` its *Quiz me*, and
   `noteParts.ts` splits a note too long to suggest from whole into parts.
+  `CardsCsv.tsx` and `AnkiImport.tsx` are *Backup & restore*'s *Cards in a spreadsheet* and
+  *Decks from Anki*.
   `unsaved.tsx` tracks which form holds unsaved text and asks before it's discarded. Tests sit
   beside the code they cover (`*.test.tsx`), with shared helpers in `src/test/`.
 - **`src-tauri/src/`** — the Rust core:
@@ -413,6 +440,10 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   - `extract.rs` — reading the text of a file to import as a note, and the PDF helper (Synapse
     started with `--read-pdf-text`, see `main.rs`). `tests/pdf_helper.rs` runs the real binary as
     the helper.
+  - `cards_csv.rs` — reading CSV/TSV files of cards and writing a deck's cards as CSV.
+  - `anki.rs` — reading an Anki package's collection (copied out to a temporary folder and opened
+    read-only, never attached to Synapse's database) and adding its front/back notes as new decks.
+    `testdata/anki/` holds packages exported by Anki itself, and the script that made them.
   - `export.rs` / `import.rs` — writing a `.zip` backup, and checking and restoring one.
 - **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0011`), embedded in the
   binary at compile time.

@@ -35,6 +35,15 @@
 //! a UTF-8 byte order mark, so Excel reads accented letters correctly; Synapse
 //! reads it back the same way.
 //!
+//! Formulas: a spreadsheet runs a cell that starts with `=`, `+`, `-`, `@`, a
+//! tab, or a carriage return as a formula, so a card such as `=HYPERLINK(…)`
+//! could do something when the file is opened. Exporting writes such a cell
+//! with a `'` in front ([`protect_formula`]), which Excel and LibreOffice show
+//! as text. Importing takes that `'` off again ([`unprotect_formula`]), so
+//! Synapse's own exports read back exactly; any other cell is read as it is.
+//! A cell that already starts with `'` and then one of those characters gets
+//! one more `'` on export, so that also round-trips.
+//!
 //! Nothing here logs a card's text.
 
 use std::collections::{HashMap, HashSet};
@@ -66,6 +75,34 @@ pub const HEADER_BACKS: [&str; 6] = [
     "retro",
     "risposta",
 ];
+
+/// The first characters that make a spreadsheet read a cell as a formula.
+pub const FORMULA_STARTS: [char; 6] = ['=', '+', '-', '@', '\t', '\r'];
+
+/// Whether `text`, after any leading `'`, starts like a formula.
+fn starts_like_formula(text: &str) -> bool {
+    text.trim_start_matches('\'').starts_with(FORMULA_STARTS)
+}
+
+/// A cell to export, with a `'` in front if a spreadsheet would otherwise
+/// read it as a formula (see the module notes).
+pub fn protect_formula(text: &str) -> String {
+    if starts_like_formula(text) {
+        format!("'{text}")
+    } else {
+        text.to_string()
+    }
+}
+
+/// An imported cell without the `'` [`protect_formula`] put in front of it.
+/// A cell that doesn't start with `'` and then (after any more `'`) a formula
+/// character is left as it is.
+pub fn unprotect_formula(text: &str) -> &str {
+    match text.strip_prefix('\'') {
+        Some(rest) if starts_like_formula(rest) => rest,
+        _ => text,
+    }
+}
 
 /// The character between fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -346,8 +383,10 @@ pub async fn read_cards(
             if fields.iter().skip(2).any(|cell| !cell.trim().is_empty()) {
                 rows_with_extra_columns += 1;
             }
-            let front = fields[0].trim().to_string();
-            let back = fields.get(1).map(|cell| cell.trim().to_string());
+            let front = unprotect_formula(fields[0].trim()).to_string();
+            let back = fields
+                .get(1)
+                .map(|cell| unprotect_formula(cell.trim()).to_string());
             let problem = match &back {
                 None => Some(RowProblem::NoBack),
                 Some(back) => validate_card(&front, back).err().map(RowProblem::Card),
@@ -490,11 +529,16 @@ fn csv_field(text: &str) -> String {
 }
 
 /// Cards as an RFC 4180 CSV file, header first, with a UTF-8 byte order mark.
-/// Line breaks inside a card are written as CRLF, as the format's own are.
+/// Line breaks inside a card are written as CRLF, as the format's own are,
+/// and a cell that would start a formula gets a `'` in front.
 pub fn write_csv(cards: &[CardText]) -> String {
     let mut out = String::from("\u{FEFF}front,back\r\n");
     for card in cards {
-        let field = |text: &str| csv_field(&text.replace("\r\n", "\n").replace('\n', "\r\n"));
+        let field = |text: &str| {
+            csv_field(&protect_formula(
+                &text.replace("\r\n", "\n").replace('\n', "\r\n"),
+            ))
+        };
         out.push_str(&field(&card.front));
         out.push(',');
         out.push_str(&field(&card.back));
@@ -938,6 +982,48 @@ mod tests {
             let deck = deck_with(&pool, "Round trip", &[]).await;
             let preview = read(&pool, deck, csv.as_bytes()).await;
             assert!(preview.header);
+            let back: Vec<CardText> = preview
+                .rows
+                .into_iter()
+                .map(|row| card(&row.front, &row.back))
+                .collect();
+            assert_eq!(back, cards);
+        });
+    }
+
+    #[test]
+    fn cells_that_start_like_formulas_are_protected_and_read_back() {
+        assert_eq!(protect_formula("=1+1"), "'=1+1");
+        assert_eq!(protect_formula("+39 06"), "'+39 06");
+        assert_eq!(protect_formula("-5 °C"), "'-5 °C");
+        assert_eq!(protect_formula("@SUM(A1)"), "'@SUM(A1)");
+        assert_eq!(protect_formula("\tx"), "'\tx");
+        assert_eq!(protect_formula("\rx"), "'\rx");
+        assert_eq!(protect_formula("'=x"), "''=x");
+        assert_eq!(protect_formula("a = b"), "a = b");
+        assert_eq!(protect_formula("'quoted'"), "'quoted'");
+
+        for text in ["=1+1", "'=x", "''-y", "'quoted'", "plain", "-", "'"] {
+            assert_eq!(unprotect_formula(&protect_formula(text)), text);
+        }
+        // Another program's cells are read as they are.
+        assert_eq!(unprotect_formula("'quoted'"), "'quoted'");
+        assert_eq!(unprotect_formula("=1+1"), "=1+1");
+
+        let cards = vec![
+            card("=HYPERLINK(\"http://example.com\",\"x\")", "-1"),
+            card("'=quoted", "@home, +1"),
+        ];
+        let csv = write_csv(&cards);
+        assert_eq!(
+            csv,
+            "\u{FEFF}front,back\r\n\"'=HYPERLINK(\"\"http://example.com\"\",\"\"x\"\")\",'-1\r\n\
+             ''=quoted,\"'@home, +1\"\r\n"
+        );
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let deck = deck_with(&pool, "Formulas", &[]).await;
+            let preview = read(&pool, deck, csv.as_bytes()).await;
             let back: Vec<CardText> = preview
                 .rows
                 .into_iter()

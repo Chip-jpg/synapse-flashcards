@@ -549,6 +549,82 @@ export function exportCardsCsv(deckId: number): Promise<ExportOutcome> {
   return invoke<ExportOutcome>("export_cards_csv", { deckId });
 }
 
+/**
+ * Mirrors `AnkiDeckPreview` in `src-tauri/src/commands.rs`: one Anki deck of
+ * a package. `name` is the new deck's name in Synapse (made unique), `cards`
+ * the cards it gets one way, `reversible` how many of those also have a
+ * reversed card in Anki, and `examples` its first few cards.
+ */
+export type AnkiDeckPreview = {
+  ankiName: string;
+  name: string;
+  cards: number;
+  reversible: number;
+  examples: CardText[];
+};
+
+/** Mirrors `Skipped` in `src-tauri/src/anki.rs`: notes left out, by why. */
+export type AnkiSkipped = {
+  cloze: number;
+  otherNoteType: number;
+  empty: number;
+  tooLong: number;
+  noCard: number;
+};
+
+/**
+ * Mirrors `AnkiFile` in `src-tauri/src/commands.rs`: an Anki package read,
+ * with nothing saved and the package held by Rust under `token`, or the file
+ * window closed.
+ */
+export type AnkiFile =
+  | {
+      status: "read";
+      token: number;
+      fileName: string;
+      decks: AnkiDeckPreview[];
+      /** Every note in the collection. */
+      notes: number;
+      skipped: AnkiSkipped;
+      /** Notes to add that had a picture or sound, which is left out. */
+      mediaRemoved: number;
+      /** Notes to add that had been reviewed in Anki; they start as new. */
+      reviewed: number;
+    }
+  | { status: "cancelled" };
+
+/** An Anki package that has been read. */
+export type ReadAnkiFile = AnkiFile & { status: "read" };
+
+/** Mirrors `AnkiImported` in `src-tauri/src/anki.rs`. */
+export type AnkiImported = {
+  decks: { id: number; name: string; cards: number }[];
+  cards: number;
+};
+
+/**
+ * Chooses an Anki package (.apkg or .colpkg) and reads its front/back notes.
+ * Rust opens the OS "open file" dialog; closing it resolves with
+ * `{ status: "cancelled" }`. Nothing is saved.
+ */
+export function readAnkiPackage(): Promise<AnkiFile> {
+  return invoke<AnkiFile>("read_anki_package");
+}
+
+/**
+ * Adds the package read under `token` as new decks of new cards, all or
+ * nothing; with `bothDirections`, also the reversed cards. A package Rust no
+ * longer holds rejects with kind "stale".
+ */
+export function importAnkiPackage(token: number, bothDirections: boolean): Promise<AnkiImported> {
+  return invoke<AnkiImported>("import_anki_package", { token, bothDirections });
+}
+
+/** Lets Rust forget the package read under `token`. */
+export function cancelAnkiImport(token: number): Promise<void> {
+  return invoke<void>("cancel_anki_import", { token });
+}
+
 /** Every active (not deleted) note, most recently saved first. */
 export function getNotes(): Promise<NoteSummary[]> {
   return invoke<NoteSummary[]>("get_notes");
