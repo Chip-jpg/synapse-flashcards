@@ -9,6 +9,7 @@ pub mod extract;
 mod import;
 mod notes;
 mod optimizer;
+mod retention;
 mod scheduler;
 mod stats;
 mod study;
@@ -83,6 +84,9 @@ pub fn run() {
             commands::stop_optimizing,
             commands::apply_parameters,
             commands::reset_parameters,
+            commands::get_retention,
+            commands::preview_retention,
+            commands::set_retention,
             commands::read_cards_csv,
             commands::import_cards_csv,
             commands::export_cards_csv,

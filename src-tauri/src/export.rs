@@ -482,7 +482,7 @@ mod tests {
             // The schema itself travels, so an import gets the same rules.
             assert_eq!(
                 count(&restored, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-                crate::db::latest_schema_version()
+                migration_count()
             );
             // Decks: the sample deck, the active deck, and the archived one,
             // which is still marked archived.

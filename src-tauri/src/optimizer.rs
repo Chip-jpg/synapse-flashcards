@@ -31,7 +31,7 @@ use fsrs::{
 use sqlx::{SqliteConnection, SqlitePool};
 
 use crate::db::{to_db_time, DbError};
-use crate::scheduler::DESIRED_RETENTION;
+use crate::retention;
 
 /// The fewest usable reviews Synapse fits parameters to. Below this, a fit
 /// mostly follows chance in a small history, and FSRS's defaults (fitted to
@@ -423,7 +423,14 @@ pub async fn optimize(
     let run = optimizing.begin();
     let deadline = Instant::now() + limit;
 
-    let current = in_use(&mut *pool.acquire().await?).await?;
+    let (current, retention) = {
+        let mut conn = pool.acquire().await?;
+        let current = in_use(&mut conn).await?;
+        (
+            current,
+            retention::as_share(retention::global(&mut conn).await?),
+        )
+    };
     let history = history(pool).await?;
     if history.usable_reviews() < MINIMUM_REVIEWS {
         return Err(OptimizerError::NotEnoughReviews);
@@ -454,7 +461,7 @@ pub async fn optimize(
     let version = current.version;
     let parameters = current.parameters();
     let work = tauri::async_runtime::spawn_blocking(move || {
-        fit(history, parameters, version, progress, deadline)
+        fit(history, parameters, retention, version, progress, deadline)
     })
     .await;
     done.store(true, Ordering::Release);
@@ -485,6 +492,7 @@ pub async fn optimize(
 fn fit(
     history: History,
     current: Vec<f32>,
+    retention: f32,
     version: i64,
     progress: Arc<Mutex<CombinedProgressState>>,
     deadline: Instant,
@@ -517,8 +525,8 @@ fn fit(
         error: proposed_fit.rmse_bins,
     };
 
-    let before = intervals(&current_model)?;
-    let after = intervals(&proposed_model)?;
+    let before = intervals(&current_model, retention)?;
+    let after = intervals(&proposed_model, retention)?;
     let intervals = before
         .into_iter()
         .zip(after)
@@ -541,12 +549,13 @@ fn fit(
     })
 }
 
-/// The intervals, in days, a set of parameters gives a new card.
-fn intervals(model: &FSRS) -> Result<Vec<(IntervalCase, f32)>, FSRSError> {
-    let first = model.next_states(None, DESIRED_RETENTION, 0)?;
+/// The intervals, in days, a set of parameters gives a new card, aiming for
+/// the global desired retention.
+fn intervals(model: &FSRS, retention: f32) -> Result<Vec<(IntervalCase, f32)>, FSRSError> {
+    let first = model.next_states(None, retention, 0)?;
     // Reviewed again when due, counting whole days as the scheduler does.
     let waited = first.good.interval.max(1.0).floor() as u32;
-    let second = model.next_states(Some(first.good.memory), DESIRED_RETENTION, waited)?;
+    let second = model.next_states(Some(first.good.memory), retention, waited)?;
     Ok(vec![
         (IntervalCase::FirstAgain, first.again.interval),
         (IntervalCase::FirstHard, first.hard.interval),
@@ -912,6 +921,7 @@ pub mod tests {
                 Rating::Good,
                 at(NOW),
                 &proposal.proposed,
+                retention::as_share(retention::DEFAULT_PERCENT),
             )
             .unwrap();
             assert_eq!(due, to_db_time(expected.due));
