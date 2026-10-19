@@ -29,9 +29,15 @@
 //! - The first row is a header, and not a card, when its first two cells are
 //!   column names such as "Front" and "Back" ([`HEADER_FRONTS`],
 //!   [`HEADER_BACKS`]).
+//! - A row whose back is empty (or missing) and whose front holds a cloze
+//!   deletion like `{{c1::answer}}` is a cloze text, checked as one typed in
+//!   the deck screen is (`cloze.rs`), and makes one new card per number. That
+//!   is how an exported cloze text comes back.
 //!
 //! Exporting writes RFC 4180 CSV: a `front,back` header, CRLF line ends, and
-//! fields quoted when they hold a comma, quote, or line break. It starts with
+//! fields quoted when they hold a comma, quote, or line break. A cloze text is
+//! written once, however many cards it made, as its text in the front column
+//! and nothing in the back. It starts with
 //! a UTF-8 byte order mark, so Excel reads accented letters correctly; Synapse
 //! reads it back the same way.
 //!
@@ -54,6 +60,7 @@ use sqlx::SqlitePool;
 use crate::authoring::{
     insert_new_card, load_deck_detail, validate_card, AuthoringError, CardText, InvalidInput,
 };
+use crate::cloze::{self, has_deletion, insert_cloze, validate_cloze};
 use crate::db::to_db_time;
 use crate::extract::decode_text;
 
@@ -152,6 +159,26 @@ pub struct CsvRow {
     pub back: String,
     pub problem: Option<RowProblem>,
     pub duplicate: Option<Duplicate>,
+    /// For a usable cloze row, how many cards it makes.
+    pub cloze_cards: Option<usize>,
+}
+
+/// Whether a row (or a card sent to import) is a cloze text: nothing in the
+/// back, and a deletion in the front.
+fn is_cloze_row(front: &str, back: Option<&str>) -> bool {
+    back.is_none_or(|back| back.trim().is_empty()) && has_deletion(front)
+}
+
+/// A deck's active fronts and cloze texts, trimmed: what a row repeats if
+/// its front is one of them.
+fn deck_fronts(deck: crate::authoring::DeckDetail) -> HashSet<String> {
+    deck.cards
+        .into_iter()
+        .map(|card| match card.cloze {
+            Some(cloze) => cloze.text,
+            None => card.front.trim().to_string(),
+        })
+        .collect()
 }
 
 /// A whole file, checked against a deck. Nothing has been saved.
@@ -171,7 +198,8 @@ pub struct CsvPreview {
 pub struct CardsImported {
     /// Cards added to the deck.
     pub added: usize,
-    /// Cards left out as duplicates.
+    /// Rows left out as duplicates (a cloze row counts once, however many
+    /// cards it would have made).
     pub skipped: usize,
     /// The deck's active cards afterwards.
     pub card_count: i64,
@@ -368,11 +396,7 @@ pub async fn read_cards(
     // Refuses a missing, archived, or sample deck before anything else.
     let mut conn = pool.acquire().await?;
     let deck = load_deck_detail(&mut conn, deck_id, &to_db_time(now)).await?;
-    let in_deck: HashSet<String> = deck
-        .cards
-        .into_iter()
-        .map(|card| card.front.trim().to_string())
-        .collect();
+    let in_deck = deck_fronts(deck);
 
     let mut rows_with_extra_columns = 0;
     // The line each front was first seen on, for duplicates within the file.
@@ -387,9 +411,20 @@ pub async fn read_cards(
             let back = fields
                 .get(1)
                 .map(|cell| unprotect_formula(cell.trim()).to_string());
-            let problem = match &back {
-                None => Some(RowProblem::NoBack),
-                Some(back) => validate_card(&front, back).err().map(RowProblem::Card),
+            let mut cloze_cards = None;
+            let problem = if is_cloze_row(&front, back.as_deref()) {
+                match validate_cloze(&front) {
+                    Ok(cloze) => {
+                        cloze_cards = Some(cloze.numbers().len());
+                        None
+                    }
+                    Err(problem) => Some(RowProblem::Card(problem)),
+                }
+            } else {
+                match &back {
+                    None => Some(RowProblem::NoBack),
+                    Some(back) => validate_card(&front, back).err().map(RowProblem::Card),
+                }
             };
             let duplicate = if front.is_empty() {
                 None
@@ -410,6 +445,7 @@ pub async fn read_cards(
                 back: back.unwrap_or_default(),
                 problem,
                 duplicate,
+                cloze_cards,
             }
         })
         .collect();
@@ -446,8 +482,12 @@ pub async fn import_cards(
         .iter()
         .enumerate()
         .map(|(index, card)| {
-            validate_card(&card.front, &card.back)
-                .map_err(|problem| AuthoringError::InvalidCard(index, problem))
+            if is_cloze_row(&card.front, Some(&card.back)) {
+                validate_cloze(&card.front).map(Imported::Cloze)
+            } else {
+                validate_card(&card.front, &card.back).map(Imported::Basic)
+            }
+            .map_err(|problem| AuthoringError::InvalidCard(index, problem))
         })
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -455,19 +495,29 @@ pub async fn import_cards(
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     // Refused here, before any card is written.
     let deck = load_deck_detail(&mut tx, deck_id, &now).await?;
-    let mut fronts: HashSet<String> = deck.cards.into_iter().map(|card| card.front).collect();
+    let mut fronts = deck_fronts(deck);
 
     let mut added = 0;
     let mut skipped = 0;
     for card in &cards {
-        // Stored fronts are already trimmed, as `validate_card` trims these.
-        if skip_duplicates && fronts.contains(&card.front) {
+        // Stored fronts and texts are already trimmed, as the checks above
+        // trim these.
+        let front = match card {
+            Imported::Basic(card) => &card.front,
+            Imported::Cloze(cloze) => &cloze.text,
+        };
+        if skip_duplicates && fronts.contains(front) {
             skipped += 1;
             continue;
         }
-        insert_new_card(&mut tx, deck_id, card, &now).await?;
-        fronts.insert(card.front.clone());
-        added += 1;
+        fronts.insert(front.clone());
+        added += match card {
+            Imported::Basic(card) => {
+                insert_new_card(&mut tx, deck_id, card, &now).await?;
+                1
+            }
+            Imported::Cloze(cloze) => insert_cloze(&mut tx, deck_id, cloze, &now).await?,
+        };
     }
     if added == 0 {
         // Dropping `tx` rolls it back, though nothing was written.
@@ -481,6 +531,12 @@ pub async fn import_cards(
         skipped,
         card_count: deck.card_count,
     })
+}
+
+/// A card to import, checked.
+enum Imported {
+    Basic(crate::authoring::NewCard),
+    Cloze(cloze::Cloze),
 }
 
 /// A deck's name and its active cards, oldest first, for exporting. Any
@@ -500,10 +556,11 @@ pub async fn deck_cards(
         Some((_, true)) => return Err(AuthoringError::DeckArchived),
         Some((name, false)) => name,
     };
-    let cards: Vec<(String, String)> = sqlx::query_as(
-        "SELECT front, back FROM flashcards
-         WHERE deck_id = ?1 AND deleted_at IS NULL
-         ORDER BY id",
+    let cards: Vec<(String, String, Option<i64>, Option<String>)> = sqlx::query_as(
+        "SELECT f.front, f.back, f.cloze_text_id, t.text
+         FROM flashcards f LEFT JOIN cloze_texts t ON t.id = f.cloze_text_id
+         WHERE f.deck_id = ?1 AND f.deleted_at IS NULL
+         ORDER BY f.id",
     )
     .bind(deck_id)
     .fetch_all(pool)
@@ -511,9 +568,17 @@ pub async fn deck_cards(
     if cards.is_empty() {
         return Err(AuthoringError::NoCards);
     }
+    // A cloze text once, where its first card is, with an empty back.
+    let mut texts_written = HashSet::new();
     let cards = cards
         .into_iter()
-        .map(|(front, back)| CardText { front, back })
+        .filter_map(|(front, back, text_id, text)| match (text_id, text) {
+            (Some(text_id), Some(text)) => texts_written.insert(text_id).then(|| CardText {
+                front: text,
+                back: String::new(),
+            }),
+            _ => Some(CardText { front, back }),
+        })
         .collect();
     Ok((name, cards))
 }
@@ -1077,5 +1142,85 @@ mod tests {
         assert_eq!(suggested_file_name("A/B: c?"), "A-B- c-.csv");
         assert_eq!(suggested_file_name("Notes..."), "Notes.csv");
         assert_eq!(suggested_file_name(" ... "), "cards.csv");
+    }
+
+    #[test]
+    fn a_cloze_text_is_exported_once_and_imported_back_as_cloze_cards() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let deck = deck_with(&pool, "Biology", &[("One", "1")]).await;
+            let text = "The {{c1::cell}} has a {{c2::nucleus}}.";
+            crate::cloze::create_cloze(&pool, deck, text, at(NOW))
+                .await
+                .unwrap();
+            crate::cloze::create_cloze(&pool, deck, "{{c1::Gone}}", at(NOW))
+                .await
+                .unwrap();
+            let gone: i64 = sqlx::query_scalar("SELECT id FROM flashcards WHERE back = 'Gone'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            crate::authoring::delete_flashcard(&pool, gone, at(NOW))
+                .await
+                .unwrap();
+
+            // Its text once, with nothing in the back; a text whose cards
+            // are all deleted isn't written.
+            let (_, cards) = deck_cards(&pool, deck).await.unwrap();
+            assert_eq!(cards, vec![card("One", "1"), card(text, "")]);
+            let csv = write_csv(&cards);
+            assert!(csv.ends_with("\r\nThe {{c1::cell}} has a {{c2::nucleus}}.,\r\n"));
+
+            // Read back into the same deck, it is a cloze row, already there.
+            let preview = read(&pool, deck, csv.as_bytes()).await;
+            let row = &preview.rows[1];
+            assert_eq!(
+                (row.problem, row.duplicate, row.cloze_cards),
+                (None, Some(Duplicate::InDeck), Some(2))
+            );
+
+            // Into another deck: two new cloze cards, kept to one text.
+            let other = deck_with(&pool, "Copy", &[]).await;
+            let preview = read(&pool, other, csv.as_bytes()).await;
+            assert_eq!(preview.rows[1].duplicate, None);
+            let imported = import_cards(&pool, other, &cards, true, at(NOW))
+                .await
+                .unwrap();
+            assert_eq!(
+                (imported.added, imported.skipped, imported.card_count),
+                (3, 0, 3)
+            );
+            let copy = deck_detail(&pool, other, at(NOW)).await.unwrap();
+            let fronts: Vec<&str> = copy.cards.iter().map(|card| card.front.as_str()).collect();
+            assert_eq!(
+                fronts,
+                ["One", "The [...] has a nucleus.", "The cell has a [...]."]
+            );
+            assert!(copy.cards[1..]
+                .iter()
+                .all(|card| card.cloze.as_ref().unwrap().text == text));
+
+            // Imported again, the cloze row is a duplicate and skipped.
+            let again = import_cards(&pool, other, &cards[1..], true, at(NOW)).await;
+            assert!(matches!(again, Err(CsvError::OnlyDuplicates)));
+
+            // A broken deletion with no back is reported as a cloze problem;
+            // a row with no deletion and no back still has no back.
+            let preview = read(&pool, other, b"The {{c1::cell\nAlone\n").await;
+            assert_eq!(
+                preview.rows[0].problem,
+                Some(RowProblem::Card(InvalidInput::ClozeUnclosed))
+            );
+            assert_eq!(preview.rows[1].problem, Some(RowProblem::NoBack));
+            let refused =
+                import_cards(&pool, other, &[card("The {{c1::cell", "")], false, at(NOW)).await;
+            assert!(matches!(
+                refused,
+                Err(CsvError::Authoring(AuthoringError::InvalidCard(
+                    0,
+                    InvalidInput::ClozeUnclosed
+                )))
+            ));
+        });
     }
 }

@@ -74,10 +74,18 @@
 //!
 //! The sample deck is read-only here: it can't be opened for editing, renamed,
 //! or archived, and its cards can't be added to, edited, or deleted.
+//!
+//! Cloze cards (migration 0012, `cloze.rs`) go through every path here as
+//! front/back cards do, with three additions: a cloze card is edited through
+//! its text, never as a front and back; a deleted cloze card is restored only
+//! when `cloze::restore_block` allows it (and *Restore all* brings back only
+//! those), its front and back rewritten from the text as it is now; and a
+//! move must take every active card of a cloze text together.
 
 use chrono::{DateTime, Utc};
 use sqlx::{SqliteConnection, SqlitePool};
 
+use crate::cloze::{self, RestoreBlock};
 use crate::db::{to_db_time, DbError};
 use crate::study;
 
@@ -126,12 +134,46 @@ pub struct ArchivedDeck {
     pub archived_at: String,
 }
 
-/// One card in a deck's card list: `{ id, front, back }`.
-#[derive(Debug, PartialEq, serde::Serialize, sqlx::FromRow)]
+/// One card in a deck's card list: `{ id, front, back, cloze }`, where
+/// `cloze` is `null` for a front/back card.
+#[derive(Debug, PartialEq, serde::Serialize)]
 pub struct DeckCard {
     pub id: i64,
     pub front: String,
     pub back: String,
+    pub cloze: Option<CardCloze>,
+}
+
+/// Which cloze text a card was made from, and its number in it:
+/// `{ textId, number, text }`. Every card of one text carries the same text,
+/// which is what the edit form opens with.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CardCloze {
+    pub text_id: i64,
+    pub number: i64,
+    pub text: String,
+}
+
+/// A deleted cloze card's number, and why it can't be restored now, if it
+/// can't: `{ number, blocked }`, `blocked` being `null`, `"numberGone"`, or
+/// `"elsewhere"`.
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub struct DeletedCloze {
+    pub number: i64,
+    pub blocked: Option<RestoreBlock>,
+}
+
+/// A card row as the deck screen reads it, before it is shaped.
+#[derive(sqlx::FromRow)]
+struct CardRow {
+    id: i64,
+    front: String,
+    back: String,
+    cloze_text_id: Option<i64>,
+    cloze_number: Option<i64>,
+    cloze_text: Option<String>,
+    deleted_at: Option<String>,
 }
 
 /// One soft-deleted card, as listed under a deck's *Deleted cards*:
@@ -140,7 +182,7 @@ pub struct DeckCard {
 /// Its text is shown so the user can tell which card they would be bringing
 /// back. Its schedule isn't sent: a restore keeps whatever schedule the card
 /// already had, so there is nothing for the user to decide about it.
-#[derive(Debug, PartialEq, serde::Serialize, sqlx::FromRow)]
+#[derive(Debug, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeletedCard {
     pub id: i64,
@@ -148,6 +190,17 @@ pub struct DeletedCard {
     pub back: String,
     /// When it was deleted (ISO-8601 UTC).
     pub deleted_at: String,
+    /// `null` for a front/back card.
+    pub cloze: Option<DeletedCloze>,
+}
+
+impl DeletedCard {
+    /// Whether *Restore card* (and *Restore all*) can bring it back now.
+    pub fn restorable(&self) -> bool {
+        self.cloze
+            .as_ref()
+            .is_none_or(|cloze| cloze.blocked.is_none())
+    }
 }
 
 /// A card's text as sent, before it is checked: `{ front, back }`. Also the
@@ -170,6 +223,17 @@ pub enum InvalidInput {
     FrontTooLong,
     BackBlank,
     BackTooLong,
+    /// The cloze text is blank.
+    ClozeBlank,
+    ClozeTooLong,
+    /// The cloze text has no `{{c1::…}}` deletion.
+    ClozeNoDeletion,
+    /// A deletion isn't closed with `}}`, or another starts inside it.
+    ClozeUnclosed,
+    /// A deletion's answer, or its hint, is blank.
+    ClozeEmpty,
+    /// A deletion's number is 0 or above `cloze::CLOZE_NUMBER_MAX`.
+    ClozeNumber,
 }
 
 /// Why an authoring operation didn't happen.
@@ -215,6 +279,13 @@ pub enum AuthoringError {
     /// The deck cards were to be moved into is missing, archived, or the
     /// sample deck, so it can't take them. Nothing was written.
     MoveTargetUnavailable,
+    /// A card was edited as the other kind: a cloze card as a front and back,
+    /// or a front/back card as a cloze text.
+    WrongKind,
+    /// A deleted cloze card can't be restored now (see `cloze.rs`).
+    ClozeNotRestorable(RestoreBlock),
+    /// A move selected some, but not all, of a cloze text's active cards.
+    ClozeSplit,
     /// Anything else (a database failure). Detail is for logs only.
     Internal(DbError),
 }
@@ -425,26 +496,61 @@ pub(crate) async fn load_deck_detail(
         Some(row) => row,
     };
 
-    let cards = sqlx::query_as::<_, DeckCard>(
-        "SELECT id, front, back FROM flashcards
-         WHERE deck_id = ?1 AND deleted_at IS NULL
-         ORDER BY id",
+    let cards = sqlx::query_as::<_, CardRow>(
+        "SELECT f.id, f.front, f.back, f.cloze_text_id, f.cloze_number,
+                t.text AS cloze_text, f.deleted_at
+         FROM flashcards f LEFT JOIN cloze_texts t ON t.id = f.cloze_text_id
+         WHERE f.deck_id = ?1 AND f.deleted_at IS NULL
+         ORDER BY f.id",
     )
     .bind(deck_id)
     .fetch_all(&mut *conn)
-    .await?;
+    .await?
+    .into_iter()
+    .map(|row| DeckCard {
+        cloze: match (row.cloze_text_id, row.cloze_number, row.cloze_text) {
+            (Some(text_id), Some(number), Some(text)) => Some(CardCloze {
+                text_id,
+                number,
+                text,
+            }),
+            _ => None,
+        },
+        id: row.id,
+        front: row.front,
+        back: row.back,
+    })
+    .collect();
 
     // Most recently deleted first, as the archived-deck and deleted-note
     // histories are ordered: the card the user just deleted is the one they
     // are most likely to want back.
-    let deleted_cards = sqlx::query_as::<_, DeletedCard>(
-        "SELECT id, front, back, deleted_at FROM flashcards
+    let rows = sqlx::query_as::<_, CardRow>(
+        "SELECT id, front, back, cloze_text_id, cloze_number, NULL AS cloze_text, deleted_at
+         FROM flashcards
          WHERE deck_id = ?1 AND deleted_at IS NOT NULL
          ORDER BY deleted_at DESC, id DESC",
     )
     .bind(deck_id)
-    .fetch_all(conn)
+    .fetch_all(&mut *conn)
     .await?;
+    let mut deleted_cards = Vec::with_capacity(rows.len());
+    for row in rows {
+        let cloze = match row.cloze_number {
+            Some(number) => Some(DeletedCloze {
+                number,
+                blocked: cloze::restore_block(conn, row.id).await?,
+            }),
+            None => None,
+        };
+        deleted_cards.push(DeletedCard {
+            id: row.id,
+            front: row.front,
+            back: row.back,
+            deleted_at: row.deleted_at.unwrap_or_default(),
+            cloze,
+        });
+    }
 
     Ok(DeckDetail {
         id: row.id,
@@ -609,7 +715,7 @@ async fn card_placement(
 
 /// The deck of a card that may be edited or deleted: the card must exist, not
 /// be deleted, and belong to an active normal deck.
-async fn changeable_card_deck(
+pub(crate) async fn changeable_card_deck(
     conn: &mut SqliteConnection,
     card_id: i64,
 ) -> Result<i64, AuthoringError> {
@@ -657,6 +763,15 @@ pub async fn update_flashcard(
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
 
     let deck_id = changeable_card_deck(&mut tx, card_id).await?;
+    // A cloze card's front and back are written from its text, and only from
+    // it (`cloze::update_cloze`).
+    let kind: String = sqlx::query_scalar("SELECT kind FROM flashcards WHERE id = ?1")
+        .bind(card_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    if kind != "basic" {
+        return Err(AuthoringError::WrongKind);
+    }
     sqlx::query(
         "UPDATE flashcards SET front = ?1, back = ?2, updated_at = ?3
          WHERE id = ?4 AND deleted_at IS NULL",
@@ -733,6 +848,9 @@ pub async fn restore_flashcard(
     // sample deck or an archived one, or not deleted at all. Returning early
     // drops `tx`, which rolls it back.
     let deck_id = restorable_card_deck(&mut tx, card_id).await?;
+    if let Some(block) = cloze::restore_block(&mut tx, card_id).await? {
+        return Err(AuthoringError::ClozeNotRestorable(block));
+    }
 
     // The statement repeats the card's own state check, as `update_flashcard`
     // and `delete_flashcard` repeat theirs, so it can only ever clear a
@@ -754,6 +872,9 @@ pub async fn restore_flashcard(
     if restored.rows_affected() != 1 {
         return Err(AuthoringError::CardNotDeleted);
     }
+    // Only now that it is active may a cloze card's front and back change:
+    // its text may have been edited while it was deleted.
+    cloze::refresh_restored(&mut tx, card_id, &now).await?;
 
     let deck = load_deck_detail(&mut tx, deck_id, &now).await?;
     tx.commit().await?;
@@ -794,28 +915,37 @@ pub async fn restore_deleted_cards(
 
     // Stops here, before writing anything, if the deck is missing, the sample
     // deck, or archived. Returning early drops `tx`, which rolls it back.
-    let deleted = load_deck_detail(&mut tx, deck_id, &now)
+    // Only the cards that can come back count: a cloze card whose number
+    // has left its text stays deleted (see `cloze.rs`).
+    let restorable: Vec<i64> = load_deck_detail(&mut tx, deck_id, &now)
         .await?
         .deleted_cards
-        .len();
+        .iter()
+        .filter(|card| card.restorable())
+        .map(|card| card.id)
+        .collect();
+    let deleted = restorable.len();
     if deleted == 0 || deleted != expected {
         return Err(AuthoringError::DeletedCardsChanged);
     }
 
-    // The same statement as `restore_flashcard`, for the whole deck: it sets
-    // `deleted_at` and nothing else, and migration 0010's triggers check each
-    // row as they check one.
-    let restored = sqlx::query(
-        "UPDATE flashcards SET deleted_at = NULL
-         WHERE deck_id = ?1 AND deleted_at IS NOT NULL",
-    )
-    .bind(deck_id)
-    .execute(&mut *tx)
-    .await?;
-    // Counted above inside this same transaction, so never report a restore
-    // that didn't happen exactly as confirmed.
-    if restored.rows_affected() != deleted as u64 {
-        return Err(AuthoringError::DeletedCardsChanged);
+    for &card_id in &restorable {
+        // The same statement as `restore_flashcard`: it sets `deleted_at` and
+        // nothing else, and migration 0010's triggers check each row.
+        let restored = sqlx::query(
+            "UPDATE flashcards SET deleted_at = NULL
+             WHERE id = ?1 AND deck_id = ?2 AND deleted_at IS NOT NULL",
+        )
+        .bind(card_id)
+        .bind(deck_id)
+        .execute(&mut *tx)
+        .await?;
+        // Counted above inside this same transaction, so never report a
+        // restore that didn't happen exactly as confirmed.
+        if restored.rows_affected() != 1 {
+            return Err(AuthoringError::DeletedCardsChanged);
+        }
+        cloze::refresh_restored(&mut tx, card_id, &now).await?;
     }
 
     let deck = load_deck_detail(&mut tx, deck_id, &now).await?;
@@ -960,6 +1090,8 @@ pub async fn move_flashcards(
     // back.
     let deck = load_deck_detail(&mut tx, from_deck, &now).await?;
     check_selected_in(&deck, card_ids)?;
+    // A cloze text's cards stay in one deck.
+    cloze::check_whole_texts(&mut tx, card_ids).await?;
     match load_deck_detail(&mut tx, to_deck, &now).await {
         Ok(_) => {}
         Err(
@@ -1973,7 +2105,8 @@ mod tests {
                 DeckCard {
                     id: card,
                     front: new_front.into(),
-                    back: "New back".into()
+                    back: "New back".into(),
+                    cloze: None,
                 }
             );
             assert_eq!((detail.card_count, detail.due_count), (2, 1));
@@ -2236,7 +2369,8 @@ mod tests {
                 vec![DeckCard {
                     id: biology_cards[0],
                     front: "A2".into(),
-                    back: "a2".into()
+                    back: "a2".into(),
+                    cloze: None,
                 }]
             );
             assert_eq!(
@@ -2363,7 +2497,8 @@ mod tests {
                 vec![DeckCard {
                     id: cards[0],
                     front: "New\nfront".into(),
-                    back: "new back".into()
+                    back: "new back".into(),
+                    cloze: None,
                 }]
             );
             // The seed card plus both created cards, the deleted one included.
@@ -3571,6 +3706,7 @@ mod tests {
                     front: "B".into(),
                     back: "b".into(),
                     deleted_at: "2026-09-15T12:00:00.000Z".into(),
+                    cloze: None,
                 }]
             );
             // It is in no count and in no active list.

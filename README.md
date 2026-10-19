@@ -14,7 +14,8 @@ migrations, validation, scheduling, and every business rule; React only calls ty
   again when you want them back. A built-in read-only
   **Sample deck** is there from first launch so there's something to study immediately.
 - **Cards** — add front/back cards, edit them (which never disturbs their schedule), delete them, and
-  restore ones you deleted.
+  restore ones you deleted. **Cloze cards** hide parts of a text, like
+  `The {{c1::mitochondria}} makes {{c2::ATP}}`, with one card (and one schedule) per number.
 - **Study** — start a review session for a deck, reveal the answer, and rate it **Again / Hard /
   Good / Easy**, with **Card 2 of 5** and a progress bar as you go. The whole session can be
   answered from the keyboard: **Space** reveals, **1–4** rate. FSRS computes the next due date, and
@@ -141,6 +142,30 @@ as a draft: if you discard, what you typed is gone.
 optional) → *Open deck* → *Add card* → fill in front and back. Names must be unique ignoring case;
 line breaks inside a card are kept as you typed them.
 
+**Cloze cards.** In *Add card*, choose *Cloze* and write a text with the parts to hide marked as
+`{{c1::answer}}`, or `{{c1::answer::hint}}` to show the hint in its place. Each distinct number is
+its own card with its own schedule and review history; the same number used twice hides both parts
+on one card. As you type, the form says how many cards the text makes (or what's wrong with it).
+In review, the question is the text with that card's parts shown as `[...]` (or `[hint]`) and every
+other part filled in; revealing shows the whole text with the answer highlighted. The text follows
+a card's rules (required, up to 2,000 characters, at least one hidden part, each closed with `}}`),
+and a card's kind can't be changed later. In the deck's lists a cloze card is shown with its
+question and answer and tagged *Cloze 1*, *Cloze 2*, ….
+
+*Edit card* on any cloze card opens its text, and the form says what saving will do. When you save:
+
+- a number still in the text keeps its card, schedule, and history, with the new wording;
+- a number no longer in the text has its card deleted, exactly as *Delete card* would (it goes under
+  *Deleted cards*, history kept);
+- a number new to the text gets a new card, due straight away — unless that number had a card that
+  was deleted in this deck, which comes back instead, with its old schedule;
+- a card you deleted yourself stays deleted while its number stays in the text.
+
+A deleted cloze card can be restored only while its number is in the text, and only into the deck
+where the text's other cards are; it comes back with the text as it is now. *Restore all* restores
+the ones that can be. The cards of one text move together: ticking one selects all of them, and
+*Move selected* refuses a move that would split them. The Sample deck has no cloze cards.
+
 **Study.** Press *Start review* on any deck with cards due. Reveal the answer, then rate it. The
 session ends when nothing in that deck is due. Closing the app or leaving through the sidebar
 mid-session is safe — starting a review of that deck again resumes it.
@@ -210,11 +235,15 @@ row such as *Front, Back*, and files saved as UTF-8 or by older versions of Exce
 every row before adding anything: rows that break a card's rules (a blank side, more than 2,000
 characters) are named and left out, and so, unless you untick the box, are cards whose front is
 already in the deck or on an earlier row. *Add* saves the rest all together, as new cards due
-straight away. Up to 5,000 cards and 10 MB per file.
+straight away. A row with a cloze text (`{{c1::…}}`) in the first column and nothing in the second
+is a cloze text, checked as one typed in the deck screen and making one card per number. Up to
+5,000 rows and 10 MB per file.
 
 **Export cards to a spreadsheet.** In the same place, choose a deck → *Export as CSV*. You get a
 standard CSV file with a *front* and a *back* column, which spreadsheets open and Synapse can import
-again. Only the cards' text is saved, not their schedules or reviews, so it isn't a backup.
+again. A cloze text is written once, however many cards it made, with the text in *front* and *back*
+left empty, so importing it makes it a cloze text again. Only the cards' text is saved, not their
+schedules or reviews, so it isn't a backup.
 A cell that starts with `=`, `+`, `-`, `@`, a tab or a line break gets a `'` in front, so a
 spreadsheet shows it as text instead of running it as a formula; Synapse takes that `'` off again
 when it imports the file, so its own exports come back exactly.
@@ -377,7 +406,9 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   use and how often you choose each rating (FSRS's averages until there are 50 of each kind),
   assuming you review everything due and add no new cards; same-day repeats after *Again* aren't
   counted. The sample deck and archived decks always follow the value for all decks.
-- **One card type.** Front/back text only: no images, audio, cloze, or tags.
+- **Two card types, both text.** Basic front/back and cloze: no images, audio, or tags, and a
+  card can't change type. Cards from the same cloze text aren't kept apart, so they can come up one
+  after another in a session. Anki's cloze notes aren't imported.
 - **Search matches words, not meanings.** *Search* finds words by their start (no fuzzy matching,
   no matching inside a word, no synonyms), never searches deleted cards or notes, and shows at most
   50 results. Words are split on anything that isn't a letter or digit, so text in scripts written
@@ -455,6 +486,8 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
     writes nothing.
   - `authoring.rs` — creating, renaming, archiving, and unarchiving decks; adding, editing,
     deleting, and restoring cards.
+  - `cloze.rs` — cloze cards: reading a cloze text, writing its cards' fronts and backs, and the
+    rules for adding, editing, and restoring them.
   - `notes.rs` — typed notes: writing, editing, searching, soft-deleting, and restoring them.
   - `suggest.rs` — asking Ollama, on this computer, to suggest cards from a note, and checking
     its answer. It writes nothing; suggested cards are saved through `authoring.rs`.
@@ -471,5 +504,5 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
     read-only, never attached to Synapse's database) and adding its front/back notes as new decks.
     `testdata/anki/` holds packages exported by Anki itself, and the script that made them.
   - `export.rs` / `import.rs` — writing a `.zip` backup, and checking and restoring one.
-- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0011`, `0013`–`0014`), embedded in the
+- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0014`), embedded in the
   binary at compile time.

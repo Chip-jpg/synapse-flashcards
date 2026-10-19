@@ -33,7 +33,9 @@ function without(ids: number[], deleted: boolean): Deck {
     ...deck,
     cards,
     cardCount: cards.length,
-    deletedCards: deleted ? gone.map((card) => ({ ...card, deletedAt: CREATED })) : [],
+    deletedCards: deleted
+      ? gone.map(({ id, front, back }) => ({ id, front, back, deletedAt: CREATED }))
+      : [],
   };
 }
 

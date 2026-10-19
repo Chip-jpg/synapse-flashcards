@@ -705,13 +705,20 @@ pub mod tests {
             seed >> 33
         };
         for n in 0..cards {
-            let card = create_flashcard(pool, deck, &format!("Q{n}"), "A", at(NOW))
-                .await
-                .unwrap()
-                .cards
-                .last()
-                .unwrap()
-                .id;
+            // Inserted directly, as `create_flashcard` does, so this also
+            // works on a database from an older schema.
+            let card: i64 = sqlx::query_scalar(
+                "INSERT INTO flashcards (deck_id, front, back, fsrs_state, due, reps, lapses,
+                                         created_at, updated_at)
+                 VALUES (?1, ?2, 'A', 'New', NULL, 0, 0, ?3, ?3)
+                 RETURNING id",
+            )
+            .bind(deck)
+            .bind(format!("Q{n}"))
+            .bind(to_db_time(at(NOW)))
+            .fetch_one(pool)
+            .await
+            .unwrap();
             let mut when = start + TimeDelta::hours(n * 7);
             let mut state = "New";
             for gap in [0, 5, 12, 30, 70] {

@@ -17,6 +17,7 @@ use crate::aid::{self, CardHelp, HelpKind, Helping};
 use crate::anki::{self, AnkiError, AnkiImported, AnkiImports, Skipped};
 use crate::authoring::{self, ArchivedDeck, AuthoringError, CardText, DeckDetail, InvalidInput};
 use crate::cards_csv::{self, CardsImported, CsvError, Delimiter, Duplicate, RowProblem};
+use crate::cloze::{self, ClozeChanges, RestoreBlock};
 use crate::db::Database;
 use crate::export::{self, ExportError};
 use crate::extract::{self, ExtractError, ExtractedText, FileKind};
@@ -58,6 +59,8 @@ enum Field {
     Back,
     Title,
     Body,
+    /// A cloze card's text.
+    Text,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -116,6 +119,23 @@ impl CommandError {
             }
             InvalidInput::BackBlank => (Field::Back, "Enter the back of the card."),
             InvalidInput::BackTooLong => (Field::Back, "The back can be at most 2,000 characters."),
+            InvalidInput::ClozeBlank => (Field::Text, "Write the cloze text."),
+            InvalidInput::ClozeTooLong => {
+                (Field::Text, "A cloze text can be at most 2,000 characters.")
+            }
+            InvalidInput::ClozeNoDeletion => (
+                Field::Text,
+                "Hide at least one part of the text, like {{c1::answer}}.",
+            ),
+            InvalidInput::ClozeUnclosed => (
+                Field::Text,
+                "Close each {{c1::…}} with }} before the next one starts.",
+            ),
+            InvalidInput::ClozeEmpty => (
+                Field::Text,
+                "Each {{c1::…}} needs an answer, and a hint if it has :: after the answer.",
+            ),
+            InvalidInput::ClozeNumber => (Field::Text, "Number each {{c1::…}} from 1 to 999."),
         };
         CommandError {
             kind: ErrorKind::Invalid,
@@ -234,6 +254,21 @@ fn authoring_error(err: AuthoringError, context: &str, failed: &'static str) -> 
         AuthoringError::MoveTargetUnavailable => {
             CommandError::stale("That deck can't take cards any more.")
         }
+        // The edit form always matches the card's kind, which never changes.
+        AuthoringError::WrongKind => {
+            CommandError::invalid("This card is a different kind: reload and edit it again.")
+        }
+        // The *Deleted cards* list shows these as not restorable; one arrives
+        // here only from a screen that is out of date.
+        AuthoringError::ClozeNotRestorable(RestoreBlock::NumberGone) => CommandError::stale(
+            "This card's number is no longer in its cloze text, so it can't be restored.",
+        ),
+        AuthoringError::ClozeNotRestorable(RestoreBlock::Elsewhere) => CommandError::stale(
+            "This card's cloze text has its cards in another deck now, so it can't be restored here.",
+        ),
+        AuthoringError::ClozeSplit => CommandError::invalid(
+            "Cards made from one cloze text move together: select all of them.",
+        ),
         AuthoringError::Internal(detail) => {
             eprintln!("[synapse] {context} failed: {detail}");
             CommandError::failed(failed)
@@ -526,6 +561,99 @@ pub async fn update_flashcard(
     authoring::update_flashcard(&pool, card_id, &front, &back, Utc::now())
         .await
         .map_err(|err| authoring_error(err, "editing a card", "Synapse couldn't save the card."))
+}
+
+/// Adds a cloze text to a normal deck: one new card, due immediately, for
+/// each distinct `{{cN::…}}` number in it (see `cloze.rs`).
+///
+/// Arguments: `{ deckId, text }`. Returns the updated deck (same shape as
+/// `get_deck_detail`). A refused text rejects with kind "invalid" and field
+/// "text".
+#[tauri::command]
+pub async fn create_cloze(
+    app: AppHandle,
+    database: State<'_, Database>,
+    deck_id: i64,
+    text: String,
+) -> Result<DeckDetail, CommandError> {
+    if deck_id < 1 {
+        return Err(CommandError::invalid(DECK_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    cloze::create_cloze(&pool, deck_id, &text, Utc::now())
+        .await
+        .map_err(|err| {
+            authoring_error(
+                err,
+                "adding cloze cards",
+                "Synapse couldn't save the cards.",
+            )
+        })
+}
+
+/// Replaces the text of a cloze card's cloze: numbers still in it keep their
+/// cards and schedules, a number that left it has its card deleted, and a new
+/// number gets a card (its deleted one back, if it had one in this deck).
+///
+/// Arguments: `{ cardId, text }`, `cardId` being any active card of the text.
+/// Returns `{ changes, deck }`: what happened (`{ cards, kept, restored,
+/// added, deleted }`) and the card's deck.
+#[tauri::command]
+pub async fn update_cloze(
+    app: AppHandle,
+    database: State<'_, Database>,
+    card_id: i64,
+    text: String,
+) -> Result<ClozeSaved, CommandError> {
+    if card_id < 1 {
+        return Err(CommandError::invalid(CARD_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    let (changes, deck) = cloze::update_cloze(&pool, card_id, &text, Utc::now())
+        .await
+        .map_err(|err| {
+            authoring_error(
+                err,
+                "editing cloze cards",
+                "Synapse couldn't save the cards.",
+            )
+        })?;
+    Ok(ClozeSaved { changes, deck })
+}
+
+/// What `update_cloze` did: `{ changes, deck }`.
+#[derive(Debug, serde::Serialize)]
+pub struct ClozeSaved {
+    changes: ClozeChanges,
+    deck: DeckDetail,
+}
+
+/// What saving a cloze text would do, without saving it, for the form's live
+/// count: `{ cards, kept, restored, added, deleted }`.
+///
+/// Arguments: `{ text, cardId }`, `cardId` being `null` for a new text, or a
+/// card of the text being edited. A text that can't be saved rejects as
+/// saving it would (kind "invalid", field "text").
+#[tauri::command]
+pub async fn preview_cloze(
+    app: AppHandle,
+    database: State<'_, Database>,
+    text: String,
+    card_id: Option<i64>,
+) -> Result<ClozeChanges, CommandError> {
+    if card_id.is_some_and(|id| id < 1) {
+        return Err(CommandError::invalid(CARD_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    cloze::preview_cloze(&pool, &text, card_id)
+        .await
+        .map_err(|err| {
+            authoring_error(
+                err,
+                "checking a cloze text",
+                "Synapse couldn't check the text.",
+            )
+        })
 }
 
 /// Soft-deletes a card: it leaves lists, counts, and reviews, but its row and
@@ -1961,6 +2089,10 @@ pub struct CardsFileRow {
     back: String,
     problem: Option<RowProblemMessage>,
     duplicate: Option<Duplicate>,
+    /// For a cloze row (a cloze text in the front and nothing in the back):
+    /// how many cards it makes. `null` for a front/back row.
+    #[serde(rename = "clozeCards")]
+    cloze_cards: Option<usize>,
 }
 
 /// Why a row of a cards file can't become a card, as a typed card's error.
@@ -1979,7 +2111,12 @@ impl RowProblemMessage {
             ),
             RowProblem::Card(problem) => {
                 let error = CommandError::invalid_input(problem);
-                (error.field.unwrap_or(Field::Front), error.message)
+                // A cloze text is in the front column.
+                let field = match error.field {
+                    None | Some(Field::Text) => Field::Front,
+                    Some(field) => field,
+                };
+                (field, error.message)
             }
         };
         RowProblemMessage { field, message }
@@ -2135,6 +2272,7 @@ pub async fn read_cards_csv(
                 back: row.back,
                 problem: row.problem.map(RowProblemMessage::of),
                 duplicate: row.duplicate,
+                cloze_cards: row.cloze_cards,
             })
             .collect(),
         rows_with_extra_columns: preview.rows_with_extra_columns,
@@ -2829,6 +2967,7 @@ mod tests {
                     back: "A molecule.".to_string(),
                     problem: None,
                     duplicate: Some(Duplicate::InFile { line: 1 }),
+                    cloze_cards: None,
                 },
                 CardsFileRow {
                     line: 3,
@@ -2836,6 +2975,7 @@ mod tests {
                     back: String::new(),
                     problem: Some(RowProblemMessage::of(RowProblem::NoBack)),
                     duplicate: Some(Duplicate::InDeck),
+                    cloze_cards: None,
                 },
                 CardsFileRow {
                     line: 4,
@@ -2845,6 +2985,25 @@ mod tests {
                         InvalidInput::FrontBlank,
                     ))),
                     duplicate: None,
+                    cloze_cards: None,
+                },
+                CardsFileRow {
+                    line: 5,
+                    front: "The {{c1::cell}} has a {{c2::nucleus}}.".to_string(),
+                    back: String::new(),
+                    problem: None,
+                    duplicate: None,
+                    cloze_cards: Some(2),
+                },
+                CardsFileRow {
+                    line: 6,
+                    front: "The {{c1::cell".to_string(),
+                    back: String::new(),
+                    problem: Some(RowProblemMessage::of(RowProblem::Card(
+                        InvalidInput::ClozeUnclosed,
+                    ))),
+                    duplicate: None,
+                    cloze_cards: None,
                 },
             ],
             rows_with_extra_columns: 0,
@@ -2859,7 +3018,8 @@ mod tests {
                 "rows": [
                     {
                         "line": 2, "front": "What is DNA?", "back": "A molecule.",
-                        "problem": null, "duplicate": { "kind": "inFile", "line": 1 }
+                        "problem": null, "duplicate": { "kind": "inFile", "line": 1 },
+                        "clozeCards": null
                     },
                     {
                         "line": 3, "front": "Alone", "back": "",
@@ -2867,12 +3027,27 @@ mod tests {
                             "field": "back",
                             "message": "This row has no back: put the back in a second column."
                         },
-                        "duplicate": { "kind": "inDeck" }
+                        "duplicate": { "kind": "inDeck" },
+                        "clozeCards": null
                     },
                     {
                         "line": 4, "front": "", "back": "b",
                         "problem": { "field": "front", "message": "Enter the front of the card." },
-                        "duplicate": null
+                        "duplicate": null,
+                        "clozeCards": null
+                    },
+                    {
+                        "line": 5, "front": "The {{c1::cell}} has a {{c2::nucleus}}.", "back": "",
+                        "problem": null, "duplicate": null, "clozeCards": 2
+                    },
+                    {
+                        "line": 6, "front": "The {{c1::cell", "back": "",
+                        "problem": {
+                            "field": "front",
+                            "message": "Close each {{c1::…}} with }} before the next one starts."
+                        },
+                        "duplicate": null,
+                        "clozeCards": null
                     }
                 ],
                 "rowsWithExtraColumns": 0
