@@ -334,6 +334,9 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   overdue cards and new cards not yet studied. Retention counts only reviews of cards in the Review
   state, so it's empty until cards have graduated. Days are the computer's current time zone, so
   changing it (or travelling) moves where each day begins. Only active decks can be chosen.
+- **Spreadsheet export writes text as it is.** A card side that starts with `=`, `+`, `-` or `@`
+  is written unchanged, so a spreadsheet app may read it as a formula. Importing reads only the
+  first two columns as text and keeps no schedules, so it isn't a way to move a deck with its history.
 - **Suggestions are a first step.** They come only from Ollama on this computer, from one note
   at a time, and from one part of up to 12,000 characters of a longer note, as front/back cards.
   A file is suggested from once it's imported as a note. There's no cloud option, no choice of how
