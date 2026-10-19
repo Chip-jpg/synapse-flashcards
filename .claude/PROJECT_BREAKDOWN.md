@@ -678,7 +678,7 @@ Current README identifies these main files:
 | `Dashboard.tsx` | Study Desk |
 | `DeckDetail.tsx` | Deck content and management |
 | `ReviewSession.tsx` | Review interaction |
-| `Notes.tsx` | Notes library and note flows, including importing a file as a note |
+| `Notes.tsx` | Notes library and note flows, including importing a file as a note and searching the library |
 | `SuggestCards.tsx` | Suggesting cards from a note and checking them before saving |
 | `deckChoices.ts` | The decks a card can be added to, for both card-from-note screens |
 | `ArchivedDecks.tsx` | Archived-deck recovery |
@@ -703,7 +703,7 @@ For example, hiding a Restore button is useful UX, but the Rust command must sti
 | `scheduler.rs` | FSRS scheduling calculations |
 | `study.rs` | Deck study data, sessions, recording reviews |
 | `authoring.rs` | Deck/card creation and lifecycle |
-| `notes.rs` | Note lifecycle |
+| `notes.rs` | Note lifecycle and note search |
 | `suggest.rs` | Asking Ollama for suggested cards, and checking them against the note |
 | `extract.rs` | Reading a file's text for import; the PDF helper process |
 | `export.rs` | Backup creation |
@@ -1016,7 +1016,7 @@ The current README is explicit about these gaps.
 
 ### Organization
 
-- Search.
+- Card search. Notes can be searched by exact text (title or body, ignoring case), with no index or fuzzy matching.
 - Tags.
 - Folders.
 - Bulk actions.

@@ -625,6 +625,23 @@ pub async fn get_notes(
     })
 }
 
+/// The note library narrowed to the active notes whose title or body contains
+/// `query`, ignoring case, most recently saved first. Arguments: `{ query }`;
+/// a blank query lists every active note. Returns the same shape as
+/// `get_notes`. Reads only.
+#[tauri::command]
+pub async fn search_notes(
+    app: AppHandle,
+    database: State<'_, Database>,
+    query: String,
+) -> Result<Vec<NoteSummary>, CommandError> {
+    let pool = pool(&app, &database).await?;
+    notes::search_notes(&pool, &query).await.map_err(|err| {
+        eprintln!("[synapse] searching notes failed: {err}");
+        CommandError::failed("Synapse couldn't search your notes.")
+    })
+}
+
 /// The library's history: every deleted note, most recently deleted first.
 /// Returns `[{ id, title, createdAt, updatedAt, deletedAt }]`.
 #[tauri::command]
