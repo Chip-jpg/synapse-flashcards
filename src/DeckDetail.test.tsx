@@ -163,6 +163,117 @@ describe("restoring a card", () => {
   });
 });
 
+/** The deck with its one card active and three more deleted. */
+function deckWithDeletedCards(count = 3): Deck {
+  return {
+    ...activeDeck(),
+    deletedCards: Array.from({ length: count }, (_, n) => ({
+      id: 30 + n,
+      front: `Deleted ${n}`,
+      back: `Answer ${n}`,
+      deletedAt: CREATED,
+    })),
+  };
+}
+
+/** The deck after all its deleted cards came back. */
+function deckWithAllRestored(): Deck {
+  const deck = deckWithDeletedCards();
+  const back = deck.deletedCards.map(({ id, front, back }) => ({ id, front, back }));
+  return { ...deck, cardCount: 4, cards: [...deck.cards, ...back], deletedCards: [] };
+}
+
+describe("restoring all deleted cards", () => {
+  it("isn't offered for a single deleted card", async () => {
+    openDeck({ get_deck_detail: () => deckWithDeletedCard() });
+
+    expect(await screen.findByRole("button", { name: "Restore card" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Restore all" })).toBeNull();
+  });
+
+  it("asks first, naming how many, and Keep deleted puts focus back", async () => {
+    const deck = openDeck({ get_deck_detail: () => deckWithDeletedCards() });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Restore all" }));
+
+    expect(document.activeElement).toBe(screen.getByText(/^Restore all 3 deleted cards\?/));
+    expect(screen.getByRole("button", { name: "Restore 3 cards" })).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Keep deleted" }));
+
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Restore all" }));
+    expect(deck.argsOf("restore_deleted_cards")).toEqual([]);
+  });
+
+  it("restores them all with one request, and shows the deck with them back", async () => {
+    const restoring = deferred<{ restored: number; deck: Deck }>();
+    const deck = openDeck({
+      get_deck_detail: () => deckWithDeletedCards(),
+      restore_deleted_cards: () => restoring.promise,
+    });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Restore all" }));
+    const confirm = screen.getByRole("button", { name: "Restore 3 cards" });
+    await user.click(confirm);
+    await user.click(confirm);
+
+    expect(screen.getByText("Restoring…")).toBeTruthy();
+    expect(deck.argsOf("restore_deleted_cards")).toEqual([{ deckId: 1, expected: 3 }]);
+
+    await act(async () => restoring.resolve({ restored: 3, deck: deckWithAllRestored() }));
+
+    const notice = await screen.findByText(
+      "3 cards restored. They're back in this deck, with their schedules unchanged.",
+    );
+    expect(document.activeElement).toBe(notice);
+    expect(screen.getByText("4 cards in total")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Restore all" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Restore card" })).toBeNull();
+    expect(deck.argsOf("get_deck_detail")).toHaveLength(1);
+  });
+
+  it("reloads the deck and says why when the list is out of date", async () => {
+    let refused = false;
+    const deck = openDeck({
+      get_deck_detail: () => (refused ? deckWithDeletedCard() : deckWithDeletedCards()),
+      restore_deleted_cards: () => {
+        refused = true;
+        return refuse("stale", "This deck's deleted cards have changed.");
+      },
+    });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Restore all" }));
+    await user.click(screen.getByRole("button", { name: "Restore 3 cards" }));
+
+    const notice = await screen.findByText(
+      "The deleted cards couldn't be restored. Here's this deck as it is now.",
+    );
+    expect(document.activeElement).toBe(notice);
+    expect(deck.argsOf("get_deck_detail")).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: "Restore all" })).toBeNull();
+  });
+
+  it("shows a failure and lets the user try again", async () => {
+    const deck = openDeck({
+      get_deck_detail: () => deckWithDeletedCards(),
+      restore_deleted_cards: () => refuse("failed", "Synapse couldn't restore the cards."),
+    });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Restore all" }));
+    await user.click(screen.getByRole("button", { name: "Restore 3 cards" }));
+
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Synapse couldn't restore the cards.",
+    );
+    await user.click(screen.getByRole("button", { name: "Restore 3 cards" }));
+    await vi.waitFor(() => expect(deck.argsOf("restore_deleted_cards")).toHaveLength(2));
+  });
+});
+
 describe("adding a card", () => {
   it("sends one save, however often Save card is pressed while saving", async () => {
     const saving = deferred<Deck>();
