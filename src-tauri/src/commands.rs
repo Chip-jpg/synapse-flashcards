@@ -14,6 +14,7 @@ use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::aid::{self, CardHelp, HelpKind, Helping};
+use crate::anki::{self, AnkiError, AnkiImported, AnkiImports, Skipped};
 use crate::authoring::{self, ArchivedDeck, AuthoringError, CardText, DeckDetail, InvalidInput};
 use crate::cards_csv::{self, CardsImported, CsvError, Delimiter, Duplicate, RowProblem};
 use crate::db::Database;
@@ -22,8 +23,10 @@ use crate::extract::{self, ExtractError, ExtractedText, FileKind};
 use crate::import::{self, ImportError, ImportState, RestoreError};
 use crate::notes::{self, DeletedNote, InvalidNote, Note, NoteError, NoteSummary};
 use crate::optimizer::{self, IntervalChange, Optimized, OptimizerError, Optimizing, Settings};
+use crate::quiz::{self, QuizQuestion, Quizzing};
 use crate::retention::{self, RetentionError};
 use crate::scheduler::Rating;
+use crate::search::{self, Scope, SearchResults};
 use crate::stats::{self, Statistics};
 use crate::study::{self, DeckSummary, SessionCard, StartedSession, StudyError, TodaySummary};
 use crate::suggest::{self, NotePart, Ollama, SuggestError, SuggestedCard, Suggesting};
@@ -763,6 +766,45 @@ pub async fn search_notes(
     })
 }
 
+/// The *Search* screen: every active card (in decks that aren't archived) and
+/// every active note matching `{ query }`, each word as a prefix, ignoring
+/// case and accents, best first. `{ scope }` is "all", "cards" or "notes";
+/// `{ deckId }` limits cards to one active deck, with scope "cards" only.
+/// Reads only. Returns `{ results, more }`; see `search::Hit`.
+#[tauri::command]
+pub async fn search_everything(
+    app: AppHandle,
+    database: State<'_, Database>,
+    query: String,
+    scope: Scope,
+    deck_id: Option<i64>,
+) -> Result<SearchResults, CommandError> {
+    if query.chars().count() > search::MAX_QUERY_CHARS {
+        return Err(CommandError::invalid(
+            "Search for at most 500 characters at a time.",
+        ));
+    }
+    if deck_id.is_some() && scope != Scope::Cards {
+        return Err(CommandError::invalid(
+            "Only cards can be searched in one deck.",
+        ));
+    }
+    if deck_id.is_some_and(|id| id < 1) {
+        return Err(CommandError::invalid(DECK_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    search::search(&pool, &query, scope, deck_id)
+        .await
+        .map_err(|err| {
+            study_error(
+                err,
+                "searching",
+                DECK_NOT_FOUND,
+                "Synapse couldn't search your cards and notes.",
+            )
+        })
+}
+
 /// The library's history: every deleted note, most recently deleted first.
 /// Returns `[{ id, title, createdAt, updatedAt, deletedAt }]`.
 #[tauri::command]
@@ -1121,6 +1163,121 @@ pub async fn get_card_help(
 #[tauri::command]
 pub fn stop_card_help(helping: State<'_, Helping>) {
     helping.0.stop();
+}
+
+/// Turns a failed quiz into a user-safe error, logging internal detail.
+/// Neither the note nor the model's answer is ever logged.
+fn quiz_error(err: SuggestError) -> CommandError {
+    match err {
+        SuggestError::NoteTooLong => CommandError::invalid(
+            "This is too long to write a quiz from: up to 12,000 characters of a note can be \
+             used at a time.",
+        ),
+        SuggestError::NoteOverflowed => CommandError::failed(
+            "This note was too long for the model to read all at once, so no quiz was written. \
+             Try a shorter note.",
+        ),
+        SuggestError::Unusable(detail) => {
+            eprintln!("[synapse] the model's quiz was unusable: {detail}");
+            CommandError::failed(
+                "The model's answer didn't include any usable questions. Try again, or choose \
+                 another model.",
+            )
+        }
+        SuggestError::Ungrounded => CommandError::failed(
+            "None of the questions the model wrote could be traced back to your note, so none \
+             are shown. Try again, or choose a larger model.",
+        ),
+        SuggestError::Internal(detail) => {
+            eprintln!("[synapse] setting up a request to Ollama failed: {detail}");
+            CommandError::failed("Synapse couldn't ask Ollama for a quiz.")
+        }
+        other => suggest_error(other),
+    }
+}
+
+/// What asking for a quiz did: `{ "status": "written", "questions": [{
+/// question, answer, distractors, source, unfamiliar }], "leftOut": 1,
+/// "unsupported": 2 }` or `{ "status": "stopped" }`.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum QuizOutcome {
+    Written {
+        /// The questions, to take on screen: nothing has been saved.
+        questions: Vec<QuizQuestion>,
+        /// Questions left out as unusable, so the user can be told.
+        left_out: usize,
+        /// Questions left out as not coming from the note.
+        unsupported: usize,
+    },
+    /// `stop_quiz` was called first.
+    Stopped,
+}
+
+/// Asks a local model in Ollama for a multiple-choice quiz on a note: up to
+/// eight questions, each with one correct answer and three wrong ones. Only
+/// Ollama on this computer is asked, and nothing is saved; the user may add
+/// questions they missed as cards with `create_flashcards`. Asking again, or
+/// `stop_quiz`, stops this one. Card suggestions and card help are separate.
+///
+/// Arguments: `{ noteId, model, part? }`, as for `suggest_cards`. Returns
+/// [`QuizOutcome`]; rejects with kind "stale" if the note was deleted, no
+/// longer has that part, or the model is no longer in Ollama.
+#[tauri::command]
+pub async fn quiz_note(
+    app: AppHandle,
+    database: State<'_, Database>,
+    quizzing: State<'_, Quizzing>,
+    note_id: i64,
+    model: String,
+    part: Option<NotePart>,
+) -> Result<QuizOutcome, CommandError> {
+    if note_id < 1 {
+        return Err(CommandError::invalid(NOTE_NOT_FOUND));
+    }
+    // Tracked from the start, so a stop while the note loads counts too.
+    let request = quizzing.0.begin();
+    let work = async {
+        let pool = pool(&app, &database).await?;
+        let note = notes::note(&pool, note_id).await.map_err(|err| {
+            note_error(
+                err,
+                "loading a note to write a quiz from",
+                "Synapse couldn't load this note.",
+            )
+        })?;
+        let body = match part {
+            None => note.body.as_str(),
+            Some(part) => suggest::part_of(&note.body, part).ok_or_else(|| {
+                CommandError::stale(
+                    "That part of the note has changed. Go back to the note and try again.",
+                )
+            })?,
+        };
+        let ollama = Ollama::local().map_err(quiz_error)?;
+        quiz::quiz(&ollama, &model, &note.title, body)
+            .await
+            .map_err(quiz_error)
+    };
+    match request.run(work).await {
+        None => Ok(QuizOutcome::Stopped),
+        Some(result) => result.map(|written| QuizOutcome::Written {
+            questions: written.questions,
+            left_out: written.left_out,
+            unsupported: written.unsupported,
+        }),
+    }
+}
+
+/// Stops the quiz being written, if any; its `quiz_note` call then returns
+/// `{ status: "stopped" }`. Takes no arguments; returns `null`.
+#[tauri::command]
+pub fn stop_quiz(quizzing: State<'_, Quizzing>) {
+    quizzing.0.stop();
 }
 
 /// What choosing a file to import as a note did: `{ "status": "read", "fileName",
@@ -2100,6 +2257,213 @@ pub async fn export_cards_csv(
     Ok(ExportOutcome::Saved { file_name })
 }
 
+/// One Anki deck of a package, as the preview shows it: its name in Anki,
+/// the name its new deck would get, the cards it would add one way, how many
+/// of them have a reversed card too, and its first few cards.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnkiDeckPreview {
+    anki_name: String,
+    name: String,
+    cards: usize,
+    reversible: usize,
+    examples: Vec<CardText>,
+}
+
+/// What choosing an Anki package did:
+/// `{ "status": "read", token, fileName, decks, notes, skipped, mediaRemoved, reviewed }`
+/// or `{ "status": "cancelled" }`. Nothing has been saved; `token` names the
+/// package to `import_anki_package` and `cancel_anki_import`.
+#[derive(Debug, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum AnkiFile {
+    Read {
+        token: u64,
+        file_name: String,
+        decks: Vec<AnkiDeckPreview>,
+        /// Every note in the collection.
+        notes: usize,
+        /// Notes left out, by why (see `anki.rs`).
+        skipped: Skipped,
+        /// Notes to add that had a picture or sound, which is left out.
+        media_removed: usize,
+        /// Notes to add that had been reviewed in Anki; they start as new.
+        reviewed: usize,
+    },
+    Cancelled,
+}
+
+/// Turns an Anki package that was refused into a user-safe error, logging
+/// internal detail (never a card's text). The limits in these messages must
+/// match `anki.rs` (checked by a test below).
+fn anki_error(err: AnkiError, context: &str, failed: &'static str) -> CommandError {
+    match err {
+        AnkiError::TooLarge => {
+            CommandError::invalid("That file is too large to import: the limit is 2 GB.")
+        }
+        AnkiError::CollectionTooLarge => CommandError::invalid(
+            "The collection in that file is too large to import: the limit is 512 MB.",
+        ),
+        AnkiError::NotAnki => CommandError::invalid(
+            "That file isn't an Anki package. In Anki, export your decks as an .apkg file, \
+             then choose that.",
+        ),
+        AnkiError::Unreadable(detail) => {
+            eprintln!("[synapse] {context} failed: {detail}");
+            CommandError::invalid("Synapse couldn't read the Anki collection in that file.")
+        }
+        AnkiError::TooManyCards => CommandError::invalid(
+            "At most 50,000 cards can be imported at once. Export fewer decks from Anki.",
+        ),
+        AnkiError::TooManyDecks => CommandError::invalid(
+            "At most 1,000 decks can be imported at once. Export fewer decks from Anki.",
+        ),
+        AnkiError::NothingToImport => {
+            CommandError::invalid("There are no cards to add from this file.")
+        }
+        AnkiError::Io(err) => {
+            eprintln!("[synapse] {context} failed: {err}");
+            CommandError::failed("Synapse couldn't unpack that file.")
+        }
+        AnkiError::Authoring(err) => authoring_error(err, context, failed),
+    }
+}
+
+/// Chooses an Anki package (`.apkg` or `.colpkg`) and reads its front/back
+/// notes, without saving anything: the preview goes to the screen, and the
+/// package waits under a token for `import_anki_package` (only the latest
+/// one is kept).
+///
+/// Returns [`AnkiFile`]; a file that can't be used rejects with kind
+/// "invalid" or "failed".
+#[tauri::command]
+pub async fn read_anki_package(
+    app: AppHandle,
+    database: State<'_, Database>,
+    imports: State<'_, AnkiImports>,
+) -> Result<AnkiFile, CommandError> {
+    let pool = pool(&app, &database).await?;
+
+    // As in `read_cards_csv`: the dialog answers through a callback.
+    let (sender, mut receiver) = tauri::async_runtime::channel(1);
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Choose an Anki package to import")
+        .add_filter("Anki packages (APKG, COLPKG)", &["apkg", "colpkg"]);
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.pick_file(move |path| {
+        let _ = sender.try_send(path);
+    });
+
+    let Some(chosen) = receiver.recv().await else {
+        eprintln!("[synapse] the Anki file dialog closed without an answer");
+        return Err(CommandError::failed(
+            "Synapse couldn't open the file window.",
+        ));
+    };
+    let Some(chosen) = chosen else {
+        return Ok(AnkiFile::Cancelled);
+    };
+    let path = chosen.into_path().map_err(|err| {
+        eprintln!("[synapse] the chosen Anki file's path was unusable: {err}");
+        CommandError::invalid("That file can't be used.")
+    })?;
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "your file".to_string());
+
+    let failed = "Synapse couldn't read that file.";
+    let package = anki::read_package(&path)
+        .await
+        .map_err(|err| anki_error(err, "reading an Anki package", failed))?;
+    let names = anki::planned_names(&pool, &package)
+        .await
+        .map_err(|err| anki_error(err, "naming imported decks", failed))?;
+    let decks = package
+        .decks
+        .iter()
+        .zip(names)
+        .map(|(deck, name)| AnkiDeckPreview {
+            anki_name: deck.anki_name.clone(),
+            name,
+            cards: deck.notes.len(),
+            reversible: deck.notes.iter().filter(|note| note.reversible).count(),
+            examples: deck
+                .notes
+                .iter()
+                .take(anki::EXAMPLES_PER_DECK)
+                .map(|note| CardText {
+                    front: note.front.clone(),
+                    back: note.back.clone(),
+                })
+                .collect(),
+        })
+        .collect();
+    let (notes, skipped, media_removed, reviewed) = (
+        package.notes,
+        package.skipped,
+        package.media_removed,
+        package.reviewed,
+    );
+    let token = imports.hold(package);
+    Ok(AnkiFile::Read {
+        token,
+        file_name,
+        decks,
+        notes,
+        skipped,
+        media_removed,
+        reviewed,
+    })
+}
+
+/// Adds the Anki package held under `{ token }` as new decks of new cards,
+/// all or nothing; with `bothDirections`, also the reversed card of each note
+/// whose Anki note type made one. Decks are named afresh at saving.
+///
+/// Returns `{ decks: [{ id, name, cards }], cards }`. A package no longer
+/// held rejects with kind "stale".
+#[tauri::command]
+pub async fn import_anki_package(
+    app: AppHandle,
+    database: State<'_, Database>,
+    imports: State<'_, AnkiImports>,
+    token: u64,
+    both_directions: bool,
+) -> Result<AnkiImported, CommandError> {
+    let Some(package) = imports.get(token) else {
+        return Err(CommandError::stale(
+            "This preview is out of date. Choose the file again.",
+        ));
+    };
+    let pool = pool(&app, &database).await?;
+    let imported = anki::import_package(&pool, &package, both_directions, Utc::now())
+        .await
+        .map_err(|err| {
+            anki_error(
+                err,
+                "importing an Anki package",
+                "Synapse couldn't save the cards. Nothing was added.",
+            )
+        })?;
+    imports.forget(token);
+    Ok(imported)
+}
+
+/// Forgets the Anki package held under `{ token }`, if it still is.
+#[tauri::command]
+pub fn cancel_anki_import(imports: State<'_, AnkiImports>, token: u64) {
+    imports.forget(token);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2580,6 +2944,67 @@ mod tests {
     }
 
     #[test]
+    fn quizzes_serialize_to_the_shape_react_expects() {
+        assert_eq!(
+            serde_json::to_value(QuizOutcome::Written {
+                questions: vec![QuizQuestion {
+                    question: "What does mitosis produce?".to_string(),
+                    answer: "Two identical cells".to_string(),
+                    distractors: vec!["One cell".into(), "Four cells".into(), "No cells".into()],
+                    source: "It produces two identical cells.".to_string(),
+                    unfamiliar: vec![],
+                }],
+                left_out: 1,
+                unsupported: 2,
+            })
+            .unwrap(),
+            json!({
+                "status": "written",
+                "questions": [{
+                    "question": "What does mitosis produce?",
+                    "answer": "Two identical cells",
+                    "distractors": ["One cell", "Four cells", "No cells"],
+                    "source": "It produces two identical cells.",
+                    "unfamiliar": []
+                }],
+                "leftOut": 1,
+                "unsupported": 2
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(QuizOutcome::Stopped).unwrap(),
+            json!({ "status": "stopped" })
+        );
+    }
+
+    #[test]
+    fn failed_quizzes_are_reported_without_detail_and_never_mention_cards() {
+        let detail = || -> crate::db::DbError { "http://127.0.0.1:11434/api/chat: secret".into() };
+        for (err, kind) in [
+            (SuggestError::Unreachable(detail()), "failed"),
+            (SuggestError::ModelMissing, "stale"),
+            (SuggestError::NoteTooLong, "invalid"),
+            (SuggestError::NoteOverflowed, "failed"),
+            (SuggestError::TimedOut, "failed"),
+            (SuggestError::Unusable(detail()), "failed"),
+            (SuggestError::Ungrounded, "failed"),
+            (SuggestError::Internal(detail()), "failed"),
+        ] {
+            let value = serde_json::to_value(quiz_error(err)).unwrap();
+            assert_eq!(value["kind"], kind, "{value}");
+            let message = value["message"].as_str().unwrap();
+            assert!(
+                !message.contains("secret") && !message.contains("11434"),
+                "{message}"
+            );
+            assert!(
+                !message.contains("card") && !message.contains("suggest"),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
     fn failed_card_help_is_reported_without_detail_and_never_mentions_notes() {
         let detail = || -> crate::db::DbError { "http://127.0.0.1:11434/api/chat: secret".into() };
         for (err, kind) in [
@@ -2791,5 +3216,77 @@ mod tests {
             assert_eq!(value["kind"], kind, "{value}");
             assert!(!value["message"].as_str().unwrap().contains("detail"));
         }
+    }
+
+    #[test]
+    fn anki_errors_state_the_real_limits() {
+        use crate::anki::{
+            ANKI_CARDS_MAX, ANKI_COLLECTION_MAX_BYTES, ANKI_DECKS_MAX, ANKI_FILE_MAX_BYTES,
+        };
+        let message = |err| anki_error(err, "test", "failed").message;
+        assert!(message(AnkiError::TooLarge)
+            .contains(&format!("{} GB", ANKI_FILE_MAX_BYTES / 1024 / 1024 / 1024)));
+        assert!(message(AnkiError::CollectionTooLarge)
+            .contains(&format!("{} MB", ANKI_COLLECTION_MAX_BYTES / 1024 / 1024)));
+        assert!(message(AnkiError::TooManyCards).contains("50,000"));
+        assert_eq!(ANKI_CARDS_MAX, 50_000);
+        assert!(message(AnkiError::TooManyDecks).contains("1,000"));
+        assert_eq!(ANKI_DECKS_MAX, 1_000);
+        // Internal detail stays out of the message.
+        let unreadable = message(AnkiError::Unreadable("secret detail".to_string()));
+        assert!(!unreadable.contains("detail"));
+        assert_eq!(
+            message(AnkiError::Authoring(AuthoringError::DeckArchived)),
+            DECK_ARCHIVED
+        );
+    }
+
+    #[test]
+    fn anki_previews_serialize_to_the_shape_react_expects() {
+        let file = AnkiFile::Read {
+            token: 3,
+            file_name: "French.apkg".to_string(),
+            decks: vec![AnkiDeckPreview {
+                anki_name: "French::Verbs".to_string(),
+                name: "French::Verbs (2)".to_string(),
+                cards: 2,
+                reversible: 1,
+                examples: vec![CardText {
+                    front: "être".to_string(),
+                    back: "to be".to_string(),
+                }],
+            }],
+            notes: 4,
+            skipped: Skipped {
+                cloze: 1,
+                other_note_type: 1,
+                ..Skipped::default()
+            },
+            media_removed: 1,
+            reviewed: 2,
+        };
+        assert_eq!(
+            serde_json::to_value(file).unwrap(),
+            json!({
+                "status": "read",
+                "token": 3,
+                "fileName": "French.apkg",
+                "decks": [{
+                    "ankiName": "French::Verbs",
+                    "name": "French::Verbs (2)",
+                    "cards": 2,
+                    "reversible": 1,
+                    "examples": [{ "front": "être", "back": "to be" }],
+                }],
+                "notes": 4,
+                "skipped": { "cloze": 1, "otherNoteType": 1, "empty": 0, "tooLong": 0, "noCard": 0 },
+                "mediaRemoved": 1,
+                "reviewed": 2,
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(AnkiFile::Cancelled).unwrap(),
+            json!({ "status": "cancelled" })
+        );
     }
 }

@@ -48,6 +48,9 @@ pdf-extract = "0.12"
 # Reading the text of Word (.docx) and PowerPoint (.pptx) files, which are
 # zip archives of XML.
 quick-xml = "0.42"
+# Reading Anki packages: newer Anki compresses the collection inside an
+# `.apkg`/`.colpkg` with zstd. A pure-Rust decoder, so no C library is built.
+ruzstd = "0.9"
 
 
 [dev-dependencies]

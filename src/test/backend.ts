@@ -42,8 +42,9 @@ export function deferred<T = unknown>() {
 /**
  * Stands in for the Rust core: one normal deck ("Biology", with one card and
  * nothing due) and one note ("Mitosis"). Adding cards succeeds. Ollama has one
- * model ("llama3.2:3b"), which suggests one card. Scheduling uses FSRS's
- * defaults, with no reviews to optimize from yet, aiming for 90%. `overrides`
+ * model ("llama3.2:3b"), which suggests one card and writes a one-question
+ * quiz. Scheduling uses FSRS's defaults, with no reviews to optimize from yet,
+ * aiming for 90%. `overrides`
  * replace or add commands; any command left unanswered rejects as a failure.
  * `calls` lists every command the app sent, Tauri's own included (listening
  * for events, closing the window), and `argsOf` the arguments of one.
@@ -119,6 +120,21 @@ export function fakeBackend(overrides: Record<string, Handler> = {}) {
       help: { kind: args.kind, text: "Mighty Mito makes the power.", unfamiliar: [] },
     }),
     stop_card_help: () => null,
+    quiz_note: () => ({
+      status: "written",
+      questions: [
+        {
+          question: "Which phase comes first in mitosis?",
+          answer: "Prophase",
+          distractors: ["Metaphase", "Anaphase", "Telophase"],
+          source: "Prophase, metaphase, anaphase, telophase.",
+          unfamiliar: [],
+        },
+      ],
+      leftOut: 0,
+      unsupported: 0,
+    }),
+    stop_quiz: () => null,
     get_scheduling: () => ({
       version: 0,
       personal: false,

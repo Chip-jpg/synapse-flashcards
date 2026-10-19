@@ -111,6 +111,16 @@ export function BookIcon() {
 }
 
 /** A page with lines: one note. */
+/** A magnifying glass. */
+export function SearchIcon() {
+  return (
+    <Icon>
+      <circle cx="11" cy="11" r="6.5" />
+      <path d="M20 20l-4.4-4.4" />
+    </Icon>
+  );
+}
+
 export function NoteIcon() {
   return (
     <Icon>
