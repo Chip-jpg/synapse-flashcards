@@ -21,7 +21,7 @@ use crate::import::{self, ImportError, ImportState, RestoreError};
 use crate::notes::{self, DeletedNote, InvalidNote, Note, NoteError, NoteSummary};
 use crate::scheduler::Rating;
 use crate::study::{self, DeckSummary, SessionCard, StartedSession, StudyError};
-use crate::suggest::{Ollama, SuggestError, SuggestedCard, Suggesting};
+use crate::suggest::{self, NotePart, Ollama, SuggestError, SuggestedCard, Suggesting};
 
 /// Error sent to React: `{ "kind": "failed" | "stale" | "invalid", "message": "..." }`,
 /// plus `"field": "name" | "description" | "front" | "back" | "title" | "body"`
@@ -727,8 +727,8 @@ fn suggest_error(err: SuggestError) -> CommandError {
             CommandError::stale("That model isn't in Ollama any more. Choose another.")
         }
         SuggestError::NoteTooLong => CommandError::invalid(
-            "This note is too long to suggest cards from: notes of up to 12,000 characters can \
-             be used.",
+            "This is too long to suggest cards from: up to 12,000 characters of a note can be \
+             used at a time.",
         ),
         SuggestError::NoteOverflowed => CommandError::failed(
             "This note was too long for the model to read all at once, so no cards were \
@@ -797,9 +797,11 @@ pub enum SuggestOutcome {
 /// the user may save with `create_flashcards`. Starting another suggestion,
 /// or `stop_suggesting`, stops this one.
 ///
-/// Arguments: `{ noteId, model }`, where `model` is a name from `get_models`.
-/// Returns [`SuggestOutcome`]; rejects with kind "stale" if the note was
-/// deleted or the model is no longer in Ollama.
+/// Arguments: `{ noteId, model, part? }`, where `model` is a name from
+/// `get_models`, and `part`, `{ start, end }` in characters, is the part of a
+/// note too long to use whole that cards are suggested from. Returns
+/// [`SuggestOutcome`]; rejects with kind "stale" if the note was deleted, no
+/// longer has that part, or the model is no longer in Ollama.
 #[tauri::command]
 pub async fn suggest_cards(
     app: AppHandle,
@@ -807,6 +809,7 @@ pub async fn suggest_cards(
     suggesting: State<'_, Suggesting>,
     note_id: i64,
     model: String,
+    part: Option<NotePart>,
 ) -> Result<SuggestOutcome, CommandError> {
     if note_id < 1 {
         return Err(CommandError::invalid(NOTE_NOT_FOUND));
@@ -822,9 +825,17 @@ pub async fn suggest_cards(
                 "Synapse couldn't load this note.",
             )
         })?;
+        let body = match part {
+            None => note.body.as_str(),
+            Some(part) => suggest::part_of(&note.body, part).ok_or_else(|| {
+                CommandError::stale(
+                    "That part of the note has changed. Go back to the note and try again.",
+                )
+            })?,
+        };
         let ollama = Ollama::local().map_err(suggest_error)?;
         ollama
-            .suggest(&model, &note.title, &note.body)
+            .suggest(&model, &note.title, body)
             .await
             .map_err(suggest_error)
     };

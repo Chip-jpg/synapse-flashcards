@@ -100,6 +100,21 @@ describe("importing a file as a note", () => {
     expect(screen.queryByText(/characters long, but a note can hold/)).toBeNull();
   });
 
+  it("says when the text is too long to suggest cards from whole", async () => {
+    const { user } = openNotes({
+      import_file: () => ({ ...LECTURE, body: "x".repeat(12_001), pages: null, kind: "text" }),
+    });
+    await user.click(await screen.findByRole("button", { name: "Import file" }));
+    expect(
+      await screen.findByText(/^At 12,001 characters, .* Suggest cards will offer the note in parts/)
+    ).toBeTruthy();
+
+    const body = screen.getByLabelText("Note");
+    await user.clear(body);
+    await user.type(body, "Just the part I need.");
+    expect(screen.queryByText(/will offer the note in parts/)).toBeNull();
+  });
+
   it("changes nothing when the file window is closed", async () => {
     const { user, argsOf } = openNotes({ import_file: (): FileImport => ({ status: "cancelled" }) });
     const button = await screen.findByRole("button", { name: "Import file" });
