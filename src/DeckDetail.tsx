@@ -198,6 +198,7 @@ export function DeckDetail({
     <DeckView
       key={view.key}
       deck={state.deck}
+      foundCardId={focusCardId}
       notice={view.notice}
       focus={view.focus}
       onAdd={() => setMode({ kind: "add" })}
@@ -268,6 +269,7 @@ function DeckView({
   onBulkStale,
   onRename,
   onArchived,
+  foundCardId,
   backLabel,
   onBack,
   onStart,
@@ -294,6 +296,8 @@ function DeckView({
   onBulkStale: (message: string) => void;
   onRename: () => void;
   onArchived: () => void;
+  /** The card a search opened this deck for, marked in the list. */
+  foundCardId: number | null;
   backLabel: string;
   onBack: () => void;
   onStart: (sessionId: number, deckName: string) => void;
@@ -436,6 +440,7 @@ function DeckView({
                   card={card}
                   selected={selected.has(card.id)}
                   onToggle={() => toggle(card.id)}
+                  found={card.id === foundCardId}
                   focusEdit={card.id === editFocusId}
                   onEdit={() => onEdit(card)}
                   onDeleted={onDeleted}
@@ -695,6 +700,7 @@ function CardItem({
   card,
   selected,
   onToggle,
+  found,
   focusEdit,
   onEdit,
   onDeleted,
@@ -704,6 +710,8 @@ function CardItem({
   /** Whether the card is selected for a change to several cards at once. */
   selected: boolean;
   onToggle: () => void;
+  /** Marked as the card a search opened the deck for. */
+  found: boolean;
   focusEdit: boolean;
   onEdit: () => void;
   onDeleted: (deck: Deck) => void;
@@ -757,7 +765,7 @@ function CardItem({
   }
 
   return (
-    <div className="card-item card-row">
+    <div className={found ? "card-item card-row card-found" : "card-item card-row"}>
       <CardText frontId={frontId} front={card.front} back={card.back} />
 
       {confirming ? (

@@ -330,6 +330,7 @@ body {
 .deck-detail,
 .notes,
 .stats,
+.search-screen,
 .archived,
 .backup,
 .settings {
@@ -2327,7 +2328,6 @@ textarea.field-input {
   display: flex;
   flex-direction: column;
   gap: 1rem;
-  margin-bottom: 1rem;
 }
 
 .search-filters {
@@ -2338,10 +2338,6 @@ textarea.field-input {
 
 .search-filters .field {
   flex: 0 1 16rem;
-}
-
-.search-status {
-  margin-bottom: 0.75rem;
 }
 
 /* A result: what it is, its matched text, and the way in. */
@@ -2378,9 +2374,15 @@ textarea.field-input {
   color: var(--text-muted);
 }
 
+/* The card a search opened its deck for. */
+.card-found {
+  background-color: var(--primary-soft);
+  border-color: var(--primary-line);
+}
+
 /* A matched word inside a snippet. */
 .search-mark {
-  padding: 0 0.125rem;
+  padding: 0 1px;
   color: var(--primary-ink);
   background-color: var(--primary-soft);
   border-radius: 3px;

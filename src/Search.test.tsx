@@ -176,6 +176,7 @@ describe("the Search screen", () => {
     await user.click(within(results).getByRole("button", { name: "Open in deck" }));
 
     expect(await screen.findByRole("heading", { name: "Biology", level: 2 })).toBeTruthy();
+    expect(document.querySelector(".card-found")?.textContent).toContain("What is a cell?");
     // The card found has focus, and the sidebar still says Search.
     await waitFor(() =>
       expect(document.activeElement?.getAttribute("aria-describedby")).toBe("card-10-front"),

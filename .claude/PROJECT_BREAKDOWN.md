@@ -497,6 +497,17 @@ Added on branch `claude/nightly-2026-10-19-memory-aids-i9x6j9` (not yet released
 - **Drafts only.** Nothing is stored unless the user picks *Add as a note*, which uses `create_note`. No table, no migration, backups unchanged.
 - **Never in the way.** Rating doesn't wait for help; rating replaces the panel and stops a request still running. Without Ollama, review is unchanged.
 
+## 4.9 Searching everything
+
+Added on branch `claude/nightly-2026-10-19-search-everywhere-tombun` (not yet released). *Search* in the sidebar searches every active card (front and back, decks not archived) and every active note (title and body) at once.
+
+- **Index.** Migration `0013` adds `search_index`, an FTS5 table (`unicode61 remove_diacritics 2`) holding each card's front/back and each note's title/body, backfilled by the migration and kept in step by triggers on insert, text update and (never used) delete. Rowid `2 * id` is a card, `2 * id + 1` a note. Deleted, archived and restored items stay indexed; `search.rs` filters them from the tables, so lifecycle changes never touch the index.
+- **Query.** User text is split into letters-and-digits words (at most 10), each quoted as a prefix (`"word"*`), all required, so no FTS5 syntax can be typed. bm25 ranking, front/title weighted 2:1. At most 50 results plus `more`. Snippets come as `{ text, hit }` pieces, rendered with `<mark>`, never as HTML.
+- **Filters.** Cards and notes, cards, or notes; for cards, one active deck (archived: stale).
+- **Navigation.** A card opens its deck with that card marked and its Edit button focused; a note opens directly; *Back to search* returns to the same search and result.
+- **Backups.** The FTS tables travel in exports (`VACUUM INTO`) and pass import's schema check; a v0.7.0 backup (schema 11) is indexed on restore. An older Synapse refuses a backup made after 0013 as newer than it knows.
+- The per-deck *Search cards* and *Search notes* filters are unchanged.
+
 ______________________________________________________________________
 
 ## 5. FSRS and personalization
@@ -698,6 +709,7 @@ Current README identifies these main files:
 | `Notes.tsx` | Notes library and note flows, including importing a file as a note and searching the library |
 | `SuggestCards.tsx` | Suggesting cards from a note and checking them before saving |
 | `deckChoices.ts` | The decks a card can be added to, for both card-from-note screens |
+| `Search.tsx` | Search: every card and note at once, with snippets and filters |
 | `Statistics.tsx` | Statistics: reviews per day, true retention, cards by state, due forecast (plain SVG charts) |
 | `ArchivedDecks.tsx` | Archived-deck recovery |
 | `Backup.tsx` | Export and restore |
@@ -723,6 +735,7 @@ For example, hiding a Restore button is useful UX, but the Rust command must sti
 | `scheduler.rs` | FSRS scheduling calculations |
 | `optimizer.rs` | Fitting FSRS parameters to the review history, and which parameters are in use |
 | `study.rs` | Deck study data, sessions, recording reviews, today's review count |
+| `search.rs` | Read-only search of every active card and note through the FTS5 index |
 | `stats.rs` | Read-only statistics: 30 days of reviews, true retention, cards by state, 14-day due forecast |
 | `authoring.rs` | Deck/card creation and lifecycle |
 | `notes.rs` | Note lifecycle and note search |
@@ -873,6 +886,7 @@ The project history gives this high-level progression:
 | `0009` | Deck unarchive |
 | `0010` | Card restore |
 | `0011` | FSRS parameters fitted to the user's history (append-only) |
+| `0013` | Full-text search index (FTS5) of cards and notes, kept by triggers |
 
 The first seven are described in the original specification. The final three are established by your later feature reports and repository history.
 
@@ -1040,7 +1054,7 @@ The current README is explicit about these gaps.
 
 ### Organization
 
-- Card search across decks. Within one deck, cards can be searched by exact text (section 4.2); notes by exact text (title or body, ignoring case), with no index or fuzzy matching.
+- Fuzzy or meaning-based search. *Search* (section 4.9) matches word prefixes across all active cards and notes; within one deck, cards can also be filtered by exact text (section 4.2), and notes by exact text.
 - Tags.
 - Folders.
 - Bulk actions beyond deleting and moving a deck's selected cards (and *Restore all*).
