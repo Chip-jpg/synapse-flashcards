@@ -36,7 +36,7 @@ function rememberedModel(): string | null {
   }
 }
 
-function rememberModel(model: string) {
+export function rememberModel(model: string) {
   try {
     localStorage.setItem(MODEL_KEY, model);
   } catch {
@@ -45,7 +45,7 @@ function rememberModel(model: string) {
 }
 
 /** The model to offer first: the one used last, or the only one there is. */
-function preferredModel(models: string[]): string {
+export function preferredModel(models: string[]): string {
   const remembered = rememberedModel();
   if (remembered !== null && models.includes(remembered)) return remembered;
   return models.length === 1 ? models[0] : "";

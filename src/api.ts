@@ -94,7 +94,15 @@ export type SessionProgress = {
 
 /** Mirrors `SessionCard` in `src-tauri/src/study.rs`. */
 export type SessionCard =
-  | { status: "due"; card: Flashcard; progress: SessionProgress }
+  | {
+      status: "due";
+      card: Flashcard;
+      progress: SessionProgress;
+      /** How many times in a row the card was last rated Again. */
+      againStreak: number;
+      /** Rust's call: offer help with the card once its answer is shown. */
+      offerHelp: boolean;
+    }
   | { status: "completed"; cardsReviewed: number };
 
 /** 1 = Again, 2 = Hard, 3 = Good, 4 = Easy (matches `review_logs.rating`). */
@@ -622,6 +630,35 @@ export function suggestCards(
 /** Stops the suggestion being worked on, if any, which frees up the model. */
 export function stopSuggesting(): Promise<void> {
   return invoke<void>("stop_suggesting");
+}
+
+/** Mirrors `HelpKind` in `src-tauri/src/aid.rs`. */
+export type HelpKind = "mnemonic" | "explanation" | "analogy" | "question";
+
+/** Mirrors `CardHelp` in `src-tauri/src/aid.rs`. */
+export type CardHelp = {
+  kind: HelpKind;
+  text: string;
+  /** Words (lowercase) the card never uses; only for an explanation or a question. */
+  unfamiliar: string[];
+};
+
+/** Mirrors `HelpOutcome` in `src-tauri/src/commands.rs`. */
+export type HelpOutcome = { status: "written"; help: CardHelp } | { status: "stopped" };
+
+/**
+ * Asks `model`, in Ollama on this computer, for `kind` of help with a card,
+ * written from its front and back only. Nothing is saved. Resolves with
+ * `{ status: "stopped" }` if `stopCardHelp` is called first; rejects with kind
+ * "stale" if the card was deleted or the model has left Ollama.
+ */
+export function getCardHelp(cardId: number, model: string, kind: HelpKind): Promise<HelpOutcome> {
+  return invoke<HelpOutcome>("get_card_help", { cardId, model, kind });
+}
+
+/** Stops the card help being written, if any, which frees up the model. */
+export function stopCardHelp(): Promise<void> {
+  return invoke<void>("stop_card_help");
 }
 
 /**

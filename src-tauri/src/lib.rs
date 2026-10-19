@@ -1,3 +1,4 @@
+mod aid;
 mod authoring;
 mod cards_csv;
 mod commands;
@@ -26,6 +27,8 @@ pub fn run() {
         .manage(import::ImportState::default())
         // The card suggestion Ollama is working on, so it can be stopped.
         .manage(suggest::Suggesting::default())
+        // The card help Ollama is writing, so it can be stopped.
+        .manage(aid::Helping::default())
         // Fitting FSRS parameters, so it can be stopped, and its result.
         .manage(optimizer::Optimizing::default())
         .setup(|app| {
@@ -82,7 +85,9 @@ pub fn run() {
             commands::reset_parameters,
             commands::read_cards_csv,
             commands::import_cards_csv,
-            commands::export_cards_csv
+            commands::export_cards_csv,
+            commands::get_card_help,
+            commands::stop_card_help
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

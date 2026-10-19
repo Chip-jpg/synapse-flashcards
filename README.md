@@ -50,6 +50,11 @@ migrations, validation, scheduling, and every business rule; React only calls ty
   cards from a note, each shown with the passage of the note it comes from. You check, edit, and
   remove them, then save the ones you want into a deck. Nothing is saved until you do, and the
   note never leaves your computer.
+- **Help with hard cards (optional)** — after you answer Again on a card three times in a row,
+  Synapse offers help with it once its answer is shown: a model in Ollama, on your computer, writes
+  a mnemonic, a simpler explanation, an analogy, or the question asked another way, from the
+  card's question and answer only. You can also ask for help on any card after revealing it. It's
+  a draft; nothing is saved unless you choose *Add as a note*.
 
 Everything works offline. Turning off networking changes nothing: suggestions use Ollama on this
 computer, and the rest of Synapse doesn't need it at all.
@@ -278,6 +283,17 @@ is offered in parts of up to 12,000 characters, each ending where a paragraph do
 *Part of the note*; the screen shows that part, the model reads only that part, and its cards are
 checked against it. Come back to *Suggest cards* for the other parts.
 
+**Get help with a card you keep forgetting.** A card's *Again streak* is how many of its latest
+reviews, in the order they were recorded, were all rated Again; a Hard, Good or Easy ends it.
+Every review of the card counts, in any session, including before it was edited or deleted and
+restored. From three, the card shows *Get help with this card* once its answer is revealed; on any
+other card the same button is there, quieter. Choose a kind of help and a model, then *Write help*.
+The model reads only the card's question and answer, under the same rules as suggestions (Ollama
+on this computer only, local models only, and *Stop* at any time). The help is a draft: *Add as a
+note* saves it as an ordinary note, with the card under it. Rating the card never waits for it, and
+rating closes the help, stopping it if it's still being written. Without Ollama, reviewing works
+exactly as before.
+
 The Sample deck is read-only: you can study it, but not rename, archive, edit it, or add cards to it.
 
 ## Current limitations
@@ -341,6 +357,7 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   sidebar and the bar above each screen. The screens are `Dashboard.tsx` (the Study Desk),
   `DeckDetail.tsx`, `ReviewSession.tsx`, `Notes.tsx`, `Statistics.tsx`, `ArchivedDecks.tsx`,
   `Backup.tsx`, and `Settings.tsx`;
+  `CardHelp.tsx` is the review screen's *Get help with this card*,
   `SuggestCards.tsx` is the note screen's *Suggest cards*, and `noteParts.ts` splits a note too
   long to suggest from whole into parts.
   `unsaved.tsx` tracks which form holds unsaved text and asks before it's discarded. Tests sit
@@ -361,6 +378,8 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   - `notes.rs` — typed notes: writing, editing, searching, soft-deleting, and restoring them.
   - `suggest.rs` — asking Ollama, on this computer, to suggest cards from a note, and checking
     its answer. It writes nothing; suggested cards are saved through `authoring.rs`.
+  - `aid.rs` — a card's Again streak, and asking Ollama, through `suggest.rs`'s client, for help
+    with a card. It writes nothing; help is kept as a note through `notes.rs`.
   - `extract.rs` — reading the text of a file to import as a note, and the PDF helper (Synapse
     started with `--read-pdf-text`, see `main.rs`). `tests/pdf_helper.rs` runs the real binary as
     the helper.

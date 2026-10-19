@@ -13,6 +13,7 @@ use tauri::{AppHandle, Manager, State};
 
 use tauri_plugin_dialog::DialogExt;
 
+use crate::aid::{self, CardHelp, HelpKind, Helping};
 use crate::authoring::{self, ArchivedDeck, AuthoringError, CardText, DeckDetail, InvalidInput};
 use crate::cards_csv::{self, CardsImported, CsvError, Delimiter, Duplicate, RowProblem};
 use crate::db::Database;
@@ -1025,6 +1026,100 @@ pub async fn suggest_cards(
 #[tauri::command]
 pub fn stop_suggesting(suggesting: State<'_, Suggesting>) {
     suggesting.stop();
+}
+
+/// Turns failed card help into a user-safe error, logging internal detail.
+/// Neither the card nor the model's answer is ever logged.
+fn help_error(err: SuggestError) -> CommandError {
+    match err {
+        SuggestError::NoteTooLong | SuggestError::NoteOverflowed => CommandError::failed(
+            "This card is too long for the model to read all at once, so no help was written.",
+        ),
+        SuggestError::Unusable(detail) => {
+            eprintln!("[synapse] the model's help was unusable: {detail}");
+            CommandError::failed(
+                "The model's answer couldn't be used as help. Try again, or choose another model.",
+            )
+        }
+        SuggestError::Ungrounded => CommandError::failed(
+            "The model's answer couldn't be used as help. Try again, or choose another model.",
+        ),
+        SuggestError::Internal(detail) => {
+            eprintln!("[synapse] setting up a request to Ollama failed: {detail}");
+            CommandError::failed("Synapse couldn't ask Ollama for help.")
+        }
+        other => suggest_error(other),
+    }
+}
+
+/// What asking for help with a card did: `{ "status": "written", "help":
+/// { kind, text, unfamiliar } }` or `{ "status": "stopped" }`.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum HelpOutcome {
+    /// A draft for the user to read: nothing has been saved.
+    Written { help: CardHelp },
+    /// `stop_card_help` was called first.
+    Stopped,
+}
+
+/// Asks a local model in Ollama for help with a card: a mnemonic, a simpler
+/// explanation, an analogy, or the question asked another way, written from
+/// the card's front and back only. Only Ollama on this computer is asked, and
+/// nothing is saved; the user may keep the help with `create_note`. Asking
+/// again, or `stop_card_help`, stops this one. Card suggestions are separate.
+///
+/// Arguments: `{ cardId, model, kind: "mnemonic" | "explanation" | "analogy" |
+/// "question" }`, where `model` is a name from `get_models`. Returns
+/// [`HelpOutcome`]; rejects with kind "stale" if the card was deleted or its
+/// deck archived, or the model is no longer in Ollama.
+#[tauri::command]
+pub async fn get_card_help(
+    app: AppHandle,
+    database: State<'_, Database>,
+    helping: State<'_, Helping>,
+    card_id: i64,
+    model: String,
+    kind: HelpKind,
+) -> Result<HelpOutcome, CommandError> {
+    if card_id < 1 {
+        return Err(CommandError::invalid("That card doesn't exist."));
+    }
+    let request = helping.0.begin();
+    let work = async {
+        let pool = pool(&app, &database).await?;
+        let mut conn = pool.acquire().await.map_err(|err| {
+            eprintln!("[synapse] loading a card for help failed: {err}");
+            CommandError::failed("Synapse couldn't load this card.")
+        })?;
+        let (front, back) = aid::card_text(&mut conn, card_id)
+            .await
+            .map_err(|err| {
+                eprintln!("[synapse] loading a card for help failed: {err}");
+                CommandError::failed("Synapse couldn't load this card.")
+            })?
+            .ok_or_else(|| CommandError::stale("This card isn't available any more."))?;
+        drop(conn);
+        let ollama = Ollama::local().map_err(help_error)?;
+        aid::help(&ollama, &model, kind, &front, &back)
+            .await
+            .map_err(help_error)
+    };
+    match request.run(work).await {
+        None => Ok(HelpOutcome::Stopped),
+        Some(result) => result.map(|help| HelpOutcome::Written { help }),
+    }
+}
+
+/// Stops the card help being written, if any; its `get_card_help` call then
+/// returns `{ status: "stopped" }`. Takes no arguments; returns `null`.
+#[tauri::command]
+pub fn stop_card_help(helping: State<'_, Helping>) {
+    helping.0.stop();
 }
 
 /// What choosing a file to import as a note did: `{ "status": "read", "fileName",
@@ -2391,6 +2486,33 @@ mod tests {
             serde_json::to_value(SuggestOutcome::Stopped).unwrap(),
             json!({ "status": "stopped" })
         );
+    }
+
+    #[test]
+    fn failed_card_help_is_reported_without_detail_and_never_mentions_notes() {
+        let detail = || -> crate::db::DbError { "http://127.0.0.1:11434/api/chat: secret".into() };
+        for (err, kind) in [
+            (SuggestError::Unreachable(detail()), "failed"),
+            (SuggestError::ModelMissing, "stale"),
+            (SuggestError::NoteTooLong, "failed"),
+            (SuggestError::NoteOverflowed, "failed"),
+            (SuggestError::TimedOut, "failed"),
+            (SuggestError::Unusable(detail()), "failed"),
+            (SuggestError::Ungrounded, "failed"),
+            (SuggestError::Internal(detail()), "failed"),
+        ] {
+            let value = serde_json::to_value(help_error(err)).unwrap();
+            assert_eq!(value["kind"], kind, "{value}");
+            let message = value["message"].as_str().unwrap();
+            assert!(
+                !message.contains("secret") && !message.contains("11434"),
+                "{message}"
+            );
+            assert!(
+                !message.contains("note") && !message.contains("suggest"),
+                "{message}"
+            );
+        }
     }
 
     #[test]

@@ -195,6 +195,14 @@ struct ChatMessage {
     content: String,
 }
 
+/// What a model wrote in answer to [`Ollama::ask`].
+pub(crate) struct Written {
+    /// The answer, unchecked: untrusted input.
+    pub content: String,
+    /// Whether the model ran out of room before finishing.
+    pub ran_out: bool,
+}
+
 /// The body Ollama sends with an error status.
 #[derive(serde::Deserialize)]
 struct OllamaError {
@@ -243,7 +251,7 @@ fn answer_schema() -> Value {
 
 /// A front as compared for repeats: lowercase, with any run of spaces or line
 /// breaks counted as one space.
-fn comparable(front: &str) -> String {
+pub(crate) fn comparable(front: &str) -> String {
     front
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -253,7 +261,7 @@ fn comparable(front: &str) -> String {
 
 /// The words of `text`, lowercase: its runs of letters and digits, so
 /// spacing, punctuation, and letter case don't count.
-fn words(text: &str) -> Vec<String> {
+pub(crate) fn words(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|word| !word.is_empty())
         .map(str::to_lowercase)
@@ -335,7 +343,7 @@ fn drawn_from(back: &[String], source: &[String]) -> bool {
 
 /// The significant words of an answer that the note never uses, once each and
 /// in order, at most [`MAX_UNFAMILIAR`].
-fn unfamiliar(back: &[String], note: &[String]) -> Vec<String> {
+pub(crate) fn unfamiliar(back: &[String], note: &[String]) -> Vec<String> {
     let mut found: Vec<String> = Vec::new();
     for word in back.iter().filter(|word| significant(word)) {
         if found.len() == MAX_UNFAMILIAR {
@@ -463,7 +471,7 @@ impl Ollama {
         Self::at(OLLAMA_URL, SUGGEST_TIMEOUT)
     }
 
-    fn at(base: &str, suggest_timeout: Duration) -> Result<Self, SuggestError> {
+    pub(crate) fn at(base: &str, suggest_timeout: Duration) -> Result<Self, SuggestError> {
         let client = reqwest::Client::builder()
             // A proxy would see the note, and Ollama is on this computer anyway.
             .no_proxy()
@@ -527,6 +535,42 @@ impl Ollama {
         if body.chars().count() > SUGGESTION_NOTE_MAX_CHARS {
             return Err(SuggestError::NoteTooLong);
         }
+        let written = self
+            .ask(
+                model,
+                INSTRUCTIONS,
+                format!("Title: {title}\n\nNote:\n{body}"),
+                answer_schema(),
+                CONTEXT_TOKENS,
+                ANSWER_TOKENS,
+            )
+            .await?;
+        let ran_out = written.ran_out;
+        let answer = written.content;
+        let note = words(&format!("{title}\n{body}"));
+        read_answer(&answer, &note).map_err(|err| match err {
+            SuggestError::Unusable(detail) if ran_out => SuggestError::Unusable(
+                format!("the model ran out of room to answer: {detail}").into(),
+            ),
+            other => other,
+        })
+    }
+
+    /// Asks `model` to follow `instructions` about `material`, answering in
+    /// JSON that follows `schema`, and returns what it wrote. The model is
+    /// first checked to be one of Ollama's local models, and the material
+    /// must leave `answer_tokens` of the model's `context_tokens` free, or the
+    /// answer is thrown away ([`SuggestError::NoteOverflowed`]). Shared by
+    /// card suggestions and card help (`aid.rs`).
+    pub(crate) async fn ask(
+        &self,
+        model: &str,
+        instructions: &str,
+        material: String,
+        schema: Value,
+        context_tokens: u64,
+        answer_tokens: u64,
+    ) -> Result<Written, SuggestError> {
         // Checked now rather than trusted from the screen: the model must be
         // one of Ollama's local models, which also rules out cloud models.
         if !self.models().await?.iter().any(|name| name == model) {
@@ -536,16 +580,16 @@ impl Ollama {
         let request = json!({
             "model": model,
             "stream": false,
-            "format": answer_schema(),
+            "format": schema,
             "messages": [
-                { "role": "system", "content": INSTRUCTIONS },
-                { "role": "user", "content": format!("Title: {title}\n\nNote:\n{body}") }
+                { "role": "system", "content": instructions },
+                { "role": "user", "content": material }
             ],
             "options": {
-                // The most likely wording, which keeps closest to the note.
+                // The most likely wording, which keeps closest to the material.
                 "temperature": 0,
-                "num_ctx": CONTEXT_TOKENS,
-                "num_predict": ANSWER_TOKENS
+                "num_ctx": context_tokens,
+                "num_predict": answer_tokens
             }
         });
         let asking = |err: reqwest::Error| {
@@ -587,21 +631,16 @@ impl Ollama {
         // have cut the note to make it fit.
         if reply
             .prompt_eval_count
-            .is_some_and(|tokens| tokens > CONTEXT_TOKENS - ANSWER_TOKENS)
+            .is_some_and(|tokens| tokens > context_tokens - answer_tokens)
         {
             return Err(SuggestError::NoteOverflowed);
         }
-        let ran_out = reply.done_reason.as_deref() == Some("length");
-        let answer = reply
-            .message
-            .map(|message| message.content)
-            .unwrap_or_default();
-        let note = words(&format!("{title}\n{body}"));
-        read_answer(&answer, &note).map_err(|err| match err {
-            SuggestError::Unusable(detail) if ran_out => SuggestError::Unusable(
-                format!("the model ran out of room to answer: {detail}").into(),
-            ),
-            other => other,
+        Ok(Written {
+            ran_out: reply.done_reason.as_deref() == Some("length"),
+            content: reply
+                .message
+                .map(|message| message.content)
+                .unwrap_or_default(),
         })
     }
 }
@@ -680,7 +719,7 @@ impl Drop for Suggestion<'_> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
@@ -690,7 +729,7 @@ mod tests {
     /// gets the next reply (an HTTP status and a JSON body; status 0 holds
     /// the connection open for a second without answering). Joining the
     /// handle gives each request received: its first line, then its body.
-    fn fake_ollama(replies: Vec<(u16, String)>) -> (String, JoinHandle<Vec<String>>) {
+    pub(crate) fn fake_ollama(replies: Vec<(u16, String)>) -> (String, JoinHandle<Vec<String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let server = thread::spawn(move || {
@@ -744,7 +783,7 @@ mod tests {
         (base, server)
     }
 
-    fn tags(names: &[&str]) -> String {
+    pub(crate) fn tags(names: &[&str]) -> String {
         let models: Vec<Value> = names
             .iter()
             .map(|name| json!({ "name": name, "capabilities": ["completion"] }))
@@ -752,7 +791,7 @@ mod tests {
         json!({ "models": models }).to_string()
     }
 
-    fn chat(content: &str) -> String {
+    pub(crate) fn chat(content: &str) -> String {
         json!({
             "model": "llama3.2:3b",
             "message": { "role": "assistant", "content": content },
@@ -787,7 +826,7 @@ mod tests {
     }
 
     /// A local address where nothing is listening.
-    fn nothing_listening() -> String {
+    pub(crate) fn nothing_listening() -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         format!("http://{}", listener.local_addr().unwrap())
     }

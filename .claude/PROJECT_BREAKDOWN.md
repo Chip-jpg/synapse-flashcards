@@ -488,6 +488,15 @@ Added in v0.5.0. *Notes* → *Import file* reads a PDF, TXT, MD, DOCX or PPTX an
 - **Limits.** Files up to 50 MB. Text over a note's 100,000 characters is shown with a warning and must be shortened before saving. `.doc`/`.ppt` aren't supported. Suggestions are limited to 12,000 characters, so long imports need splitting before *Suggest cards*.
 - Checked in the real app on Linux, through the GTK file window, with files made by LibreOffice, pandoc and python-pptx. Not yet checked on Windows.
 
+## 4.8 Help with hard cards (memory aids)
+
+Added on branch `claude/nightly-2026-10-19-memory-aids-i9x6j9` (not yet released). The first part of section 14.4.
+
+- **When it's offered.** A card's *Again streak* (`aid::again_streak`) is the number of its latest `review_logs` rows, ordered by `id`, that all have rating 1; any other rating ends it. It counts across sessions and through edits, deletion and restoration, since none of those touch the logs. At `HELP_AFTER_AGAINS` (3) or more, `get_session_card` sends `offerHelp: true` with the card (`againStreak` too), and the review screen offers help once the answer is revealed. The same help is a quiet button on every other card after reveal.
+- **What it is.** A mnemonic, a simpler explanation, an analogy, or the question reframed, written by a local Ollama model from the card's front and back only (`aid.rs`, through `suggest.rs`'s `Ollama::ask`: same address, local-model check and Stop). Help over 1,500 characters, blank, or only repeating a side is refused; for an explanation or a question, words the card never uses are listed.
+- **Drafts only.** Nothing is stored unless the user picks *Add as a note*, which uses `create_note`. No table, no migration, backups unchanged.
+- **Never in the way.** Rating doesn't wait for help; rating replaces the panel and stops a request still running. Without Ollama, review is unchanged.
+
 ______________________________________________________________________
 
 ## 5. FSRS and personalization
@@ -1021,7 +1030,7 @@ The current README is explicit about these gaps.
 - Flashcard generation beyond v0.4.0's local suggestions: no cloud providers, no choice of card count, and no suggestions from notes over 12,000 characters.
 - Summaries.
 - Quizzes.
-- Memory aids.
+- Memory aids beyond help with a card after repeated Agains (section 4.8).
 - Feynman feedback.
 - Socratic tutoring.
 - Local-model setup inside Synapse (Ollama is installed and managed by the user).
