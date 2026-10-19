@@ -574,6 +574,7 @@ Its documented behavior is:
 - List decks compactly with real due counts.
 - Show an All caught up state when nothing is due.
 - Provide access to notes.
+- Show today's count under the intro: reviews recorded since local midnight and the distinct cards they were for ("Today: 12 reviews · 9 cards", or "No reviews yet today"). It counts every `review_logs` row of the day, including cards deleted or decks archived since. The day's bounds are worked out in Rust from the computer's time zone (`study::day_bounds`).
 
 It is not currently a sophisticated recommendation engine. “The first deck with cards due” should not be described as “AI-selected best topic to study.”
 
@@ -701,7 +702,7 @@ For example, hiding a Restore button is useful UX, but the Rust command must sti
 | `commands.rs` | Frontend-facing command layer |
 | `db.rs` | Database location, opening, migration, seeding |
 | `scheduler.rs` | FSRS scheduling calculations |
-| `study.rs` | Deck study data, sessions, recording reviews |
+| `study.rs` | Deck study data, sessions, recording reviews, today's review count |
 | `authoring.rs` | Deck/card creation and lifecycle |
 | `notes.rs` | Note lifecycle and note search |
 | `suggest.rs` | Asking Ollama for suggested cards, and checking them against the note |
@@ -1026,7 +1027,7 @@ The current README is explicit about these gaps.
 
 ### Analytics and personalization
 
-- User-facing statistics.
+- User-facing statistics beyond the Study Desk's count of today's reviews and cards.
 - Streaks.
 - XP.
 - Mastery percentages.

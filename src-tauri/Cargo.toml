@@ -24,7 +24,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
 fsrs = "6.6"
-chrono = { version = "0.4", default-features = false, features = ["std", "now"] }
+# `clock` reads the computer's time zone, for the Study Desk's "today".
+chrono = { version = "0.4", default-features = false, features = ["std", "now", "clock"] }
 # Export packaging (Slice 6). Only the one deflate backend is enabled: it
 # reuses the `flate2` already in the tree, and skips `zopfli`, the AES/bzip2/
 # lzma/zstd codecs, and the date/time integrations we never write or read.

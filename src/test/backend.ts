@@ -74,6 +74,7 @@ export function fakeBackend(overrides: Record<string, Handler> = {}) {
 
   const handlers: Record<string, Handler> = {
     get_decks: () => [summary],
+    get_today: () => ({ reviews: 0, cards: 0 }),
     get_deck_detail: () => deck,
     get_archived_decks: () => [],
     get_notes: () => [noteSummary],

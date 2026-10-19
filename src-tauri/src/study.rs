@@ -17,7 +17,7 @@
 //! the same transaction, and migration 0006 refuses to open one in an archived
 //! deck, so an open session always belongs to an active deck.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveTime, TimeDelta, TimeZone, Utc};
 use fsrs::MemoryState;
 use sqlx::{SqliteConnection, SqlitePool};
 
@@ -473,12 +473,77 @@ pub async fn record_review(
     Ok(())
 }
 
+/// Today's reviewing for the Study Desk: `{ reviews, cards }`.
+///
+/// `reviews` counts every rating recorded today (rows in `review_logs`), and
+/// `cards` how many different cards those ratings were for. A card rated
+/// Again and then Good is two reviews of one card, so the two numbers are
+/// kept apart rather than shown as the same thing.
+///
+/// Every rating made today counts, because it happened: ratings of cards
+/// deleted since, of cards in a deck archived since, and of the sample deck.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, sqlx::FromRow)]
+pub struct TodaySummary {
+    pub reviews: i64,
+    pub cards: i64,
+}
+
+/// The calendar day `now` falls on in `zone`, as UTC instants: the day runs
+/// from the first instant (inclusive) to the second (exclusive).
+///
+/// The bounds come from the zone's own rules for that date, so a day with a
+/// clock change is 23 or 25 hours long, as it is on the user's clock.
+pub fn day_bounds<Tz: TimeZone>(now: DateTime<Utc>, zone: &Tz) -> (DateTime<Utc>, DateTime<Utc>) {
+    let today = now.with_timezone(zone).date_naive();
+    let start = start_of_day(today, zone);
+    let end = today
+        .succ_opt()
+        .map_or(DateTime::<Utc>::MAX_UTC, |tomorrow| {
+            start_of_day(tomorrow, zone)
+        });
+    (start, end)
+}
+
+/// When `day` begins in `zone`: midnight, or, where a clock change skips
+/// midnight, the first minute that exists that day. If midnight happens twice
+/// (the clocks went back to it), the day begins at the first.
+fn start_of_day<Tz: TimeZone>(day: NaiveDate, zone: &Tz) -> DateTime<Utc> {
+    let midnight = day.and_time(NaiveTime::MIN);
+    (0..24 * 60)
+        .find_map(|minute| {
+            zone.from_local_datetime(&(midnight + TimeDelta::minutes(minute)))
+                .earliest()
+        })
+        .map_or_else(|| midnight.and_utc(), |start| start.with_timezone(&Utc))
+}
+
+/// How many reviews were recorded on `now`'s calendar day in `zone`, and for
+/// how many different cards. See [`TodaySummary`].
+pub async fn today<Tz: TimeZone>(
+    pool: &SqlitePool,
+    now: DateTime<Utc>,
+    zone: &Tz,
+) -> Result<TodaySummary, sqlx::Error> {
+    let (start, end) = day_bounds(now, zone);
+    // `reviewed_at` is always written by `to_db_time`, so comparing the text
+    // compares the times.
+    sqlx::query_as::<_, TodaySummary>(
+        "SELECT COUNT(*) AS reviews, COUNT(DISTINCT card_id) AS cards
+         FROM review_logs
+         WHERE reviewed_at >= ?1 AND reviewed_at < ?2",
+    )
+    .bind(to_db_time(start))
+    .bind(to_db_time(end))
+    .fetch_one(pool)
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::test_support::*;
     use crate::db::{migrate_and_seed, open_file};
-    use chrono::TimeDelta;
+    use chrono::{FixedOffset, LocalResult, NaiveDateTime};
 
     const NOW: &str = "2026-09-15T12:00:00Z";
 
@@ -982,6 +1047,210 @@ mod tests {
             pool.close().await;
 
             let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    /// UTC-3, until the clocks go forward an hour at local midnight on
+    /// 2026-10-18 (03:00 UTC), skipping 00:00–00:59 that night. Brazil used
+    /// to change its clocks at midnight like this.
+    #[derive(Clone, Copy)]
+    struct MidnightChange;
+
+    impl MidnightChange {
+        const CHANGE: &str = "2026-10-18T03:00:00Z";
+
+        fn before() -> FixedOffset {
+            FixedOffset::west_opt(3 * 3600).unwrap()
+        }
+
+        fn after() -> FixedOffset {
+            FixedOffset::west_opt(2 * 3600).unwrap()
+        }
+
+        /// The UTC time `local` would be at `offset`.
+        fn utc(local: &NaiveDateTime, offset: FixedOffset) -> NaiveDateTime {
+            *local - TimeDelta::seconds(i64::from(offset.local_minus_utc()))
+        }
+    }
+
+    impl TimeZone for MidnightChange {
+        type Offset = FixedOffset;
+
+        fn from_offset(_: &FixedOffset) -> Self {
+            MidnightChange
+        }
+
+        fn offset_from_local_date(&self, local: &NaiveDate) -> LocalResult<FixedOffset> {
+            self.offset_from_local_datetime(&local.and_time(NaiveTime::MIN))
+        }
+
+        fn offset_from_local_datetime(&self, local: &NaiveDateTime) -> LocalResult<FixedOffset> {
+            let change = at(Self::CHANGE).naive_utc();
+            let before = Self::utc(local, Self::before()) < change;
+            let after = Self::utc(local, Self::after()) >= change;
+            match (before, after) {
+                (true, true) => LocalResult::Ambiguous(Self::before(), Self::after()),
+                (true, false) => LocalResult::Single(Self::before()),
+                (false, true) => LocalResult::Single(Self::after()),
+                (false, false) => LocalResult::None,
+            }
+        }
+
+        fn offset_from_utc_date(&self, utc: &NaiveDate) -> FixedOffset {
+            self.offset_from_utc_datetime(&utc.and_time(NaiveTime::MIN))
+        }
+
+        fn offset_from_utc_datetime(&self, utc: &NaiveDateTime) -> FixedOffset {
+            if *utc < at(Self::CHANGE).naive_utc() {
+                Self::before()
+            } else {
+                Self::after()
+            }
+        }
+    }
+
+    fn bounds<Tz: TimeZone>(now: &str, zone: &Tz) -> (String, String) {
+        let (start, end) = day_bounds(at(now), zone);
+        (to_db_time(start), to_db_time(end))
+    }
+
+    fn pair(start: &str, end: &str) -> (String, String) {
+        (start.into(), end.into())
+    }
+
+    fn summary(reviews: i64, cards: i64) -> TodaySummary {
+        TodaySummary { reviews, cards }
+    }
+
+    #[test]
+    fn the_day_runs_from_local_midnight_to_local_midnight() {
+        assert_eq!(
+            bounds("2026-09-15T12:00:00Z", &Utc),
+            pair("2026-09-15T00:00:00.000Z", "2026-09-16T00:00:00.000Z")
+        );
+        // Midnight itself starts the new day; the instant before ends the old.
+        assert_eq!(
+            bounds("2026-09-16T00:00:00Z", &Utc),
+            pair("2026-09-16T00:00:00.000Z", "2026-09-17T00:00:00.000Z")
+        );
+        assert_eq!(
+            bounds("2026-09-15T23:59:59.999Z", &Utc),
+            pair("2026-09-15T00:00:00.000Z", "2026-09-16T00:00:00.000Z")
+        );
+    }
+
+    #[test]
+    fn the_day_follows_the_local_offset_not_utc() {
+        let tokyo = FixedOffset::east_opt(9 * 3600).unwrap();
+        // 23:59 on the 15th in Tokyo, though UTC is still in the afternoon.
+        assert_eq!(
+            bounds("2026-09-15T14:59:00Z", &tokyo),
+            pair("2026-09-14T15:00:00.000Z", "2026-09-15T15:00:00.000Z")
+        );
+        // A minute later it's the 16th in Tokyo, while UTC is still the 15th.
+        assert_eq!(
+            bounds("2026-09-15T15:00:00Z", &tokyo),
+            pair("2026-09-15T15:00:00.000Z", "2026-09-16T15:00:00.000Z")
+        );
+
+        let new_york = FixedOffset::west_opt(4 * 3600).unwrap();
+        // 22:30 on the 15th in New York is already the 16th in UTC.
+        assert_eq!(
+            bounds("2026-09-16T02:30:00Z", &new_york),
+            pair("2026-09-15T04:00:00.000Z", "2026-09-16T04:00:00.000Z")
+        );
+
+        let kolkata = FixedOffset::east_opt(5 * 3600 + 1800).unwrap();
+        assert_eq!(
+            bounds("2026-09-15T18:29:00Z", &kolkata),
+            pair("2026-09-14T18:30:00.000Z", "2026-09-15T18:30:00.000Z")
+        );
+    }
+
+    #[test]
+    fn a_day_whose_midnight_is_skipped_starts_when_the_clocks_resume() {
+        // Local midnight on the 18th never happens; the day starts at 01:00
+        // and is 23 hours long.
+        assert_eq!(
+            bounds("2026-10-18T15:00:00Z", &MidnightChange),
+            pair("2026-10-18T03:00:00.000Z", "2026-10-19T02:00:00.000Z")
+        );
+        // The evening before is an ordinary 24-hour day, ending at the change.
+        assert_eq!(
+            bounds("2026-10-18T02:59:59Z", &MidnightChange),
+            pair("2026-10-17T03:00:00.000Z", "2026-10-18T03:00:00.000Z")
+        );
+    }
+
+    /// Appends a review of `card` at `when`, as `record_review` would.
+    async fn log_review(pool: &SqlitePool, card: i64, when: &str) {
+        sqlx::query(
+            "INSERT INTO review_logs (card_id, rating, state_before, scheduled_days,
+                                      elapsed_days, stability_after, difficulty_after, reviewed_at)
+             VALUES (?1, 3, 'New', 1.0, 0.0, 2.0, 5.0, ?2)",
+        )
+        .bind(card)
+        .bind(to_db_time(at(when)))
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[test]
+    fn today_counts_reviews_and_distinct_cards_within_the_local_day() {
+        tauri::async_runtime::block_on(async {
+            let (pool, _) = seeded().await;
+            let tokyo = FixedOffset::east_opt(9 * 3600).unwrap();
+            // The 16th in Tokyo: from 2026-09-15T15:00Z up to 2026-09-16T15:00Z.
+            let now = at("2026-09-16T03:00:00Z");
+            assert_eq!(today(&pool, now, &tokyo).await.unwrap(), summary(0, 0));
+
+            let deck = add_deck(&pool, "Other").await;
+            let first = add_card(&pool, deck, None).await;
+            let second = add_card(&pool, deck, None).await;
+            log_review(&pool, first, "2026-09-15T14:59:59.999Z").await; // 23:59 on the 15th
+            log_review(&pool, first, "2026-09-15T15:00:00Z").await; // 00:00 on the 16th
+            log_review(&pool, first, "2026-09-15T15:10:00Z").await;
+            log_review(&pool, second, "2026-09-16T14:59:59.999Z").await; // 23:59 on the 16th
+            log_review(&pool, second, "2026-09-16T15:00:00Z").await; // 00:00 on the 17th
+
+            assert_eq!(today(&pool, now, &tokyo).await.unwrap(), summary(3, 2));
+            // The same reviews, counted on the 15th in UTC instead.
+            let utc_day = at("2026-09-15T12:00:00Z");
+            assert_eq!(today(&pool, utc_day, &Utc).await.unwrap(), summary(3, 1));
+        });
+    }
+
+    #[test]
+    fn today_still_counts_reviews_of_cards_deleted_or_archived_since() {
+        tauri::async_runtime::block_on(async {
+            let (pool, sample) = seeded().await;
+            let now = at(NOW);
+            let session = start(&pool, sample, now).await;
+            record_review(&pool, session, 1, 0, Rating::Good, now)
+                .await
+                .unwrap();
+            assert_eq!(today(&pool, now, &Utc).await.unwrap(), summary(1, 1));
+
+            let deck = add_deck(&pool, "Other").await;
+            let deleted = add_card(&pool, deck, None).await;
+            let archived = add_card(&pool, deck, None).await;
+            log_review(&pool, deleted, NOW).await;
+            log_review(&pool, archived, NOW).await;
+            sqlx::query("UPDATE flashcards SET deleted_at = ?1 WHERE id = ?2")
+                .bind(to_db_time(now))
+                .bind(deleted)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("UPDATE decks SET archived_at = ?1 WHERE id = ?2")
+                .bind(to_db_time(now))
+                .bind(deck)
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            assert_eq!(today(&pool, now, &Utc).await.unwrap(), summary(3, 3));
         });
     }
 }
