@@ -212,6 +212,41 @@ export function getToday(): Promise<TodaySummary> {
   return invoke<TodaySummary>("get_today");
 }
 
+/** Mirrors `DayCount` in `src-tauri/src/stats.rs`: a local date (`YYYY-MM-DD`) and a count. */
+export type DayCount = {
+  day: string;
+  count: number;
+};
+
+/**
+ * Mirrors `Statistics` in `src-tauri/src/stats.rs`. Days are calendar days on
+ * this computer's clock.
+ */
+export type Statistics = {
+  /** Ratings recorded on each of the last 30 days, oldest first, ending today. */
+  reviewsByDay: DayCount[];
+  /**
+   * Reviews in the last 30 days of cards that were in the Review state, and
+   * how many of them weren't rated Again.
+   */
+  retention: { reviews: number; recalled: number };
+  /** Current cards (not deleted, in active decks) in each FSRS state. */
+  cardStates: { new: number; learning: number; review: number; relearning: number };
+  /**
+   * Cards due on each of the next 14 days, starting today. Today also holds
+   * cards already overdue and new cards not yet studied.
+   */
+  forecast: DayCount[];
+};
+
+/**
+ * The Statistics screen's numbers, for every deck or only `deckId` (an active
+ * deck). Reads only. Refused as stale if that deck was archived since.
+ */
+export function getStatistics(deckId: number | null): Promise<Statistics> {
+  return invoke<Statistics>("get_statistics", { deckId });
+}
+
 /** Every archived deck, most recently archived first. */
 export function getArchivedDecks(): Promise<ArchivedDeck[]> {
   return invoke<ArchivedDeck[]>("get_archived_decks");
