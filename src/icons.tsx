@@ -129,6 +129,16 @@ export function DeskIcon() {
   );
 }
 
+/** Bars rising from a baseline: statistics. */
+export function ChartIcon() {
+  return (
+    <Icon>
+      <path d="M4 20h16" />
+      <path d="M7 16v-4M12 16V7M17 16v-6" />
+    </Icon>
+  );
+}
+
 /** Stacked cards: a deck. */
 export function DeckIcon() {
   return (

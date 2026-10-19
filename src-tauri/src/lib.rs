@@ -8,6 +8,7 @@ mod import;
 mod notes;
 mod optimizer;
 mod scheduler;
+mod stats;
 mod study;
 mod suggest;
 
@@ -39,6 +40,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_decks,
             commands::get_today,
+            commands::get_statistics,
             commands::get_archived_decks,
             commands::start_session,
             commands::get_session_card,
@@ -51,6 +53,8 @@ pub fn run() {
             commands::delete_flashcard,
             commands::restore_flashcard,
             commands::restore_deleted_cards,
+            commands::delete_flashcards,
+            commands::move_flashcards,
             commands::rename_deck,
             commands::archive_deck,
             commands::unarchive_deck,

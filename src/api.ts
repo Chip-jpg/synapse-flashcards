@@ -212,6 +212,41 @@ export function getToday(): Promise<TodaySummary> {
   return invoke<TodaySummary>("get_today");
 }
 
+/** Mirrors `DayCount` in `src-tauri/src/stats.rs`: a local date (`YYYY-MM-DD`) and a count. */
+export type DayCount = {
+  day: string;
+  count: number;
+};
+
+/**
+ * Mirrors `Statistics` in `src-tauri/src/stats.rs`. Days are calendar days on
+ * this computer's clock.
+ */
+export type Statistics = {
+  /** Ratings recorded on each of the last 30 days, oldest first, ending today. */
+  reviewsByDay: DayCount[];
+  /**
+   * Reviews in the last 30 days of cards that were in the Review state, and
+   * how many of them weren't rated Again.
+   */
+  retention: { reviews: number; recalled: number };
+  /** Current cards (not deleted, in active decks) in each FSRS state. */
+  cardStates: { new: number; learning: number; review: number; relearning: number };
+  /**
+   * Cards due on each of the next 14 days, starting today. Today also holds
+   * cards already overdue and new cards not yet studied.
+   */
+  forecast: DayCount[];
+};
+
+/**
+ * The Statistics screen's numbers, for every deck or only `deckId` (an active
+ * deck). Reads only. Refused as stale if that deck was archived since.
+ */
+export function getStatistics(deckId: number | null): Promise<Statistics> {
+  return invoke<Statistics>("get_statistics", { deckId });
+}
+
 /** Every archived deck, most recently archived first. */
 export function getArchivedDecks(): Promise<ArchivedDeck[]> {
   return invoke<ArchivedDeck[]>("get_archived_decks");
@@ -303,6 +338,38 @@ export type RestoredCards = {
  */
 export function restoreDeletedCards(deckId: number, expected: number): Promise<RestoredCards> {
   return invoke<RestoredCards>("restore_deleted_cards", { deckId, expected });
+}
+
+/** Mirrors `ChangedCards` in `src-tauri/src/authoring.rs`. */
+export type ChangedCards = {
+  /** How many cards were deleted or moved. */
+  changed: number;
+  /** The deck they were selected in, now without them. */
+  deck: DeckDetail;
+};
+
+/**
+ * Soft-deletes several cards of a deck at once, each exactly as
+ * `deleteFlashcard` deletes one. `cardIds` are the cards the user confirmed.
+ * Rejects with kind "stale", having written nothing, if any of them is no
+ * longer an active card of the deck, or the deck was archived meanwhile.
+ */
+export function deleteFlashcards(deckId: number, cardIds: number[]): Promise<ChangedCards> {
+  return invoke<ChangedCards>("delete_flashcards", { deckId, cardIds });
+}
+
+/**
+ * Moves several cards of a deck into another active normal deck. Each keeps
+ * its id, text, FSRS state, due date, counts, and review history. Rejects with
+ * kind "stale", having written nothing, if any card is no longer an active
+ * card of `deckId`, or either deck can no longer take the change.
+ */
+export function moveFlashcards(
+  deckId: number,
+  cardIds: number[],
+  toDeckId: number,
+): Promise<ChangedCards> {
+  return invoke<ChangedCards>("move_flashcards", { deckId, cardIds, toDeckId });
 }
 
 /** Renames an active normal deck (Rust trims and validates the name); resolves with the deck. */
