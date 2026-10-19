@@ -23,7 +23,7 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Read the version
         id: version
@@ -53,15 +53,14 @@ jobs:
           if ($LASTEXITCODE -eq 0) { throw "$tag already exists." }
           exit 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
 
+      # Installs the version, profile and components pinned in rust-toolchain.toml.
       - name: Install Rust
-        run: |
-          rustup toolchain install stable --profile minimal --component clippy,rustfmt
-          rustup default stable
+        run: rustup toolchain install
 
       - name: Install dependencies
         run: npm ci

@@ -1213,9 +1213,10 @@ Things to know:
 
 - A run that fails before the last step builds, tags and publishes nothing, so it can be fixed and run again.
 - v0.3.2's first run stopped at the version check, on a PowerShell quirk: `package-lock.json` has an empty key, which needs `ConvertFrom-Json -AsHashtable`. The fix went into the commit that was then released.
-- v0.5.0's first run stopped at Clippy. The workflow installs the latest stable Rust (1.99 then), whose clippy had a lint (`chunks_exact_to_as_chunks`) that the 1.97 used locally didn't. The fix (#11) is the commit that was released. Before a release, run clippy with the latest stable (`rustup toolchain install stable`, then `cargo +stable clippy …`), or pin the toolchain in `rust-toolchain.toml`.
+- v0.5.0's first run stopped at Clippy. The workflow installs the latest stable Rust (1.99 then), whose clippy had a lint (`chunks_exact_to_as_chunks`) that the 1.97 used locally didn't. The fix (#11) is the commit that was released. Since then `rust-toolchain.toml` pins the toolchain (1.99.1) for local builds and both workflows, so a new stable release can't change the lints. Moving to a newer Rust is a deliberate edit to that file.
 - The workflow creates a lightweight tag. v0.3.0 and v0.3.1 were annotated tags.
-- GitHub warns that `actions/checkout@v4` and `actions/setup-node@v4` target Node 20. GitHub now forces them onto Node 24 (seen in the v0.4.0 run), and they should be moved to v5.
+- `actions/checkout` and `actions/setup-node` are on v5 (v4 targeted Node 20).
+- A **Checks** workflow (`.github/workflows/checks.yml`) runs the same checks, plus `npm run build`, on every pull request, on `windows-latest` with the pinned toolchain. It builds no installers.
 - The installers are still unsigned.
 
 ______________________________________________________________________
