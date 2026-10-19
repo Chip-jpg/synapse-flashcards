@@ -542,9 +542,20 @@ Added after v0.6.0 (nightly round of 2026-10-19; not yet released). *Settings* â
 - **Applying** is only allowed when the fit predicts better, and is refused as stale if the parameters in use changed meanwhile. Each apply or *Reset to defaults* appends a row to `fsrs_parameters` (migration `0011`, rows never updated or deleted); the newest row is in use.
 - **Future ratings only.** `study::record_review` reads the parameters in use for each rating. No stored schedule or review log is rewritten.
 - **Bounded.** Fitting runs on a blocking thread; *Stop*, leaving the screen, or another run aborts it, and it stops after 120 seconds.
-- **Not established:** the evaluation is on the same reviews the parameters were fitted to (as Anki does); no per-deck parameters, no desired-retention setting, no automatic re-fitting. It hasn't been tried on a real long review history, only on generated ones in tests.
+- **Not established:** the evaluation is on the same reviews the parameters were fitted to (as Anki does); no per-deck parameters, no automatic re-fitting. It hasn't been tried on a real long review history, only on generated ones in tests.
 
 The older spec's policy (review-count doubling, daily cap) was not adopted: optimizing happens only when the user asks.
+
+#### Desired retention
+
+Added on branch `claude/nightly-2026-10-19-desired-retention-rcpjv1` (round 3 of 2026-10-19; not yet released). Before it, FSRS always aimed for 90%. *Settings* â†’ *Desired retention* (`Retention.tsx`, `retention.rs`).
+
+- **Values.** Whole percentages from 70 to 97 (`MIN_PERCENT`, `MAX_PERCENT`); 90 until changed. One global value, and an optional own value per active, ordinary deck, set on the Settings screen. The Sample deck and archived decks follow the global value; an archived deck's own value is kept and applies again once it's unarchived.
+- **Stored append-only** in `desired_retention` (migration `0014`): `deck_id` NULL for the global value, `percent` NULL for a deck going back to the global value. Triggers refuse updates, deletes, and rows for the Sample deck, archived or missing decks. The newest row per scope is in use; the table's newest id is the version every change checks, so changes are refused as stale like `apply_parameters`.
+- **Future ratings only.** `study::record_review` reads the card's deck value (`retention::for_deck`) for each rating and passes it to `scheduler::review`. No stored schedule or review log is rewritten. The optimizer's interval comparison uses the global value.
+- **Estimate before applying.** *Estimate reviews* (`preview_retention`) runs `fsrs::simulate` over every active card in active decks, with the parameters in use, for 90 days, averaged over 4 fixed seeds, once at the values in use and once with the change. It shows reviews a day on average (first reviews included) and cards remembered on day 90. Ratings follow the user's own shares once there are 50 first ratings and 50 remembered reviews, else FSRS's averages. *Apply* appears only with an estimate. Nothing is written by estimating.
+- **Not established:** the estimate assumes every due card is reviewed each day and no new cards are added, rounds intervals to whole days, and doesn't count same-day repeats after *Again* (Synapse can schedule those). It hasn't been compared with a real long review history.
+- **Backups.** A backup made after 0014 has schema 14; an older Synapse (v0.7.0, schema 11) refuses it as newer than it knows. A v0.7.0 backup restores with 90% everywhere.
 
 The older technical spec proposes an optimizer policy with a minimum review count, a review-count-doubling condition, and a daily cap. Those are project proposals, not a guarantee of appropriate behavior or a shipped capability. They should be revisited against the actual library and available data before implementation.
 
@@ -702,6 +713,7 @@ Current README identifies these main files:
 | `ArchivedDecks.tsx` | Archived-deck recovery |
 | `Backup.tsx` | Export and restore |
 | `Settings.tsx` | Settings: personal FSRS parameters (optimize, compare, apply, reset) |
+| `Retention.tsx` | Settings: desired retention for all decks and per deck, with an estimate before applying |
 | `CardsCsv.tsx` | Importing cards from a CSV/TSV file into a deck and exporting a deck's cards, on the Backup & restore screen |
 | `App.css` | Shared visual tokens and presentation |
 | `forms.tsx` | Shared form fields and saving (one save at a time, field errors) |
@@ -722,6 +734,7 @@ For example, hiding a Restore button is useful UX, but the Rust command must sti
 | `db.rs` | Database location, opening, migration, seeding |
 | `scheduler.rs` | FSRS scheduling calculations |
 | `optimizer.rs` | Fitting FSRS parameters to the review history, and which parameters are in use |
+| `retention.rs` | The desired retention, globally and per deck, and estimating its reviews with FSRS's simulator |
 | `study.rs` | Deck study data, sessions, recording reviews, today's review count |
 | `stats.rs` | Read-only statistics: 30 days of reviews, true retention, cards by state, 14-day due forecast |
 | `authoring.rs` | Deck/card creation and lifecycle |
@@ -873,6 +886,7 @@ The project history gives this high-level progression:
 | `0009` | Deck unarchive |
 | `0010` | Card restore |
 | `0011` | FSRS parameters fitted to the user's history (append-only) |
+| `0014` | Desired retention, global and per deck (append-only) |
 
 The first seven are described in the original specification. The final three are established by your later feature reports and repository history.
 
@@ -1054,7 +1068,7 @@ The current README is explicit about these gaps.
 - Streaks.
 - XP.
 - Mastery percentages.
-- Per-deck FSRS parameters or automatic re-fitting (one global set, fitted on request since the 2026-10-19 round).
+- Per-deck FSRS parameters or automatic re-fitting (one global set, fitted on request since the 2026-10-19 round). Desired retention can be set globally and per deck (section 5.3).
 
 
 ### UX and testing

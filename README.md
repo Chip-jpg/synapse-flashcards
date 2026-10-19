@@ -29,6 +29,11 @@ migrations, validation, scheduling, and every business rule; React only calls ty
   once there are at least 400 reviews to learn from. Synapse shows how well the parameters in use
   and the fitted ones predict your reviews, and how the intervals would change; nothing changes
   until you apply them, and then only future ratings use them. *Reset to defaults* goes back.
+- **Desired retention** — also under *Settings*, choose the chance of remembering a card FSRS
+  aims for when it's due, from 70% to 97% (90% unless you change it), for all decks and, if you
+  like, for single decks. Before you apply a value, Synapse estimates your reviews a day over the
+  next 90 days at the value in use and at the chosen one, by simulating your own cards with
+  FSRS's simulator. Only future ratings use the new value; due dates already set stay.
 - **History is kept** — deleting a card, archiving a deck, and deleting a note are all *soft*: the
   rows stay in the database, a card keeps its FSRS state and review log, and a note keeps its text
   and its times. Every one of them can be brought back: a deleted card restored, an archived deck
@@ -318,10 +323,13 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
 - **No sync, accounts, cloud, or collaboration.** By design.
 - **Personal scheduling is all or nothing.** One set of parameters is fitted to every review ever
   recorded (deleted cards and archived decks included) and used for every deck; there's no
-  per-deck set, no choice of desired retention (always 90%), and no automatic re-fitting: you
-  optimize again yourself. Fitted parameters apply only to ratings made afterwards; cards already
+  per-deck set and no automatic re-fitting: you optimize again yourself. Fitted parameters apply only to ratings made afterwards; cards already
   scheduled keep their due dates. Fitted parameters are only offered when they predict your own
   reviews better than the ones in use, measured on those same reviews.
+- **Desired retention estimates are estimates.** They simulate your cards with the parameters in
+  use and how often you choose each rating (FSRS's averages until there are 50 of each kind),
+  assuming you review everything due and add no new cards; same-day repeats after *Again* aren't
+  counted. The sample deck and archived decks always follow the value for all decks.
 - **One card type.** Front/back text only: no images, audio, cloze, or tags.
 - **Card search is per deck, and bulk actions are delete and move.** Searching cards is exact
   text within one deck's active cards; there's no search across decks or of deleted cards, no
@@ -373,6 +381,8 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   - `optimizer.rs` — fitting FSRS's parameters to the review history (off the UI thread, stoppable,
     and stopped after two minutes), and which parameters are in use. Each apply or reset is a new
     row in `fsrs_parameters`; nothing already scheduled is rewritten.
+  - `retention.rs` — the desired retention for all decks and each deck, and estimating its
+    reviews with FSRS's simulator. Each change is a new row in `desired_retention`.
   - `study.rs` — the deck dashboard, review sessions, recording reviews, and today's count.
   - `stats.rs` — the Statistics screen's numbers, read from the review log and the cards. It
     writes nothing.
@@ -387,5 +397,5 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
     started with `--read-pdf-text`, see `main.rs`). `tests/pdf_helper.rs` runs the real binary as
     the helper.
   - `export.rs` / `import.rs` — writing a `.zip` backup, and checking and restoring one.
-- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0011`), embedded in the
+- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0011`, `0014`), embedded in the
   binary at compile time.
