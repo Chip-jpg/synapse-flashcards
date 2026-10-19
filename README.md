@@ -2,7 +2,7 @@
 
 A local-first desktop flashcard app. Everything lives in one SQLite file on your own machine: no
 account, no server, and nothing sent over the internet. Reviews are scheduled with [FSRS](https://github.com/open-spaced-repetition/fsrs-rs)
-using its default parameters. If you run [Ollama](https://ollama.com) on the same computer, a model
+using its default parameters, or ones fitted to your own review history if you choose. If you run [Ollama](https://ollama.com) on the same computer, a model
 there can suggest cards from your notes; Synapse talks to nothing else.
 
 Tauri 2 + React + TypeScript on the front, Rust + `sqlx` on the back. Rust owns the database,
@@ -21,6 +21,10 @@ migrations, validation, scheduling, and every business rule; React only calls ty
   every rating is appended to `review_logs`.
 - **Today** — the Study Desk shows how many reviews you've recorded today and for how many
   different cards (*Today: 12 reviews · 9 cards*), counted since midnight on your computer's clock.
+- **Personal scheduling** — under *Settings*, fit FSRS's parameters to your own review history
+  once there are at least 400 reviews to learn from. Synapse shows how well the parameters in use
+  and the fitted ones predict your reviews, and how the intervals would change; nothing changes
+  until you apply them, and then only future ratings use them. *Reset to defaults* goes back.
 - **History is kept** — deleting a card, archiving a deck, and deleting a note are all *soft*: the
   rows stay in the database, a card keeps its FSRS state and review log, and a note keeps its text
   and its times. Every one of them can be brought back: a deleted card restored, an archived deck
@@ -266,8 +270,12 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   deleting a note leaves its cards exactly where they are. A deleted note is listed by title and
   dates only; there's no way to read its text again without restoring it.
 - **No sync, accounts, cloud, or collaboration.** By design.
-- **Default FSRS parameters only.** The optimizer that re-fits weights to your own history is
-  future work and isn't built.
+- **Personal scheduling is all or nothing.** One set of parameters is fitted to every review ever
+  recorded (deleted cards and archived decks included) and used for every deck; there's no
+  per-deck set, no choice of desired retention (always 90%), and no automatic re-fitting: you
+  optimize again yourself. Fitted parameters apply only to ratings made afterwards; cards already
+  scheduled keep their due dates. Fitted parameters are only offered when they predict your own
+  reviews better than the ones in use, measured on those same reviews.
 - **One card type.** Front/back text only: no images, audio, cloze, or tags.
 - **No card search, bulk actions, or folders.** Only notes can be searched.
 - **Statistics are one daily count.** The Study Desk counts today's reviews and the different
@@ -295,7 +303,8 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
 - **`src/`** — the React UI. `api.ts` is the only file that calls Rust, through typed Tauri
   commands (and the window, to hold it open while something is unsaved). `Shell.tsx` is the
   sidebar and the bar above each screen. The screens are `Dashboard.tsx` (the Study Desk),
-  `DeckDetail.tsx`, `ReviewSession.tsx`, `Notes.tsx`, `ArchivedDecks.tsx`, and `Backup.tsx`;
+  `DeckDetail.tsx`, `ReviewSession.tsx`, `Notes.tsx`, `ArchivedDecks.tsx`, `Backup.tsx`, and
+  `Settings.tsx`;
   `SuggestCards.tsx` is the note screen's *Suggest cards*, and `noteParts.ts` splits a note too
   long to suggest from whole into parts.
   `unsaved.tsx` tracks which form holds unsaved text and asks before it's discarded. Tests sit
@@ -305,6 +314,9 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   - `commands.rs` — the Tauri commands, the only way the frontend reaches the core.
   - `db.rs` — where the database lives, opening it, running migrations, and the one-time seed.
   - `scheduler.rs` — FSRS scheduling via the `fsrs` crate, with no database access.
+  - `optimizer.rs` — fitting FSRS's parameters to the review history (off the UI thread, stoppable,
+    and stopped after two minutes), and which parameters are in use. Each apply or reset is a new
+    row in `fsrs_parameters`; nothing already scheduled is rewritten.
   - `study.rs` — the deck dashboard, review sessions, recording reviews, and today's count.
   - `authoring.rs` — creating, renaming, archiving, and unarchiving decks; adding, editing,
     deleting, and restoring cards.
@@ -315,5 +327,5 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
     started with `--read-pdf-text`, see `main.rs`). `tests/pdf_helper.rs` runs the real binary as
     the helper.
   - `export.rs` / `import.rs` — writing a `.zip` backup, and checking and restoring one.
-- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0010`), embedded in the
+- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0011`), embedded in the
   binary at compile time.

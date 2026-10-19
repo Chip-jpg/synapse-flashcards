@@ -6,6 +6,7 @@ mod export;
 pub mod extract;
 mod import;
 mod notes;
+mod optimizer;
 mod scheduler;
 mod study;
 mod suggest;
@@ -23,6 +24,8 @@ pub fn run() {
         .manage(import::ImportState::default())
         // The card suggestion Ollama is working on, so it can be stopped.
         .manage(suggest::Suggesting::default())
+        // Fitting FSRS parameters, so it can be stopped, and its result.
+        .manage(optimizer::Optimizing::default())
         .setup(|app| {
             // A backup checked in an earlier run but never confirmed or
             // cancelled (the window closed while Synapse asked) can't be
@@ -66,7 +69,12 @@ pub fn run() {
             commands::import_file,
             commands::get_models,
             commands::suggest_cards,
-            commands::stop_suggesting
+            commands::stop_suggesting,
+            commands::get_scheduling,
+            commands::optimize_parameters,
+            commands::stop_optimizing,
+            commands::apply_parameters,
+            commands::reset_parameters
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -19,6 +19,7 @@ use crate::export::{self, ExportError};
 use crate::extract::{self, ExtractError, ExtractedText, FileKind};
 use crate::import::{self, ImportError, ImportState, RestoreError};
 use crate::notes::{self, DeletedNote, InvalidNote, Note, NoteError, NoteSummary};
+use crate::optimizer::{self, IntervalChange, Optimized, OptimizerError, Optimizing, Settings};
 use crate::scheduler::Rating;
 use crate::study::{self, DeckSummary, SessionCard, StartedSession, StudyError, TodaySummary};
 use crate::suggest::{self, NotePart, Ollama, SuggestError, SuggestedCard, Suggesting};
@@ -1308,6 +1309,7 @@ pub async fn confirm_import(
     app: AppHandle,
     database: State<'_, Database>,
     imports: State<'_, ImportState>,
+    optimizing: State<'_, Optimizing>,
     token: u64,
 ) -> Result<(), CommandError> {
     let (db_path, workspace) = import_paths(&app)?;
@@ -1330,6 +1332,9 @@ pub async fn confirm_import(
 
     // Whatever happened, the checked copy is now the database or not needed.
     import::discard_staged(&workspace);
+    // Parameters fitted to the history that was just replaced don't belong
+    // to the restored one.
+    optimizing.forget();
     result
 }
 
@@ -1347,6 +1352,159 @@ pub async fn cancel_import(
         import::discard_staged(&workspace);
     }
     Ok(())
+}
+
+/// Turns a failed optimization, apply, or reset into a user-safe error,
+/// logging internal detail.
+fn optimizer_error(err: OptimizerError, context: &str, failed: &'static str) -> CommandError {
+    match err {
+        OptimizerError::NotEnoughReviews => CommandError::invalid(
+            "There aren't enough reviews yet to fit FSRS to your history. Keep reviewing and \
+             try again later.",
+        ),
+        OptimizerError::Stale => CommandError::stale(
+            "The scheduling parameters changed since this was shown. Synapse has reloaded them.",
+        ),
+        OptimizerError::NotBetter => CommandError::invalid(
+            "These parameters don't predict your reviews better than the ones in use, so they \
+             weren't applied.",
+        ),
+        OptimizerError::TimedOut => CommandError::failed(
+            "Optimizing took too long, so Synapse stopped it. Nothing was changed.",
+        ),
+        OptimizerError::Internal(detail) => {
+            eprintln!("[synapse] {context} failed: {detail}");
+            CommandError::failed(failed)
+        }
+    }
+}
+
+/// The scheduling settings: which FSRS parameters are in use, and how many
+/// reviews an optimization could learn from. Returns [`Settings`].
+#[tauri::command]
+pub async fn get_scheduling(
+    app: AppHandle,
+    database: State<'_, Database>,
+) -> Result<Settings, CommandError> {
+    let pool = pool(&app, &database).await?;
+    optimizer::settings(&pool).await.map_err(|err| {
+        eprintln!("[synapse] loading scheduling settings failed: {err}");
+        CommandError::failed("Synapse couldn't load the scheduling settings.")
+    })
+}
+
+/// What an optimization did: `{ "status": "optimized", token, reviewsUsed,
+/// current, proposed, currentError, proposedError, better, intervals }` or
+/// `{ "status": "stopped" }`. `current` and `proposed` are FSRS's 21
+/// parameters; the errors are how far predicted recall is from actual
+/// recall on average (0 to 1, lower is better); `intervals` is
+/// `[{ case, current, proposed }]` in days.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum OptimizeOutcome {
+    Optimized {
+        /// Pass to `apply_parameters` to use the proposed parameters.
+        token: u64,
+        reviews_used: usize,
+        current: Vec<f32>,
+        proposed: Vec<f32>,
+        current_error: f32,
+        proposed_error: f32,
+        /// Whether the proposed parameters predict the history better. Only
+        /// then can they be applied.
+        better: bool,
+        intervals: Vec<IntervalChange>,
+    },
+    /// `stop_optimizing` was called, or another optimization started.
+    Stopped,
+}
+
+/// Fits FSRS's parameters to the whole review history, off the UI thread,
+/// and compares them with the ones in use. Nothing is saved: the result
+/// waits for `apply_parameters`. Takes no arguments. Returns
+/// [`OptimizeOutcome`]; rejects with kind "invalid" below the minimum number
+/// of reviews, or "failed" if it took too long.
+#[tauri::command]
+pub async fn optimize_parameters(
+    app: AppHandle,
+    database: State<'_, Database>,
+    optimizing: State<'_, Optimizing>,
+) -> Result<OptimizeOutcome, CommandError> {
+    let pool = pool(&app, &database).await?;
+    let outcome = optimizer::optimize(&pool, &optimizing, optimizer::TIME_LIMIT)
+        .await
+        .map_err(|err| {
+            optimizer_error(
+                err,
+                "optimizing FSRS parameters",
+                "Synapse couldn't optimize the scheduling parameters. Nothing was changed.",
+            )
+        })?;
+    Ok(match outcome {
+        Optimized::Stopped => OptimizeOutcome::Stopped,
+        Optimized::Proposed { token, proposal } => OptimizeOutcome::Optimized {
+            token,
+            reviews_used: proposal.reviews_used,
+            current: proposal.current,
+            proposed: proposal.proposed,
+            current_error: proposal.current_fit.error,
+            proposed_error: proposal.proposed_fit.error,
+            better: proposal.better,
+            intervals: proposal.intervals,
+        },
+    })
+}
+
+/// Stops the optimization running now, if any. Returns `null`.
+#[tauri::command]
+pub fn stop_optimizing(optimizing: State<'_, Optimizing>) {
+    optimizing.stop();
+}
+
+/// Uses the parameters from the optimization held under `{ token }` for
+/// every rating from now on. Past schedules and reviews don't change.
+/// Returns the new [`Settings`]; rejects with kind "stale" if that result is
+/// no longer waiting or the parameters in use changed since.
+#[tauri::command]
+pub async fn apply_parameters(
+    app: AppHandle,
+    database: State<'_, Database>,
+    optimizing: State<'_, Optimizing>,
+    token: u64,
+) -> Result<Settings, CommandError> {
+    let pool = pool(&app, &database).await?;
+    let Some(proposal) = optimizing.take(token) else {
+        return Err(CommandError::stale(
+            "That optimization is no longer ready to apply. Optimize again.",
+        ));
+    };
+    let failed = "Synapse couldn't apply the new parameters. Nothing was changed.";
+    optimizer::apply(&pool, &proposal, Utc::now())
+        .await
+        .map_err(|err| optimizer_error(err, "applying FSRS parameters", failed))?;
+    get_scheduling(app, database).await
+}
+
+/// Goes back to FSRS's default parameters for every rating from now on.
+/// `{ version }` is the `version` of the settings shown. Returns the new
+/// [`Settings`]; rejects with kind "stale" if they changed since, or the
+/// defaults are already in use.
+#[tauri::command]
+pub async fn reset_parameters(
+    app: AppHandle,
+    database: State<'_, Database>,
+    version: i64,
+) -> Result<Settings, CommandError> {
+    let pool = pool(&app, &database).await?;
+    let failed = "Synapse couldn't reset the parameters. Nothing was changed.";
+    optimizer::reset(&pool, version, Utc::now())
+        .await
+        .map_err(|err| optimizer_error(err, "resetting FSRS parameters", failed))?;
+    get_scheduling(app, database).await
 }
 
 #[cfg(test)]
@@ -1816,5 +1974,79 @@ mod tests {
                 "deletedAt": "2026-09-16T14:00:00.000Z"
             })
         );
+    }
+
+    #[test]
+    fn optimizations_serialize_to_the_shape_react_expects() {
+        assert_eq!(
+            serde_json::to_value(OptimizeOutcome::Optimized {
+                token: 3,
+                reviews_used: 600,
+                current: vec![0.5],
+                proposed: vec![1.5],
+                current_error: 0.25,
+                proposed_error: 0.125,
+                better: true,
+                intervals: vec![IntervalChange {
+                    case: optimizer::IntervalCase::SecondGood,
+                    current: 2.0,
+                    proposed: 4.0,
+                }],
+            })
+            .unwrap(),
+            json!({
+                "status": "optimized",
+                "token": 3,
+                "reviewsUsed": 600,
+                "current": [0.5],
+                "proposed": [1.5],
+                "currentError": 0.25,
+                "proposedError": 0.125,
+                "better": true,
+                "intervals": [{ "case": "secondGood", "current": 2.0, "proposed": 4.0 }]
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(OptimizeOutcome::Stopped).unwrap(),
+            json!({ "status": "stopped" })
+        );
+        assert_eq!(
+            serde_json::to_value(Settings {
+                version: 2,
+                personal: true,
+                parameters: vec![1.5],
+                defaults: vec![0.5],
+                reviews_used: Some(600),
+                applied_at: Some("2026-10-19T09:00:00.000Z".to_string()),
+                usable_reviews: 650,
+                minimum_reviews: 400,
+            })
+            .unwrap(),
+            json!({
+                "version": 2,
+                "personal": true,
+                "parameters": [1.5],
+                "defaults": [0.5],
+                "reviewsUsed": 600,
+                "appliedAt": "2026-10-19T09:00:00.000Z",
+                "usableReviews": 650,
+                "minimumReviews": 400
+            })
+        );
+    }
+
+    #[test]
+    fn optimizer_errors_tell_react_what_to_do() {
+        for (err, kind) in [
+            (OptimizerError::NotEnoughReviews, "invalid"),
+            (OptimizerError::NotBetter, "invalid"),
+            (OptimizerError::Stale, "stale"),
+            (OptimizerError::TimedOut, "failed"),
+            (OptimizerError::Internal("detail".into()), "failed"),
+        ] {
+            let value = serde_json::to_value(optimizer_error(err, "testing", "Failed.")).unwrap();
+            assert_eq!(value["kind"], kind, "{value}");
+            assert!(!value["message"].as_str().unwrap().contains("detail"));
+        }
     }
 }
