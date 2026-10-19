@@ -7,6 +7,7 @@ pub mod extract;
 mod import;
 mod notes;
 mod scheduler;
+mod stats;
 mod study;
 mod suggest;
 
@@ -36,6 +37,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_decks,
             commands::get_today,
+            commands::get_statistics,
             commands::get_archived_decks,
             commands::start_session,
             commands::get_session_card,

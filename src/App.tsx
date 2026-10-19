@@ -7,6 +7,7 @@ import { DeckDetail } from "./DeckDetail";
 import { NotesArea } from "./Notes";
 import { ReviewSession } from "./ReviewSession";
 import { Shell, type Place } from "./Shell";
+import { StatisticsScreen } from "./Statistics";
 import { DiscardDialog, UnsavedChangesProvider, useUnsavedTracker } from "./unsaved";
 import "./App.css";
 
@@ -15,6 +16,7 @@ type View =
   | { screen: "deck"; deckId: number; justCreated: boolean }
   | { screen: "session"; sessionId: number; deckName: string }
   | { screen: "notes" }
+  | { screen: "stats" }
   | { screen: "archived" }
   | { screen: "backup" };
 
@@ -24,6 +26,7 @@ const DECKS: View = { screen: "decks", notice: null };
 const PLACE_VIEWS: Record<Place, View> = {
   desk: DECKS,
   notes: { screen: "notes" },
+  stats: { screen: "stats" },
   archived: { screen: "archived" },
   backup: { screen: "backup" },
 };
@@ -39,6 +42,8 @@ function locate(view: View): { place: Place; atPlace: boolean; trail: string[] }
       return { place: "desk", atPlace: false, trail: ["Study Desk", "Review"] };
     case "notes":
       return { place: "notes", atPlace: true, trail: ["Synapse", "Notes"] };
+    case "stats":
+      return { place: "stats", atPlace: true, trail: ["Synapse", "Statistics"] };
     case "archived":
       return { place: "archived", atPlace: true, trail: ["Synapse", "Archived decks"] };
     case "backup":
@@ -148,6 +153,7 @@ function App() {
             onOpenDeck={(deckId) => show({ screen: "deck", deckId, justCreated: false })}
           />
         )}
+        {view.screen === "stats" && <StatisticsScreen key={`${restores}:${visits}`} />}
         {view.screen === "archived" && <ArchivedDecks key={visits} />}
         {view.screen === "backup" && (
           <Backup

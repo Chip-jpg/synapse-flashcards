@@ -682,6 +682,7 @@ Current README identifies these main files:
 | `Notes.tsx` | Notes library and note flows, including importing a file as a note and searching the library |
 | `SuggestCards.tsx` | Suggesting cards from a note and checking them before saving |
 | `deckChoices.ts` | The decks a card can be added to, for both card-from-note screens |
+| `Statistics.tsx` | Statistics: reviews per day, true retention, cards by state, due forecast (plain SVG charts) |
 | `ArchivedDecks.tsx` | Archived-deck recovery |
 | `Backup.tsx` | Export and restore |
 | `App.css` | Shared visual tokens and presentation |
@@ -703,6 +704,7 @@ For example, hiding a Restore button is useful UX, but the Rust command must sti
 | `db.rs` | Database location, opening, migration, seeding |
 | `scheduler.rs` | FSRS scheduling calculations |
 | `study.rs` | Deck study data, sessions, recording reviews, today's review count |
+| `stats.rs` | Read-only statistics: 30 days of reviews, true retention, cards by state, 14-day due forecast |
 | `authoring.rs` | Deck/card creation and lifecycle |
 | `notes.rs` | Note lifecycle and note search |
 | `suggest.rs` | Asking Ollama for suggested cards, and checking them against the note |
@@ -1027,7 +1029,7 @@ The current README is explicit about these gaps.
 
 ### Analytics and personalization
 
-- User-facing statistics beyond the Study Desk's count of today's reviews and cards.
+- User-facing statistics beyond the Study Desk's count of today's reviews and the Statistics screen (30 days of reviews, true retention, cards by state, 14-day due forecast).
 - Streaks.
 - XP.
 - Mastery percentages.

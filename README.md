@@ -21,6 +21,10 @@ migrations, validation, scheduling, and every business rule; React only calls ty
   every rating is appended to `review_logs`.
 - **Today** — the Study Desk shows how many reviews you've recorded today and for how many
   different cards (*Today: 12 reviews · 9 cards*), counted since midnight on your computer's clock.
+- **Statistics** — reviews per day over the last 30 days, true retention (the share of reviews of
+  cards in the Review state not rated *Again*, with how many reviews it's based on), your cards by
+  state (New, Learning, Review, Relearning), and how many cards fall due on each of the next 14
+  days. All decks or one deck.
 - **History is kept** — deleting a card, archiving a deck, and deleting a note are all *soft*: the
   rows stay in the database, a card keeps its FSRS state and review log, and a note keeps its text
   and its times. Every one of them can be brought back: a deleted card restored, an archived deck
@@ -99,8 +103,9 @@ thing that replaces it is *Import data*, and only after you confirm.
 
 ## Using it
 
-**Find your way around.** The sidebar has four places: the **Study Desk** (your decks, with the
-first one that has cards due at the top), **Notes**, **Archived decks**, and **Backup & restore**.
+**Find your way around.** The sidebar has five places: the **Study Desk** (your decks, with the
+first one that has cards due at the top), **Notes**, **Statistics**, **Archived decks**, and
+**Backup & restore**.
 In a narrow window it becomes a bar across the top.
 
 **Unsaved changes are never dropped silently.** If you've typed something in a form (a deck, card,
@@ -270,10 +275,14 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   future work and isn't built.
 - **One card type.** Front/back text only: no images, audio, cloze, or tags.
 - **No card search, bulk actions, or folders.** Only notes can be searched.
-- **Statistics are one daily count.** The Study Desk counts today's reviews and the different
-  cards they were for, nothing more: no history of earlier days, no streaks, no percentages. It
-  counts every rating made today, including ones of cards deleted or decks archived since. "Today"
-  is the computer's current time zone, so changing it (or travelling) moves where the day begins.
+- **Statistics are counts, not scores.** The Study Desk counts today's reviews and the different
+  cards they were for; the *Statistics* screen adds the last 30 days, true retention, cards by
+  state, and a 14-day due forecast. There are no streaks, XP, or mastery percentages. Review
+  history counts every rating made, including ones of cards deleted or decks archived since; cards
+  by state and the forecast count only cards you can study now, and today's forecast also holds
+  overdue cards and new cards not yet studied. Retention counts only reviews of cards in the Review
+  state, so it's empty until cards have graduated. Days are the computer's current time zone, so
+  changing it (or travelling) moves where each day begins. Only active decks can be chosen.
 - **Suggestions are a first step.** They come only from Ollama on this computer, from one note
   at a time, and from one part of up to 12,000 characters of a longer note, as front/back cards.
   A file is suggested from once it's imported as a note. There's no cloud option, no choice of how
@@ -295,7 +304,8 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
 - **`src/`** — the React UI. `api.ts` is the only file that calls Rust, through typed Tauri
   commands (and the window, to hold it open while something is unsaved). `Shell.tsx` is the
   sidebar and the bar above each screen. The screens are `Dashboard.tsx` (the Study Desk),
-  `DeckDetail.tsx`, `ReviewSession.tsx`, `Notes.tsx`, `ArchivedDecks.tsx`, and `Backup.tsx`;
+  `DeckDetail.tsx`, `ReviewSession.tsx`, `Notes.tsx`, `Statistics.tsx`, `ArchivedDecks.tsx`, and
+  `Backup.tsx`;
   `SuggestCards.tsx` is the note screen's *Suggest cards*, and `noteParts.ts` splits a note too
   long to suggest from whole into parts.
   `unsaved.tsx` tracks which form holds unsaved text and asks before it's discarded. Tests sit
@@ -306,6 +316,8 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   - `db.rs` — where the database lives, opening it, running migrations, and the one-time seed.
   - `scheduler.rs` — FSRS scheduling via the `fsrs` crate, with no database access.
   - `study.rs` — the deck dashboard, review sessions, recording reviews, and today's count.
+  - `stats.rs` — the Statistics screen's numbers, read from the review log and the cards. It
+    writes nothing.
   - `authoring.rs` — creating, renaming, archiving, and unarchiving decks; adding, editing,
     deleting, and restoring cards.
   - `notes.rs` — typed notes: writing, editing, searching, soft-deleting, and restoring them.

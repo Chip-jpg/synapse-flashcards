@@ -20,6 +20,7 @@ use crate::extract::{self, ExtractError, ExtractedText, FileKind};
 use crate::import::{self, ImportError, ImportState, RestoreError};
 use crate::notes::{self, DeletedNote, InvalidNote, Note, NoteError, NoteSummary};
 use crate::scheduler::Rating;
+use crate::stats::{self, Statistics};
 use crate::study::{self, DeckSummary, SessionCard, StartedSession, StudyError, TodaySummary};
 use crate::suggest::{self, NotePart, Ollama, SuggestError, SuggestedCard, Suggesting};
 
@@ -259,6 +260,32 @@ pub async fn get_today(
         .map_err(|err| {
             eprintln!("[synapse] loading today's reviews failed: {err}");
             CommandError::failed("Synapse couldn't count today's reviews.")
+        })
+}
+
+/// The Statistics screen: review history over the last 30 days and the
+/// current cards' states and due dates, on this computer's calendar, for
+/// every deck or only `deckId` (an active deck). Reads only.
+/// Returns `{ reviewsByDay, retention, cardStates, forecast }`.
+#[tauri::command]
+pub async fn get_statistics(
+    app: AppHandle,
+    database: State<'_, Database>,
+    deck_id: Option<i64>,
+) -> Result<Statistics, CommandError> {
+    if deck_id.is_some_and(|id| id < 1) {
+        return Err(CommandError::invalid(DECK_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    stats::statistics(&pool, deck_id, Utc::now(), &chrono::Local)
+        .await
+        .map_err(|err| {
+            study_error(
+                err,
+                "loading statistics",
+                DECK_NOT_FOUND,
+                "Synapse couldn't load your statistics.",
+            )
         })
 }
 
