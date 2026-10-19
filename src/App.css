@@ -800,6 +800,13 @@ body {
   border-color: var(--primary-line);
 }
 
+/* *Restore all*, above a deck's deleted cards. */
+.restore-all {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
 /* Replacing all data can't be undone. */
 .confirm-danger {
   background-color: var(--danger-soft);
@@ -1468,6 +1475,18 @@ textarea.field-input {
   font-size: 0.875rem;
   font-weight: 500;
   color: var(--danger);
+}
+
+/* The notes library's search field, with Clear beside it. */
+.note-search-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.note-search-row .field-input {
+  flex: 1;
+  min-width: 0;
 }
 
 .form-status:empty {

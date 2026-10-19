@@ -277,6 +277,10 @@ The normal restore flow refuses:
 
 The user must unarchive a deck before restoring one of its deleted cards.
 
+### Restore all
+
+With two or more deleted cards in a deck, *Restore all* (`restore_deleted_cards` in `authoring.rs`) restores every one of them in one transaction, by the same preservation rules and deck refusals. It sends the number the user confirmed; if the deck no longer has exactly that many deleted cards, it is refused as stale and nothing is written.
+
 ### Timestamp caveat
 
 Your implementation report identified one historical detail worth retaining: deleting a card already changes its `updated_at` timestamp. Restoring it cannot recover an earlier edit timestamp that was not stored separately.
@@ -675,7 +679,7 @@ Current README identifies these main files:
 | `Dashboard.tsx` | Study Desk |
 | `DeckDetail.tsx` | Deck content and management |
 | `ReviewSession.tsx` | Review interaction |
-| `Notes.tsx` | Notes library and note flows, including importing a file as a note |
+| `Notes.tsx` | Notes library and note flows, including importing a file as a note and searching the library |
 | `SuggestCards.tsx` | Suggesting cards from a note and checking them before saving |
 | `deckChoices.ts` | The decks a card can be added to, for both card-from-note screens |
 | `ArchivedDecks.tsx` | Archived-deck recovery |
@@ -700,7 +704,7 @@ For example, hiding a Restore button is useful UX, but the Rust command must sti
 | `scheduler.rs` | FSRS scheduling calculations |
 | `study.rs` | Deck study data, sessions, recording reviews, today's review count |
 | `authoring.rs` | Deck/card creation and lifecycle |
-| `notes.rs` | Note lifecycle |
+| `notes.rs` | Note lifecycle and note search |
 | `suggest.rs` | Asking Ollama for suggested cards, and checking them against the note |
 | `extract.rs` | Reading a file's text for import; the PDF helper process |
 | `export.rs` | Backup creation |
@@ -1013,7 +1017,7 @@ The current README is explicit about these gaps.
 
 ### Organization
 
-- Search.
+- Card search. Notes can be searched by exact text (title or body, ignoring case), with no index or fuzzy matching.
 - Tags.
 - Folders.
 - Bulk actions.

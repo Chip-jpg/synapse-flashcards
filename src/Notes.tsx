@@ -8,6 +8,7 @@ import {
   getNotes,
   importFile,
   restoreNote,
+  searchNotes,
   toCommandError,
   updateNote,
   type CommandError,
@@ -276,6 +277,11 @@ function NoteList({
   const [importError, setImportError] = useState<string | null>(null);
   // Blocks a second file window immediately, before the re-render lands.
   const importingRef = useRef(false);
+  const search = useNoteSearch();
+  const searching = search.query.trim() !== "";
+  // While a new answer is on its way, the last one stays up, so the list
+  // doesn't flash empty between keystrokes.
+  const shown = searching ? (search.found?.notes ?? notes) : notes;
 
   /** Chooses a file and reads it; its text opens as a new note to check. */
   async function chooseFile() {
@@ -351,15 +357,22 @@ function NoteList({
         </p>
       )}
 
+      {notes.length > 0 && <NoteSearchField search={search} />}
+
       {notes.length === 0 ? (
         <p className="empty" role="status">
           {deleted.length === 0
             ? "No notes yet. Choose New note to write one."
             : "No notes in your library. Choose New note to write one, or restore a deleted note below."}
         </p>
+      ) : searching && search.found?.query === search.query.trim() && shown.length === 0 ? (
+        <p className="empty">
+          No notes match “{search.found.query}”. Try other words, or clear the search to see every
+          note.
+        </p>
       ) : (
         <ul className="card-list">
-          {notes.map((note) => (
+          {shown.map((note) => (
             <li key={note.id}>
               <NoteItem
                 note={note}
@@ -375,6 +388,124 @@ function NoteList({
         <DeletedNoteList notes={deleted} onRestored={onRestored} onStale={onStale} />
       )}
     </section>
+  );
+}
+
+/** The last search Rust answered: the trimmed query and the notes it found. */
+type FoundNotes = { query: string; notes: NoteSummary[] };
+
+type NoteSearch = {
+  /** What's in the field, as typed. */
+  query: string;
+  found: FoundNotes | null;
+  error: string | null;
+  setQuery: (query: string) => void;
+};
+
+/**
+ * Searching the library. Rust does the matching, since the library list has
+ * no bodies. Each change asks again; an answer to an older query is dropped,
+ * so a slow reply can't overwrite a newer one. This is a filter, not a form:
+ * nothing is saved, so it never counts as an unsaved change.
+ */
+function useNoteSearch(): NoteSearch {
+  const [query, setQueryState] = useState("");
+  const [found, setFound] = useState<FoundNotes | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // Numbers each request, so only the latest one's answer is shown.
+  const latest = useRef(0);
+
+  useEffect(
+    () => () => {
+      latest.current += 1; // Unmounted: ignore any answer still on its way.
+    },
+    [],
+  );
+
+  function setQuery(next: string) {
+    setQueryState(next);
+    setError(null);
+    const request = ++latest.current;
+    const trimmed = next.trim();
+    if (trimmed === "") {
+      setFound(null);
+      return;
+    }
+    searchNotes(trimmed).then(
+      (notes) => {
+        if (request === latest.current) setFound({ query: trimmed, notes });
+      },
+      (err) => {
+        if (request === latest.current) setError(toCommandError(err).message);
+      },
+    );
+  }
+
+  return { query, found, error, setQuery };
+}
+
+function NoteSearchField({ search }: { search: NoteSearch }) {
+  const { query, found, error, setQuery } = search;
+  const trimmed = query.trim();
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  let status = "";
+  if (trimmed !== "" && error === null) {
+    if (found?.query !== trimmed) status = "Searching…";
+    else if (found.notes.length === 0) status = "No notes match.";
+    else
+      status = `${counted(found.notes.length, "note")} ${found.notes.length === 1 ? "matches" : "match"}.`;
+  }
+
+  return (
+    <div className="field note-search">
+      <label htmlFor="note-search" className="field-label">
+        Search notes
+      </label>
+      <div className="note-search-row">
+        <input
+          ref={inputRef}
+          id="note-search"
+          type="search"
+          className="field-input"
+          value={query}
+          autoComplete="off"
+          spellCheck={false}
+          aria-describedby="note-search-hint"
+          onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && query !== "") {
+              event.preventDefault();
+              setQuery("");
+            }
+          }}
+        />
+        {query !== "" && (
+          <button
+            type="button"
+            className="button"
+            onClick={() => {
+              setQuery("");
+              inputRef.current?.focus();
+            }}
+          >
+            Clear
+          </button>
+        )}
+      </div>
+      <p id="note-search-hint" className="field-hint">
+        Finds notes whose title or text contains what you type, ignoring capitals. Deleted notes
+        aren't searched.
+      </p>
+      <p className="form-status" role="status">
+        {status}
+      </p>
+      {error && (
+        <p className="message-error" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 

@@ -202,6 +202,11 @@ fn authoring_error(err: AuthoringError, context: &str, failed: &'static str) -> 
         // longer holds this card. Nothing was written, so React reloads
         // instead of retrying, as it does for a note that isn't deleted.
         AuthoringError::CardNotDeleted => CommandError::stale(CARD_NOT_DELETED),
+        // Likewise for *Restore all*: the deleted cards on screen aren't the
+        // ones the deck has now (none, or a different number).
+        AuthoringError::DeletedCardsChanged => {
+            CommandError::stale("This deck's deleted cards have changed.")
+        }
         AuthoringError::Internal(detail) => {
             eprintln!("[synapse] {context} failed: {detail}");
             CommandError::failed(failed)
@@ -519,6 +524,36 @@ pub async fn restore_flashcard(
         })
 }
 
+/// Restores every soft-deleted card of an active normal deck in one go, each
+/// exactly as `restore_flashcard` restores one.
+///
+/// Arguments: `{ deckId, expected }`, where `expected` is how many deleted
+/// cards the user confirmed. Returns `{ restored, deck }`: how many came back,
+/// and the deck with them (same shape as `get_deck_detail`). Rejects with kind
+/// "stale" if the deck has since been archived or no longer has `expected`
+/// deleted cards, writing nothing either way.
+#[tauri::command]
+pub async fn restore_deleted_cards(
+    app: AppHandle,
+    database: State<'_, Database>,
+    deck_id: i64,
+    expected: usize,
+) -> Result<authoring::RestoredCards, CommandError> {
+    if deck_id < 1 {
+        return Err(CommandError::invalid(DECK_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    authoring::restore_deleted_cards(&pool, deck_id, expected, Utc::now())
+        .await
+        .map_err(|err| {
+            authoring_error(
+                err,
+                "restoring deleted cards",
+                "Synapse couldn't restore the cards.",
+            )
+        })
+}
+
 /// Renames an active normal deck; its cards, schedule, and history are kept.
 ///
 /// Arguments: `{ deckId, name }`. Returns the renamed deck (same shape as
@@ -604,6 +639,23 @@ pub async fn get_notes(
     notes::notes(&pool).await.map_err(|err| {
         eprintln!("[synapse] loading notes failed: {err}");
         CommandError::failed("Synapse couldn't load your notes.")
+    })
+}
+
+/// The note library narrowed to the active notes whose title or body contains
+/// `query`, ignoring case, most recently saved first. Arguments: `{ query }`;
+/// a blank query lists every active note. Returns the same shape as
+/// `get_notes`. Reads only.
+#[tauri::command]
+pub async fn search_notes(
+    app: AppHandle,
+    database: State<'_, Database>,
+    query: String,
+) -> Result<Vec<NoteSummary>, CommandError> {
+    let pool = pool(&app, &database).await?;
+    notes::search_notes(&pool, &query).await.map_err(|err| {
+        eprintln!("[synapse] searching notes failed: {err}");
+        CommandError::failed("Synapse couldn't search your notes.")
     })
 }
 
@@ -1336,6 +1388,11 @@ mod tests {
         assert_eq!(
             to_json(AuthoringError::CardNotDeleted),
             json!({ "kind": "stale", "message": "This card isn't deleted." })
+        );
+        // *Restore all* on an out-of-date list: reload rather than retry.
+        assert_eq!(
+            to_json(AuthoringError::DeletedCardsChanged),
+            json!({ "kind": "stale", "message": "This deck's deleted cards have changed." })
         );
         assert_eq!(
             to_json(AuthoringError::CardNotFound),

@@ -137,7 +137,9 @@ lists, counts, and reviews. The card and its review log stay in the database, an
 back in the deck exactly as it was: same text, FSRS state, due date, reps, lapses, and review log.
 It is not reset to a new card, so it becomes due again only on the date it already had, and no
 review session starts. Cards in an archived deck can't be restored until the deck is unarchived,
-and the Sample deck's cards stay out of this entirely.
+and the Sample deck's cards stay out of this entirely. With two or more deleted cards, *Restore all*
+asks for confirmation, naming how many, then restores every one of them the same way, all together
+or not at all.
 
 **Rename or archive a deck.** Also on the deck screen. Archiving asks for confirmation, then moves
 the deck to *Archived decks*: it can't be reviewed, changed, or given new cards, and any unfinished
@@ -195,6 +197,12 @@ newer format first. A PDF is read by a second, short-lived run of Synapse, so a 
 crash the app: it's just reported as a file that couldn't be read. Text over 12,000 characters can
 still be saved as one note; *Suggest cards* then offers it in parts (Synapse says so).
 
+**Search your notes.** *Search notes*, above the library, narrows it to the notes whose title or
+text contains what you type, ignoring capitals (accented letters included), still most recently
+edited first. It's plain matching: no fuzzy matches, and deleted notes aren't searched. *Clear* (or
+Escape) brings back the whole library. Searching saves nothing, so leaving with text in the search
+field doesn't ask about unsaved changes, and the search is gone when you come back.
+
 **Delete or restore a note.** Open a note → *Delete note* asks for confirmation, then takes the note
 out of your library: it can't be opened, edited, or used to write a card. Nothing is lost — the note
 appears under *Deleted notes* at the bottom of the library, with when it was deleted, and *Restore
@@ -247,10 +255,12 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   (the process killed mid-swap) can leave a rollback copy in Synapse's data folder
   (`import-workspace/rollback.sqlite`, later renamed `rollback-kept-<time>.sqlite`); these are never
   deleted automatically.
-- **Restoring is one card at a time.** *Deleted cards* lists a deck's deleted cards and restores
-  them one by one; there's no "restore all", no undo of a restore beyond deleting the card again,
-  and no way to move a card to a different deck on the way back.
-- **Notes are plain text.** No formatting, attachments, audio, web clips, search, tags, or folders.
+- **Restoring is per deck.** *Deleted cards* restores one card, or with *Restore all* every deleted
+  card of that deck at once; there's no choosing several, no undo of a restore beyond deleting the
+  cards again, and no way to move a card to a different deck on the way back.
+- **Notes are plain text.** No formatting, attachments, audio, web clips, tags, or folders. Search
+  is exact text only (no fuzzy matching, no search inside deleted notes) and has no index, so each
+  search reads every note.
   Importing a file takes only its text: the file isn't kept, layout and images are lost, and there's
   no OCR for scanned pages. A card doesn't remember the note it was written or suggested from — so
   deleting a note leaves its cards exactly where they are. A deleted note is listed by title and
@@ -259,7 +269,7 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
 - **Default FSRS parameters only.** The optimizer that re-fits weights to your own history is
   future work and isn't built.
 - **One card type.** Front/back text only: no images, audio, cloze, or tags.
-- **No search, bulk actions, or folders.**
+- **No card search, bulk actions, or folders.** Only notes can be searched.
 - **Statistics are one daily count.** The Study Desk counts today's reviews and the different
   cards they were for, nothing more: no history of earlier days, no streaks, no percentages. It
   counts every rating made today, including ones of cards deleted or decks archived since. "Today"
@@ -298,7 +308,7 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   - `study.rs` — the deck dashboard, review sessions, recording reviews, and today's count.
   - `authoring.rs` — creating, renaming, archiving, and unarchiving decks; adding, editing,
     deleting, and restoring cards.
-  - `notes.rs` — typed notes: writing, editing, soft-deleting, and restoring them.
+  - `notes.rs` — typed notes: writing, editing, searching, soft-deleting, and restoring them.
   - `suggest.rs` — asking Ollama, on this computer, to suggest cards from a note, and checking
     its answer. It writes nothing; suggested cards are saved through `authoring.rs`.
   - `extract.rs` — reading the text of a file to import as a note, and the PDF helper (Synapse

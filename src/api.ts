@@ -287,6 +287,24 @@ export function restoreFlashcard(cardId: number): Promise<DeckDetail> {
   return invoke<DeckDetail>("restore_flashcard", { cardId });
 }
 
+/** Mirrors `RestoredCards` in `src-tauri/src/authoring.rs`. */
+export type RestoredCards = {
+  /** How many cards came back. */
+  restored: number;
+  /** The deck, with them back in it. */
+  deck: DeckDetail;
+};
+
+/**
+ * Restores every deleted card of a deck at once, each exactly as
+ * `restoreFlashcard` restores one. `expected` is how many the user confirmed.
+ * Rejects with kind "stale", having written nothing, if the deck no longer has
+ * that many deleted cards or was archived meanwhile.
+ */
+export function restoreDeletedCards(deckId: number, expected: number): Promise<RestoredCards> {
+  return invoke<RestoredCards>("restore_deleted_cards", { deckId, expected });
+}
+
 /** Renames an active normal deck (Rust trims and validates the name); resolves with the deck. */
 export function renameDeck(deckId: number, name: string): Promise<DeckDetail> {
   return invoke<DeckDetail>("rename_deck", { deckId, name });
@@ -382,6 +400,14 @@ export function importFile(): Promise<FileImport> {
 /** Every active (not deleted) note, most recently saved first. */
 export function getNotes(): Promise<NoteSummary[]> {
   return invoke<NoteSummary[]>("get_notes");
+}
+
+/**
+ * The active notes whose title or body contains `query`, ignoring case, most
+ * recently saved first. A blank query lists every active note. Reads only.
+ */
+export function searchNotes(query: string): Promise<NoteSummary[]> {
+  return invoke<NoteSummary[]>("search_notes", { query });
 }
 
 /** Every deleted note, most recently deleted first. Read-only history. */
