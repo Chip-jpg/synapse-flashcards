@@ -25,6 +25,7 @@ use crate::aid;
 use crate::cloze::{self, ClozePart};
 use crate::db::{to_db_time, DbError};
 use crate::optimizer;
+use crate::retention;
 use crate::scheduler::{self, CardState, Rating, Schedule};
 
 /// One deck on the dashboard: `{ id, name, description, isSample, dueCount }`.
@@ -434,7 +435,9 @@ pub async fn record_review(
     // The user's own FSRS parameters if they applied some, read for this
     // rating only: nothing scheduled before changes.
     let parameters = optimizer::parameters_for_review(&mut tx).await?;
-    let outcome = scheduler::review(&current, rating, now_time, &parameters)?;
+    // The desired retention for this deck, likewise for this rating only.
+    let retention = retention::for_deck(&mut tx, deck_id).await?;
+    let outcome = scheduler::review(&current, rating, now_time, &parameters, retention)?;
 
     let updated = sqlx::query(
         "UPDATE flashcards

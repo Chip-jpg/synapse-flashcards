@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { cancelImport, confirmImport, exportData, prepareImport, toCommandError } from "./api";
+import { AnkiImport } from "./AnkiImport";
 import { CardsCsv } from "./CardsCsv";
 import { DownloadIcon, UploadIcon } from "./icons";
 import { formatDateTime, useFocusOnMount } from "./ui";
@@ -24,7 +25,9 @@ export function Backup({
   onRestored: (fileName: string) => void;
 }) {
   const screenRef = useFocusOnMount<HTMLElement>(true);
-  const [running, setRunning] = useState<"export" | "import" | "cards" | null>(null);
+  const [running, setRunning] = useState<"export" | "import" | "cards" | "anki" | null>(null);
+  // Counts Anki imports, so the spreadsheet panel reloads its decks after one.
+  const [ankiImports, setAnkiImports] = useState(0);
   const [importing, setImporting] = useState(false);
   const locked = importing || running === "export";
 
@@ -59,7 +62,7 @@ export function Backup({
           </h3>
         </div>
         <ExportData
-          blocked={running === "import" || running === "cards"}
+          blocked={running === "import" || running === "cards" || running === "anki"}
           onRunning={(busy) => setRunning(busy ? "export" : null)}
         />
       </section>
@@ -74,7 +77,7 @@ export function Backup({
           </h3>
         </div>
         <ImportData
-          blocked={running === "export" || running === "cards"}
+          blocked={running === "export" || running === "cards" || running === "anki"}
           onRunning={(busy) => setRunning(busy ? "import" : null)}
           onImporting={setImporting}
           onRestored={onRestored}
@@ -83,8 +86,15 @@ export function Backup({
 
       {/* Waits while a backup is saved or restored, or waits to be confirmed. */}
       <CardsCsv
-        blocked={importing || running === "export" || running === "import"}
+        decksChanged={ankiImports}
+        blocked={importing || running === "export" || running === "import" || running === "anki"}
         onRunning={(busy) => setRunning(busy ? "cards" : null)}
+      />
+
+      <AnkiImport
+        blocked={importing || running === "export" || running === "import" || running === "cards"}
+        onRunning={(busy) => setRunning(busy ? "anki" : null)}
+        onImported={() => setAnkiImports((count) => count + 1)}
       />
     </section>
   );

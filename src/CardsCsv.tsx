@@ -32,10 +32,13 @@ const DELIMITER_NAMES = { comma: "commas", semicolon: "semicolons", tab: "tabs" 
 export function CardsCsv({
   blocked,
   onRunning,
+  decksChanged = 0,
 }: {
   /** A backup is being exported or restored, so this waits. */
   blocked: boolean;
   onRunning: (running: boolean) => void;
+  /** Changes when decks were added elsewhere on the screen, to reload them. */
+  decksChanged?: number;
 }) {
   const [decks, setDecks] = useState<Deck[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -51,7 +54,7 @@ export function CardsCsv({
 
   useEffect(() => {
     loadDecks();
-  }, []);
+  }, [decksChanged]);
 
   return (
     <section className="panel" aria-labelledby="cards-csv-heading">

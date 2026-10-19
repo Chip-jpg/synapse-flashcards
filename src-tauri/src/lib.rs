@@ -1,4 +1,5 @@
 mod aid;
+mod anki;
 mod authoring;
 mod cards_csv;
 mod cloze;
@@ -10,7 +11,10 @@ pub mod extract;
 mod import;
 mod notes;
 mod optimizer;
+mod quiz;
+mod retention;
 mod scheduler;
+mod search;
 mod stats;
 mod study;
 mod suggest;
@@ -30,8 +34,12 @@ pub fn run() {
         .manage(suggest::Suggesting::default())
         // The card help Ollama is writing, so it can be stopped.
         .manage(aid::Helping::default())
+        // The quiz Ollama is writing, so it can be stopped.
+        .manage(quiz::Quizzing::default())
         // Fitting FSRS parameters, so it can be stopped, and its result.
         .manage(optimizer::Optimizing::default())
+        // An Anki package read and waiting for the user to add it.
+        .manage(anki::AnkiImports::default())
         .setup(|app| {
             // A backup checked in an earlier run but never confirmed or
             // cancelled (the window closed while Synapse asked) can't be
@@ -73,6 +81,7 @@ pub fn run() {
             commands::get_notes,
             commands::get_deleted_notes,
             commands::search_notes,
+            commands::search_everything,
             commands::get_note,
             commands::create_note,
             commands::update_note,
@@ -87,11 +96,19 @@ pub fn run() {
             commands::stop_optimizing,
             commands::apply_parameters,
             commands::reset_parameters,
+            commands::get_retention,
+            commands::preview_retention,
+            commands::set_retention,
             commands::read_cards_csv,
             commands::import_cards_csv,
             commands::export_cards_csv,
             commands::get_card_help,
-            commands::stop_card_help
+            commands::stop_card_help,
+            commands::quiz_note,
+            commands::stop_quiz,
+            commands::read_anki_package,
+            commands::import_anki_package,
+            commands::cancel_anki_import
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

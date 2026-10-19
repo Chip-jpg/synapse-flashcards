@@ -627,6 +627,82 @@ export function exportCardsCsv(deckId: number): Promise<ExportOutcome> {
   return invoke<ExportOutcome>("export_cards_csv", { deckId });
 }
 
+/**
+ * Mirrors `AnkiDeckPreview` in `src-tauri/src/commands.rs`: one Anki deck of
+ * a package. `name` is the new deck's name in Synapse (made unique), `cards`
+ * the cards it gets one way, `reversible` how many of those also have a
+ * reversed card in Anki, and `examples` its first few cards.
+ */
+export type AnkiDeckPreview = {
+  ankiName: string;
+  name: string;
+  cards: number;
+  reversible: number;
+  examples: CardText[];
+};
+
+/** Mirrors `Skipped` in `src-tauri/src/anki.rs`: notes left out, by why. */
+export type AnkiSkipped = {
+  cloze: number;
+  otherNoteType: number;
+  empty: number;
+  tooLong: number;
+  noCard: number;
+};
+
+/**
+ * Mirrors `AnkiFile` in `src-tauri/src/commands.rs`: an Anki package read,
+ * with nothing saved and the package held by Rust under `token`, or the file
+ * window closed.
+ */
+export type AnkiFile =
+  | {
+      status: "read";
+      token: number;
+      fileName: string;
+      decks: AnkiDeckPreview[];
+      /** Every note in the collection. */
+      notes: number;
+      skipped: AnkiSkipped;
+      /** Notes to add that had a picture or sound, which is left out. */
+      mediaRemoved: number;
+      /** Notes to add that had been reviewed in Anki; they start as new. */
+      reviewed: number;
+    }
+  | { status: "cancelled" };
+
+/** An Anki package that has been read. */
+export type ReadAnkiFile = AnkiFile & { status: "read" };
+
+/** Mirrors `AnkiImported` in `src-tauri/src/anki.rs`. */
+export type AnkiImported = {
+  decks: { id: number; name: string; cards: number }[];
+  cards: number;
+};
+
+/**
+ * Chooses an Anki package (.apkg or .colpkg) and reads its front/back notes.
+ * Rust opens the OS "open file" dialog; closing it resolves with
+ * `{ status: "cancelled" }`. Nothing is saved.
+ */
+export function readAnkiPackage(): Promise<AnkiFile> {
+  return invoke<AnkiFile>("read_anki_package");
+}
+
+/**
+ * Adds the package read under `token` as new decks of new cards, all or
+ * nothing; with `bothDirections`, also the reversed cards. A package Rust no
+ * longer holds rejects with kind "stale".
+ */
+export function importAnkiPackage(token: number, bothDirections: boolean): Promise<AnkiImported> {
+  return invoke<AnkiImported>("import_anki_package", { token, bothDirections });
+}
+
+/** Lets Rust forget the package read under `token`. */
+export function cancelAnkiImport(token: number): Promise<void> {
+  return invoke<void>("cancel_anki_import", { token });
+}
+
 /** Every active (not deleted) note, most recently saved first. */
 export function getNotes(): Promise<NoteSummary[]> {
   return invoke<NoteSummary[]>("get_notes");
@@ -638,6 +714,45 @@ export function getNotes(): Promise<NoteSummary[]> {
  */
 export function searchNotes(query: string): Promise<NoteSummary[]> {
   return invoke<NoteSummary[]>("search_notes", { query });
+}
+
+/** What *Search* looks through: cards and notes, or only one of them. */
+export type SearchScope = "all" | "cards" | "notes";
+
+/** A run of snippet text; `hit` marks a word the search matched. */
+export type SnippetPiece = { text: string; hit: boolean };
+
+/**
+ * One search result. Text comes as snippets: a long side or body is cut
+ * around its matches, with "…" where text was left out.
+ */
+export type SearchHit =
+  | {
+      kind: "card";
+      cardId: number;
+      deckId: number;
+      deckName: string;
+      front: SnippetPiece[];
+      back: SnippetPiece[];
+    }
+  | { kind: "note"; noteId: number; title: SnippetPiece[]; body: SnippetPiece[] };
+
+/** The best results first, at most 50; `more` says whether others matched too. */
+export type SearchResults = { results: SearchHit[]; more: boolean };
+
+/**
+ * Searches every active card (in decks that aren't archived) and every active
+ * note at once. Each word matches the start of a word, ignoring capitals and
+ * accents; every word must match. `deckId` limits cards to one active deck,
+ * with scope "cards" only; refused as stale if that deck was archived since.
+ * Reads only.
+ */
+export function searchEverything(
+  query: string,
+  scope: SearchScope,
+  deckId: number | null,
+): Promise<SearchResults> {
+  return invoke<SearchResults>("search_everything", { query, scope, deckId });
 }
 
 /** Every deleted note, most recently deleted first. Read-only history. */
@@ -740,6 +855,45 @@ export function stopCardHelp(): Promise<void> {
 }
 
 /**
+ * Mirrors `QuizQuestion` in `src-tauri/src/quiz.rs`: one multiple-choice
+ * question, with its correct answer, three wrong ones, the passage of the
+ * note the answer comes from, and answer words the note never uses.
+ */
+export type QuizQuestion = {
+  question: string;
+  answer: string;
+  distractors: string[];
+  source: string;
+  unfamiliar: string[];
+};
+
+/** Mirrors `QuizOutcome` in `src-tauri/src/commands.rs`. Nothing has been saved. */
+export type QuizOutcome =
+  | { status: "written"; questions: QuizQuestion[]; leftOut: number; unsupported: number }
+  | { status: "stopped" };
+
+/**
+ * Asks `model`, in Ollama on this computer, for a multiple-choice quiz on a
+ * note, or on `part` of one too long to use whole (see `noteParts.ts`).
+ * Nothing is saved. Resolves with `{ status: "stopped" }` if `stopQuiz` is
+ * called first; rejects with kind "stale" if the model has left Ollama, or
+ * the note was deleted or no longer has that part.
+ */
+export function quizNote(
+  noteId: number,
+  model: string,
+  part?: { start: number; end: number }
+): Promise<QuizOutcome> {
+  const where = part && { part: { start: part.start, end: part.end } };
+  return invoke<QuizOutcome>("quiz_note", { noteId, model, ...where });
+}
+
+/** Stops the quiz being written, if any, which frees up the model. */
+export function stopQuiz(): Promise<void> {
+  return invoke<void>("stop_quiz");
+}
+
+/**
  * Mirrors `Settings` in `src-tauri/src/optimizer.rs`: the FSRS parameters
  * reviews are scheduled with, and how many reviews an optimization could learn
  * from. `version` changes with every apply and reset.
@@ -822,6 +976,72 @@ export function applyParameters(token: number): Promise<SchedulingSettings> {
  */
 export function resetParameters(version: number): Promise<SchedulingSettings> {
   return invoke<SchedulingSettings>("reset_parameters", { version });
+}
+
+/**
+ * Mirrors `Settings` in `src-tauri/src/retention.rs`, in whole percentages:
+ * the desired retention FSRS aims for, globally and per deck. `decks` are the
+ * active, ordinary decks by name, `percent` null when a deck follows the
+ * global value; `archivedOwn` counts archived decks with a value of their own,
+ * kept for when they're unarchived. `version` changes with every change.
+ */
+export type RetentionSettings = {
+  version: number;
+  global: number;
+  default: number;
+  minimum: number;
+  maximum: number;
+  decks: { id: number; name: string; percent: number | null }[];
+  archivedOwn: number;
+};
+
+/** Mirrors `Estimate` in `src-tauri/src/retention.rs`. */
+export type RetentionEstimate = {
+  /** Reviews a day on average over the estimate's days, first reviews included. */
+  reviewsPerDay: number;
+  /** How many cards the user would remember on the last day. */
+  remembered: number;
+};
+
+/** Mirrors `Preview` in `src-tauri/src/retention.rs`. Nothing is saved. */
+export type RetentionPreview = {
+  version: number;
+  cards: number;
+  days: number;
+  current: RetentionEstimate;
+  proposed: RetentionEstimate;
+  /** Whether simulated ratings follow the user's own mix (else FSRS's averages). */
+  ownRatings: boolean;
+};
+
+/**
+ * A desired-retention change: the global value (`deckId` null), or a deck's
+ * own, where `percent` null means following the global value again.
+ */
+export type RetentionChange = { deckId: number | null; percent: number | null };
+
+/** The desired retention settings. */
+export function getRetention(): Promise<RetentionSettings> {
+  return invoke<RetentionSettings>("get_retention");
+}
+
+/**
+ * Estimates the daily reviews with `change`, against the values in use.
+ * Nothing is saved. Rejects as `setRetention` would.
+ */
+export function previewRetention(
+  version: number,
+  change: RetentionChange
+): Promise<RetentionPreview> {
+  return invoke<RetentionPreview>("preview_retention", { version, ...change });
+}
+
+/**
+ * Makes `change` for every rating from now on; due dates already set stay.
+ * Rejects with kind "stale" if the settings changed since `version`.
+ */
+export function setRetention(version: number, change: RetentionChange): Promise<RetentionSettings> {
+  return invoke<RetentionSettings>("set_retention", { version, ...change });
 }
 
 /**

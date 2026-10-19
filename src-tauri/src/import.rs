@@ -961,8 +961,9 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(" || ' | ' || ");
             // Test-only SQL built from the database's own table and column
-            // names, never from input.
-            let sql = format!("SELECT {values} FROM \"{table}\" ORDER BY rowid");
+            // names, never from input. Ordered by the rows themselves: some
+            // of FTS5's tables for the search index have no rowid.
+            let sql = format!("SELECT {values} FROM \"{table}\" ORDER BY 1");
             let rows: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
                 .fetch_all(pool)
                 .await
@@ -1799,7 +1800,7 @@ mod tests {
             let dir = scratch("import-older");
             // A database an older Synapse left: one migration behind, with a
             // reviewed card in a user deck.
-            let old_version = db::latest_schema_version() - 1;
+            let old_version = previous_schema_version();
             let source_path = dir.join("source").join("synapse.sqlite");
             std::fs::create_dir_all(source_path.parent().unwrap()).unwrap();
             let source =
@@ -1833,7 +1834,7 @@ mod tests {
             let copy = open_file(&staged.database).await.unwrap();
             assert_eq!(
                 count(&copy, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-                db::latest_schema_version()
+                db::test_support::migration_count()
             );
             let card: (String, String, i64, Option<String>) = sqlx::query_as(
                 "SELECT front, fsrs_state, reps, due FROM flashcards WHERE deck_id = 2",
@@ -1954,6 +1955,229 @@ mod tests {
             let kept = optimizer::settings(&copy).await.unwrap();
             assert!(kept.personal);
             assert_eq!(kept.parameters, proposal.proposed);
+            copy.close().await;
+            discard_staged(&workspace);
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    #[test]
+    fn a_v0_7_0_backup_restores_with_everything_in_it_searchable() {
+        tauri::async_runtime::block_on(async {
+            use crate::search::{self, Hit, Scope};
+
+            let dir = scratch("import-pre-0013");
+            // A backup from v0.7.0 (schema 11), before the search index: a
+            // card, a deleted card, an archived deck's card, a note and a
+            // deleted note.
+            let source_path = dir.join("source").join("synapse.sqlite");
+            std::fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+            let source =
+                sqlx::SqlitePool::connect(&format!("sqlite:{}?mode=rwc", source_path.display()))
+                    .await
+                    .unwrap();
+            migrations_up_to(11).run(&source).await.unwrap();
+            for sql in [
+                "INSERT INTO seed_markers (name) VALUES ('sample_card')",
+                "INSERT INTO decks (name, created_at) VALUES ('Biology', ?1), ('Old', ?1)",
+                "INSERT INTO flashcards (deck_id, front, back) VALUES
+                     (2, 'Photosynthèse', 'Light to sugar'),
+                     (2, 'Photosynthesis deleted', 'Gone'),
+                     (3, 'Photosynthesis archived', 'Put away')",
+                "UPDATE flashcards SET deleted_at = ?1 WHERE id = 2",
+                "UPDATE decks SET archived_at = ?1 WHERE id = 3",
+                "INSERT INTO notes (title, body, created_at, updated_at) VALUES
+                     ('Plants', 'Chlorophyll drives photosynthesis.', ?1, ?1),
+                     ('Draft', 'Photosynthesis draft', ?1, ?1)",
+                "UPDATE notes SET deleted_at = ?1 WHERE id = 2",
+            ] {
+                sqlx::query(sql).bind(NOW).execute(&source).await.unwrap();
+            }
+            let archive = dir.join("backup.zip");
+            write_package(&source, &archive, at(NOW), "0.7.0")
+                .await
+                .unwrap();
+            source.close().await;
+
+            let target_path = dir.join("target").join("synapse.sqlite");
+            let database = Database::default();
+            *database.slot().lock().await = Some(target_database(&target_path).await);
+            let workspace = dir.join("target").join("import-workspace");
+            let staged = stage_package(&archive, &workspace).await.unwrap();
+            assert_eq!(staged.manifest.schema_version, 11);
+            replace_database(&database, &target_path, &staged.database, &workspace)
+                .await
+                .unwrap();
+            discard_staged(&workspace);
+            let restored = installed(&database).await;
+
+            // Every card and note was indexed on the way in; only the active
+            // ones are found, and what was put away is found once it's back.
+            assert_eq!(
+                count(&restored, "SELECT COUNT(*) FROM search_index").await,
+                5
+            );
+            let found = |hits: &search::SearchResults| -> Vec<String> {
+                let mut labels: Vec<String> = hits
+                    .results
+                    .iter()
+                    .map(|hit| match hit {
+                        Hit::Card { card_id, .. } => format!("card {card_id}"),
+                        Hit::Note { note_id, .. } => format!("note {note_id}"),
+                    })
+                    .collect();
+                labels.sort();
+                labels
+            };
+            let hits = search::search(&restored, "photosynth", Scope::All, None)
+                .await
+                .unwrap();
+            assert_eq!(found(&hits), ["card 1", "note 1"]);
+            crate::authoring::restore_flashcard(&restored, 2, at(LATER))
+                .await
+                .unwrap();
+            crate::notes::restore_note(&restored, 2).await.unwrap();
+            crate::authoring::unarchive_deck(&restored, 3)
+                .await
+                .unwrap();
+            let hits = search::search(&restored, "photosynth", Scope::All, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                found(&hits),
+                ["card 1", "card 2", "card 3", "note 1", "note 2"]
+            );
+
+            // A backup made now carries the index, passes every check, and
+            // restores to the same rows, index included.
+            let next = dir.join("next.zip");
+            write_package(&restored, &next, at(LATER), "0.8.0")
+                .await
+                .unwrap();
+            let workspace = dir.join("next-workspace");
+            let staged = stage_package(&next, &workspace).await.unwrap();
+            assert_eq!(staged.manifest.schema_version, db::latest_schema_version());
+            let copy = open_file(&staged.database).await.unwrap();
+            assert_eq!(dump(&copy).await, dump(&restored).await);
+            sqlx::query("INSERT INTO search_index (search_index) VALUES ('integrity-check')")
+                .execute(&copy)
+                .await
+                .unwrap();
+            copy.close().await;
+            discard_staged(&workspace);
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    #[test]
+    fn a_v0_7_0_backup_restores_aiming_for_ninety_percent() {
+        tauri::async_runtime::block_on(async {
+            use crate::retention::{self, Change};
+
+            let dir = scratch("import-pre-0014");
+            // A backup from v0.7.0 (schema 11), before desired retention could
+            // be chosen: a deck with months of reviews and parameters applied.
+            let source_path = dir.join("source").join("synapse.sqlite");
+            std::fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+            let source =
+                sqlx::SqlitePool::connect(&format!("sqlite:{}?mode=rwc", source_path.display()))
+                    .await
+                    .unwrap();
+            migrations_up_to(11).run(&source).await.unwrap();
+            sqlx::query("INSERT INTO seed_markers (name) VALUES ('sample_card')")
+                .execute(&source)
+                .await
+                .unwrap();
+            let deck = crate::optimizer::tests::add_history(&source, 60).await;
+            sqlx::query(
+                "INSERT INTO fsrs_parameters (parameters, reviews_used, applied_at)
+                 VALUES ('[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0.1]', 900, ?1)",
+            )
+            .bind(NOW)
+            .execute(&source)
+            .await
+            .unwrap();
+            let archive = dir.join("backup.zip");
+            write_package(&source, &archive, at(NOW), "0.7.0")
+                .await
+                .unwrap();
+            let source_rows = dump(&source).await;
+            source.close().await;
+
+            // The database it replaces aims for a value of its own.
+            let target_path = dir.join("target").join("synapse.sqlite");
+            let database = Database::default();
+            let target = target_database(&target_path).await;
+            retention::set(
+                &target,
+                0,
+                Change {
+                    deck_id: None,
+                    percent: Some(75),
+                },
+                at(NOW),
+            )
+            .await
+            .unwrap();
+            *database.slot().lock().await = Some(target);
+            let workspace = dir.join("target").join("import-workspace");
+            let staged = stage_package(&archive, &workspace).await.unwrap();
+            assert_eq!(staged.manifest.schema_version, 11);
+            replace_database(&database, &target_path, &staged.database, &workspace)
+                .await
+                .unwrap();
+            discard_staged(&workspace);
+            let restored = installed(&database).await;
+
+            // Everything in the backup is there, and it aims for 90% again,
+            // not the replaced database's value. Columns later migrations
+            // added (cloze cards' on flashcards) come after the old ones.
+            let imported = dump(&restored).await;
+            for (name, rows) in &source_rows {
+                if name != "sqlite_master" && name != "_sqlx_migrations" {
+                    let found = imported.iter().find(|(table, _)| table == name).unwrap();
+                    assert_eq!(found.1.len(), rows.len(), "{name}");
+                    for (now, before) in found.1.iter().zip(rows) {
+                        assert!(
+                            now == before || now.starts_with(&format!("{before} | ")),
+                            "{name}: {now} is not {before}"
+                        );
+                    }
+                }
+            }
+            let settings = retention::settings(&restored).await.unwrap();
+            assert_eq!((settings.version, settings.global), (0, 90));
+            let mut conn = restored.acquire().await.unwrap();
+            assert_eq!(retention::for_deck(&mut conn, deck).await.unwrap(), 0.9);
+            drop(conn);
+
+            // Values chosen afterwards travel in the next backup, which
+            // passes the same checks.
+            retention::set(
+                &restored,
+                0,
+                Change {
+                    deck_id: Some(deck),
+                    percent: Some(85),
+                },
+                at(LATER),
+            )
+            .await
+            .unwrap();
+            let next = dir.join("next.zip");
+            write_package(&restored, &next, at(LATER), "0.8.0")
+                .await
+                .unwrap();
+            let workspace = dir.join("next-workspace");
+            let staged = stage_package(&next, &workspace).await.unwrap();
+            assert_eq!(staged.manifest.schema_version, db::latest_schema_version());
+            let copy = open_file(&staged.database).await.unwrap();
+            let kept = retention::settings(&copy).await.unwrap();
+            assert_eq!(kept.version, 1);
+            assert_eq!(
+                kept.decks.iter().find(|d| d.id == deck).unwrap().percent,
+                Some(85)
+            );
             copy.close().await;
             discard_staged(&workspace);
             let _ = std::fs::remove_dir_all(&dir);

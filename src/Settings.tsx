@@ -11,6 +11,7 @@ import {
   type SchedulingSettings,
 } from "./api";
 import { RestoreIcon, SlidersIcon } from "./icons";
+import { Retention } from "./Retention";
 import { formatDateTime, Message, useFocusOnMount } from "./ui";
 
 type SettingsState =
@@ -34,10 +35,10 @@ async function loadSettings(): Promise<SettingsState> {
 }
 
 /**
- * Settings: for now, the FSRS parameters reviews are scheduled with, and
- * fitting them to the user's own history. Rust does the fitting, decides
- * whether the result may be applied, and keeps every change. Opened from the
- * sidebar, so it takes focus.
+ * Settings: the FSRS parameters reviews are scheduled with, fitting them to
+ * the user's own history, and the desired retention FSRS aims for (see
+ * `Retention.tsx`). Rust does the fitting, decides whether the result may be
+ * applied, and keeps every change. Opened from the sidebar, so it takes focus.
  */
 export function Settings() {
   const [state, setState] = useState<SettingsState>({ status: "loading" });
@@ -364,6 +365,8 @@ function Scheduling({
           <ParameterTable first={settings.parameters} firstLabel="In use" />
         </details>
       </section>
+
+      <Retention />
     </section>
   );
 }

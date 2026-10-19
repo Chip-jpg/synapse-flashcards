@@ -32,6 +32,7 @@ import {
   TrashIcon,
   UploadIcon,
 } from "./icons";
+import { Quiz } from "./Quiz";
 import { SuggestCards } from "./SuggestCards";
 import { SUGGESTION_NOTE_MAX_CHARS } from "./noteParts";
 import { formatDateTime, Message, useFocusOnMount } from "./ui";
@@ -60,16 +61,22 @@ type Place =
 export function NotesArea({
   onBack,
   onOpenDeck,
+  openNote,
 }: {
   onBack: () => void;
   /** Leaves notes for the deck screen, e.g. to see a card just written. */
   onOpenDeck: (deckId: number) => void;
+  /**
+   * Opens straight at one note, e.g. from a search, and goes back there
+   * instead of to the library.
+   */
+  openNote?: { noteId: number; backLabel: string; onBack: () => void };
 }) {
-  const [place, setPlace] = useState<Place>({
-    screen: "library",
-    focus: { to: "screen" },
-    notice: null,
-  });
+  const [place, setPlace] = useState<Place>(
+    openNote
+      ? { screen: "note", noteId: openNote.noteId, justCreated: false }
+      : { screen: "library", focus: { to: "screen" }, notice: null },
+  );
 
   if (place.screen === "new") {
     const imported = place.imported;
@@ -95,8 +102,11 @@ export function NotesArea({
         key={noteId}
         noteId={noteId}
         justCreated={place.justCreated}
+        backLabel={openNote?.noteId === noteId ? openNote.backLabel : "Back to notes"}
         onBack={() =>
-          setPlace({ screen: "library", focus: { to: "note", noteId }, notice: null })
+          openNote?.noteId === noteId
+            ? openNote.onBack()
+            : setPlace({ screen: "library", focus: { to: "note", noteId }, notice: null })
         }
         // The note is gone from the library, so the screen it was opened from
         // takes over and says what happened.
@@ -677,7 +687,7 @@ type NoteState =
   | { status: "ready"; note: Note };
 
 /** What takes focus when the note view appears. */
-type NoteFocus = "screen" | "notice" | "edit" | "card" | "suggest";
+type NoteFocus = "screen" | "notice" | "edit" | "card" | "suggest" | "quiz";
 
 /**
  * How the note view appears next. `key` changes every time, so the view
@@ -702,17 +712,19 @@ async function loadNote(noteId: number): Promise<NoteState> {
 
 /**
  * One note: reading it, editing it in place, writing a card from it, and
- * having a local model suggest cards from it.
+ * having a local model suggest cards from it or quiz the user on it.
  */
 function NoteScreen({
   noteId,
   justCreated,
+  backLabel,
   onBack,
   onDeleted,
   onOpenDeck,
 }: {
   noteId: number;
   justCreated: boolean;
+  backLabel: string;
   onBack: () => void;
   /** The note was deleted, so this screen can't show it any more. */
   onDeleted: () => void;
@@ -721,7 +733,7 @@ function NoteScreen({
   const [state, setState] = useState<NoteState>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
   // The note itself, or a form in its place.
-  const [mode, setMode] = useState<"view" | "edit" | "card" | "suggest">("view");
+  const [mode, setMode] = useState<"view" | "edit" | "card" | "suggest" | "quiz">("view");
   const [view, setView] = useState<NoteViewState>({
     key: 0,
     notice: justCreated ? "Note saved." : null,
@@ -772,7 +784,7 @@ function NoteScreen({
             Retry
           </button>
           <button type="button" className="button" onClick={onBack}>
-            Back to notes
+            {backLabel}
           </button>
         </div>
       </Message>
@@ -825,6 +837,24 @@ function NoteScreen({
     );
   }
 
+  if (mode === "quiz") {
+    return (
+      <Quiz
+        note={state.note}
+        onCancel={() => showView(null, "quiz")}
+        onSaved={(deck, count) =>
+          showView(
+            count === 1
+              ? `1 card added to ${deck.name}. It's due for review now.`
+              : `${count} cards added to ${deck.name}. They're due for review now.`,
+            "notice",
+            { id: deck.id, name: deck.name }
+          )
+        }
+      />
+    );
+  }
+
   return (
     <NoteView
       key={view.key}
@@ -835,8 +865,10 @@ function NoteScreen({
       onEdit={() => setMode("edit")}
       onCreateCard={() => setMode("card")}
       onSuggest={() => setMode("suggest")}
+      onQuiz={() => setMode("quiz")}
       onDeleted={onDeleted}
       onOpenDeck={onOpenDeck}
+      backLabel={backLabel}
       onBack={onBack}
     />
   );
@@ -850,8 +882,10 @@ function NoteView({
   onEdit,
   onCreateCard,
   onSuggest,
+  onQuiz,
   onDeleted,
   onOpenDeck,
+  backLabel,
   onBack,
 }: {
   note: Note;
@@ -861,8 +895,10 @@ function NoteView({
   onEdit: () => void;
   onCreateCard: () => void;
   onSuggest: () => void;
+  onQuiz: () => void;
   onDeleted: () => void;
   onOpenDeck: (deckId: number) => void;
+  backLabel: string;
   onBack: () => void;
 }) {
   const screenRef = useFocusOnMount<HTMLElement>(focus === "screen");
@@ -870,6 +906,7 @@ function NoteView({
   const editRef = useFocusOnMount<HTMLButtonElement>(focus === "edit");
   const cardRef = useFocusOnMount<HTMLButtonElement>(focus === "card");
   const suggestRef = useFocusOnMount<HTMLButtonElement>(focus === "suggest");
+  const quizRef = useFocusOnMount<HTMLButtonElement>(focus === "quiz");
   const edited = note.updatedAt !== note.createdAt;
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -926,7 +963,7 @@ function NoteView({
     >
       <button type="button" className="button button-quiet back-button" onClick={onBack}>
         <ArrowLeftIcon />
-        Back to notes
+        {backLabel}
       </button>
 
       <article className="card">
@@ -1024,6 +1061,16 @@ function NoteView({
             >
               <SparkleIcon />
               Suggest cards
+            </button>
+            <button
+              ref={quizRef}
+              type="button"
+              className="button button-tonal"
+              aria-describedby="note-heading"
+              onClick={onQuiz}
+            >
+              <SparkleIcon />
+              Quiz me
             </button>
             <button
               ref={deleteRef}

@@ -251,7 +251,8 @@ describe("restoring all deleted cards", () => {
     const notice = await screen.findByText(
       "The deleted cards couldn't be restored. Here's this deck as it is now.",
     );
-    expect(document.activeElement).toBe(notice);
+    // Focus moves in an effect after the notice renders.
+    await vi.waitFor(() => expect(document.activeElement).toBe(notice));
     expect(deck.argsOf("get_deck_detail")).toHaveLength(2);
     expect(screen.queryByRole("button", { name: "Restore all" })).toBeNull();
   });

@@ -30,6 +30,11 @@ migrations, validation, scheduling, and every business rule; React only calls ty
   once there are at least 400 reviews to learn from. Synapse shows how well the parameters in use
   and the fitted ones predict your reviews, and how the intervals would change; nothing changes
   until you apply them, and then only future ratings use them. *Reset to defaults* goes back.
+- **Desired retention** — also under *Settings*, choose the chance of remembering a card FSRS
+  aims for when it's due, from 70% to 97% (90% unless you change it), for all decks and, if you
+  like, for single decks. Before you apply a value, Synapse estimates your reviews a day over the
+  next 90 days at the value in use and at the chosen one, by simulating your own cards with
+  FSRS's simulator. Only future ratings use the new value; due dates already set stay.
 - **History is kept** — deleting a card, archiving a deck, and deleting a note are all *soft*: the
   rows stay in the database, a card keeps its FSRS state and review log, and a note keeps its text
   and its times. Every one of them can be brought back: a deleted card restored, an archived deck
@@ -42,6 +47,8 @@ migrations, validation, scheduling, and every business rule; React only calls ty
   *Deleted notes*, where *Restore note* brings it back unchanged.
 - **Cards from a spreadsheet** — add front/back cards to a deck from a CSV or TSV file, after
   checking every row, and save a deck's cards as a CSV file.
+- **Decks from Anki** — add the front/back notes of an Anki package (`.apkg` or `.colpkg`) as new
+  decks of new cards, after a preview of what comes across and what's left out.
 - **Import files as notes** — make a note from the text of a PDF, text (`.txt`), Markdown (`.md`),
   Word (`.docx`), or PowerPoint (`.pptx`) file. You check and edit the text before it's saved; the
   file itself isn't kept.
@@ -51,6 +58,10 @@ migrations, validation, scheduling, and every business rule; React only calls ty
   cards from a note, each shown with the passage of the note it comes from. You check, edit, and
   remove them, then save the ones you want into a deck. Nothing is saved until you do, and the
   note never leaves your computer.
+- **Quiz on a note (optional)** — have a model in Ollama, on your own computer, write up to eight
+  multiple-choice questions about a note, and answer them one at a time (keys 1–4 work). After each
+  answer you see the passage of the note it comes from; at the end, your score, and any question you
+  missed can be added to a deck as a card. Nothing else is saved.
 - **Help with hard cards (optional)** — after you answer Again on a card three times in a row,
   Synapse offers help with it once its answer is shown: a model in Ollama, on your computer, writes
   a mnemonic, a simpler explanation, an analogy, or the question asked another way, from the
@@ -233,6 +244,22 @@ standard CSV file with a *front* and a *back* column, which spreadsheets open an
 again. A cloze text is written once, however many cards it made, with the text in *front* and *back*
 left empty, so importing it makes it a cloze text again. Only the cards' text is saved, not their
 schedules or reviews, so it isn't a backup.
+A cell that starts with `=`, `+`, `-`, `@`, a tab or a line break gets a `'` in front, so a
+spreadsheet shows it as text instead of running it as a formula; Synapse takes that `'` off again
+when it imports the file, so its own exports come back exactly.
+
+**Import decks from Anki.** *Backup & restore* → *Decks from Anki* → *Choose an Anki file*, and pick
+an `.apkg` (exported from Anki, in its current format or "for older Anki versions") or a `.colpkg`
+(a whole collection). Synapse reads the file without changing anything and shows what it found:
+each Anki deck with the name of the new deck it becomes (a deck named like one you already have,
+archived ones included, gets " (2)" added), how many cards it brings, and how many notes are left
+out and why. Notes come across when their type has one front and one back, such as Anki's *Basic*,
+*Basic (and reversed card)*, *Basic (optional reversed card)* and *Basic (type in the answer)*, or
+your own types built the same way. A note becomes one card; tick the box to also add the reversed
+card for notes that have one in Anki. Formatting becomes plain text with its line breaks. Left out:
+cloze and image-occlusion notes, other note types, notes with an empty side, and sides over 2,000
+characters. *Add* creates every deck and card together, or nothing. Up to 50,000 cards and 1,000
+decks at a time.
 
 **Write notes.** *Notes* (in the sidebar, or *Open notes* on the Study Desk) → *New note*. A note
 has a title (up to 200 characters) and a plain-text body (up to 100,000 characters); both are
@@ -270,6 +297,16 @@ text contains what you type, ignoring capitals (accented letters included), stil
 edited first. It's plain matching: no fuzzy matches, and deleted notes aren't searched. *Clear* (or
 Escape) brings back the whole library. Searching saves nothing, so leaving with text in the search
 field doesn't ask about unsaved changes, and the search is gone when you come back.
+
+**Search everything at once.** *Search*, in the sidebar, looks through every card in every active
+deck (front and back) and every note (title and text) together. Each word you type matches the
+start of a word, ignoring capitals and accents ("ete" finds "Été"), and every word must match.
+Results come best first (a match in a card's front or a note's title counts more), at most 50,
+with the matched words marked. *Show* narrows them to cards or notes, and for cards to one deck.
+*Open in deck* shows the card in its deck, marked; *Open note* opens the note; *Back to search*
+returns to the same search. Deleted cards and notes, and cards in archived decks, aren't found
+until they're restored. Rust keeps a full-text index (SQLite FTS5) of cards and notes in step as
+they're written; it's part of the database, so it travels in backups.
 
 **Delete or restore a note.** Open a note → *Delete note* asks for confirmation, then takes the note
 out of your library: it can't be opened, edited, or used to write a card. Nothing is lost — the note
@@ -312,6 +349,21 @@ is offered in parts of up to 12,000 characters, each ending where a paragraph do
 *Part of the note*; the screen shows that part, the model reads only that part, and its cards are
 checked against it. Come back to *Suggest cards* for the other parts.
 
+**Take a quiz on a note.** With Ollama set up as above, open a note → *Quiz me* → choose a model →
+*Start quiz*. The model writes up to eight questions, each with one right answer and three wrong
+ones, under the same rules as suggestions: Ollama on this computer only, local models only, *Stop*
+at any time, and a long note quizzed one part at a time. Each question must quote the passage of
+your note its answer comes from, and Synapse leaves out (and tells you about) any whose quote isn't
+in your note word for word, whose right answer isn't taken from its quote, or whose four answers
+aren't all different. The answers are shown in a random order. Choose one with a click or with
+1–4; the right one is then marked, with its passage under it, and Enter (or *Next question*) moves
+on. At the end you see your score and every question you missed, with your answer and the right
+one. Tick the ones you want, choose a deck, and *Add* them: each becomes an ordinary card, with the
+question on the front and the right answer on the back, saved all together like suggested cards.
+The quiz itself isn't kept anywhere. Leaving asks first only while you have missed questions that
+haven't been added as cards, since those can't be got back; a quiz with nothing missed can simply be
+written again.
+
 **Get help with a card you keep forgetting.** A card's *Again streak* is how many of its latest
 reviews, in the order they were recorded, were all rated Again; a Hard, Good or Easy ends it.
 Every review of the card counts, in any session, including before it was edited or deleted and
@@ -328,8 +380,8 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
 ## Current limitations
 
 - **Import replaces; it never merges.** Restoring a backup replaces all current data, and that can't
-  be undone from the app. Only Synapse's own exports are accepted (no Anki files, CSV, or raw
-  `.sqlite` files), a backup whose database unpacks to more than 1 GiB is refused, and there's no
+  be undone from the app. Only Synapse's own exports are accepted (Anki files and CSV are added as
+  new cards elsewhere, never restored; raw `.sqlite` files aren't accepted), a backup whose database unpacks to more than 1 GiB is refused, and there's no
   preview of a backup's contents beyond its file name and export time. A restore that's interrupted
   (the process killed mid-swap) can leave a rollback copy in Synapse's data folder
   (`import-workspace/rollback.sqlite`, later renamed `rollback-kept-<time>.sqlite`); these are never
@@ -347,14 +399,23 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
 - **No sync, accounts, cloud, or collaboration.** By design.
 - **Personal scheduling is all or nothing.** One set of parameters is fitted to every review ever
   recorded (deleted cards and archived decks included) and used for every deck; there's no
-  per-deck set, no choice of desired retention (always 90%), and no automatic re-fitting: you
-  optimize again yourself. Fitted parameters apply only to ratings made afterwards; cards already
+  per-deck set and no automatic re-fitting: you optimize again yourself. Fitted parameters apply only to ratings made afterwards; cards already
   scheduled keep their due dates. Fitted parameters are only offered when they predict your own
   reviews better than the ones in use, measured on those same reviews.
-- **One card type.** Front/back text only: no images, audio, cloze, or tags.
-- **Card search is per deck, and bulk actions are delete and move.** Searching cards is exact
-  text within one deck's active cards; there's no search across decks or of deleted cards, no
-  tags or folders, and restoring several cards at once is only *Restore all*.
+- **Desired retention estimates are estimates.** They simulate your cards with the parameters in
+  use and how often you choose each rating (FSRS's averages until there are 50 of each kind),
+  assuming you review everything due and add no new cards; same-day repeats after *Again* aren't
+  counted. The sample deck and archived decks always follow the value for all decks.
+- **Two card types, both text.** Basic front/back and cloze: no images, audio, or tags, and a
+  card can't change type. Cards from the same cloze text aren't kept apart, so they can come up one
+  after another in a session. Anki's cloze notes aren't imported.
+- **Search matches words, not meanings.** *Search* finds words by their start (no fuzzy matching,
+  no matching inside a word, no synonyms), never searches deleted cards or notes, and shows at most
+  50 results. Words are split on anything that isn't a letter or digit, so text in scripts written
+  without spaces (Chinese, Japanese) is only found from the start of a run. The deck screen's own
+  *Search cards* and the library's *Search notes* are plain contains-text filters.
+- **Bulk actions are delete and move.** There are no tags or folders, and restoring several cards
+  at once is only *Restore all*.
 - **Statistics are counts, not scores.** The Study Desk counts today's reviews and the different
   cards they were for; the *Statistics* screen adds the last 30 days, true retention, cards by
   state, and a 14-day due forecast. There are no streaks, XP, or mastery percentages. Review
@@ -363,9 +424,16 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   overdue cards and new cards not yet studied. Retention counts only reviews of cards in the Review
   state, so it's empty until cards have graduated. Days are the computer's current time zone, so
   changing it (or travelling) moves where each day begins. Only active decks can be chosen.
-- **Spreadsheet export writes text as it is.** A card side that starts with `=`, `+`, `-` or `@`
-  is written unchanged, so a spreadsheet app may read it as a formula. Importing reads only the
-  first two columns as text and keeps no schedules, so it isn't a way to move a deck with its history.
+- **Spreadsheet files carry text only.** Importing reads only the first two columns as text and
+  keeps no schedules, so it isn't a way to move a deck with its history. A cell another program
+  wrote as `'=…` (a `'` and then a formula character) loses its first `'` on import, as Synapse's
+  own exports need.
+- **Anki imports bring text, not history.** Every imported card starts as new: Anki's schedule,
+  review history, tags, flags, suspended state and note links aren't imported, and neither are
+  pictures, sounds, LaTeX images or styling (text beside them is kept). Cloze and image-occlusion
+  notes, and note types with more than one field on either side, are left out and counted.
+  Subdecks become separate decks named like `Parent::Child`. Importing the same file twice makes
+  a second set of decks; nothing is merged or deduplicated.
 - **Suggestions are a first step.** They come only from Ollama on this computer, from one note
   at a time, and from one part of up to 12,000 characters of a longer note, as front/back cards.
   A file is suggested from once it's imported as a note. There's no cloud option, no choice of how
@@ -375,6 +443,11 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   How good they are depends on the model: small ones often copy the passage as the answer. The
   check that a card comes from your note compares words, so it's loosest for languages written
   without spaces, such as Chinese or Japanese.
+- **Quizzes are a first step too.** Only multiple choice, one note (or one part) at a time, and
+  nothing about a quiz is kept: no scores, no history, and no link between a card added from a
+  missed question and its note. The wrong answers are the model's own and aren't checked against
+  the note, so a weak model can write one that is arguably also right; the passage shown after
+  each answer is there to settle it.
 - **Frontend tests cover the risky interactions, not every screen.** The Rust core has unit tests
   (`cargo test`). On the React side, `npm test` runs the screens against a stand-in for the Rust
   core and checks reviewing (reveal before rating, the keyboard shortcuts, never rating twice),
@@ -387,11 +460,13 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
 - **`src/`** — the React UI. `api.ts` is the only file that calls Rust, through typed Tauri
   commands (and the window, to hold it open while something is unsaved). `Shell.tsx` is the
   sidebar and the bar above each screen. The screens are `Dashboard.tsx` (the Study Desk),
-  `DeckDetail.tsx`, `ReviewSession.tsx`, `Notes.tsx`, `Statistics.tsx`, `ArchivedDecks.tsx`,
+  `DeckDetail.tsx`, `ReviewSession.tsx`, `Notes.tsx`, `Search.tsx`, `Statistics.tsx`, `ArchivedDecks.tsx`,
   `Backup.tsx`, and `Settings.tsx`;
   `CardHelp.tsx` is the review screen's *Get help with this card*,
-  `SuggestCards.tsx` is the note screen's *Suggest cards*, and `noteParts.ts` splits a note too
-  long to suggest from whole into parts.
+  `SuggestCards.tsx` is the note screen's *Suggest cards*, `Quiz.tsx` its *Quiz me*, and
+  `noteParts.ts` splits a note too long to suggest from whole into parts.
+  `CardsCsv.tsx` and `AnkiImport.tsx` are *Backup & restore*'s *Cards in a spreadsheet* and
+  *Decks from Anki*.
   `unsaved.tsx` tracks which form holds unsaved text and asks before it's discarded. Tests sit
   beside the code they cover (`*.test.tsx`), with shared helpers in `src/test/`.
 - **`src-tauri/src/`** — the Rust core:
@@ -402,7 +477,11 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   - `optimizer.rs` — fitting FSRS's parameters to the review history (off the UI thread, stoppable,
     and stopped after two minutes), and which parameters are in use. Each apply or reset is a new
     row in `fsrs_parameters`; nothing already scheduled is rewritten.
+  - `retention.rs` — the desired retention for all decks and each deck, and estimating its
+    reviews with FSRS's simulator. Each change is a new row in `desired_retention`.
   - `study.rs` — the deck dashboard, review sessions, recording reviews, and today's count.
+  - `search.rs` — *Search*: every active card and note through the FTS5 index migration 0013
+    keeps in step. It writes nothing.
   - `stats.rs` — the Statistics screen's numbers, read from the review log and the cards. It
     writes nothing.
   - `authoring.rs` — creating, renaming, archiving, and unarchiving decks; adding, editing,
@@ -412,11 +491,18 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   - `notes.rs` — typed notes: writing, editing, searching, soft-deleting, and restoring them.
   - `suggest.rs` — asking Ollama, on this computer, to suggest cards from a note, and checking
     its answer. It writes nothing; suggested cards are saved through `authoring.rs`.
+  - `quiz.rs` — asking Ollama, through `suggest.rs`'s client, for a multiple-choice quiz on a
+    note, and checking each question against the note as suggested cards are. It writes nothing;
+    missed questions are added as cards through `authoring.rs`.
   - `aid.rs` — a card's Again streak, and asking Ollama, through `suggest.rs`'s client, for help
     with a card. It writes nothing; help is kept as a note through `notes.rs`.
   - `extract.rs` — reading the text of a file to import as a note, and the PDF helper (Synapse
     started with `--read-pdf-text`, see `main.rs`). `tests/pdf_helper.rs` runs the real binary as
     the helper.
+  - `cards_csv.rs` — reading CSV/TSV files of cards and writing a deck's cards as CSV.
+  - `anki.rs` — reading an Anki package's collection (copied out to a temporary folder and opened
+    read-only, never attached to Synapse's database) and adding its front/back notes as new decks.
+    `testdata/anki/` holds packages exported by Anki itself, and the script that made them.
   - `export.rs` / `import.rs` — writing a `.zip` backup, and checking and restoring one.
-- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0012`), embedded in the
+- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0014`), embedded in the
   binary at compile time.
