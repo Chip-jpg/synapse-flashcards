@@ -1,3 +1,4 @@
+mod aid;
 mod authoring;
 mod commands;
 mod db;
@@ -23,6 +24,8 @@ pub fn run() {
         .manage(import::ImportState::default())
         // The card suggestion Ollama is working on, so it can be stopped.
         .manage(suggest::Suggesting::default())
+        // The card help Ollama is writing, so it can be stopped.
+        .manage(aid::Helping::default())
         .setup(|app| {
             // A backup checked in an earlier run but never confirmed or
             // cancelled (the window closed while Synapse asked) can't be
@@ -66,7 +69,9 @@ pub fn run() {
             commands::import_file,
             commands::get_models,
             commands::suggest_cards,
-            commands::stop_suggesting
+            commands::stop_suggesting,
+            commands::get_card_help,
+            commands::stop_card_help
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

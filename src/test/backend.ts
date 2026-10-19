@@ -107,6 +107,11 @@ export function fakeBackend(overrides: Record<string, Handler> = {}) {
       unsupported: 0,
     }),
     stop_suggesting: () => null,
+    get_card_help: (args) => ({
+      status: "written",
+      help: { kind: args.kind, text: "Mighty Mito makes the power.", unfamiliar: [] },
+    }),
+    stop_card_help: () => null,
     "plugin:window|destroy": () => null,
     ...overrides,
   };

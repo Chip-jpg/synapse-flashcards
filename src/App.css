@@ -1969,3 +1969,37 @@ textarea.field-input {
     animation: none;
   }
 }
+
+/* Help with a card during review: offered after Again three times in a row,
+   or asked for on any card once its answer is shown. */
+.card-help {
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+  padding: 1.25rem 1.5rem;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.card-help-kinds {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.card-help-kind {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.card-help-kind input {
+  margin-top: 0.25rem;
+  accent-color: var(--primary);
+}

@@ -21,6 +21,7 @@ use chrono::{DateTime, NaiveDate, NaiveTime, TimeDelta, TimeZone, Utc};
 use fsrs::MemoryState;
 use sqlx::{SqliteConnection, SqlitePool};
 
+use crate::aid;
 use crate::db::{to_db_time, DbError};
 use crate::scheduler::{self, CardState, Rating, Schedule};
 
@@ -85,7 +86,8 @@ pub struct SessionProgress {
 }
 
 /// What a session shows next:
-/// `{ "status": "due", "card": {...}, "progress": {...} }` or
+/// `{ "status": "due", "card": {...}, "progress": {...}, "againStreak": 0,
+/// "offerHelp": false }` or
 /// `{ "status": "completed", "cardsReviewed": 3 }`.
 #[derive(Debug, serde::Serialize)]
 #[serde(
@@ -97,6 +99,12 @@ pub enum SessionCard {
     Due {
         card: Flashcard,
         progress: SessionProgress,
+        /// How many times in a row the card was last rated Again
+        /// (`aid::again_streak`).
+        again_streak: i64,
+        /// Whether to offer help with the card once its answer is shown: it
+        /// has been rated Again `aid::HELP_AFTER_AGAINS` times in a row.
+        offer_help: bool,
     },
     Completed {
         cards_reviewed: i64,
@@ -312,6 +320,7 @@ pub async fn session_card(
     if ended_at.is_none() {
         if let Some(card) = next_due_card(&mut tx, deck_id, &now).await? {
             let remaining = count_due_cards(&mut tx, deck_id, &now).await?;
+            let again_streak = aid::again_streak(&mut tx, card.id).await?;
             tx.commit().await?;
             return Ok(SessionCard::Due {
                 card,
@@ -319,6 +328,8 @@ pub async fn session_card(
                     reviewed: cards_reviewed,
                     remaining,
                 },
+                again_streak,
+                offer_help: again_streak >= aid::HELP_AFTER_AGAINS,
             });
         }
         finish_session(&mut tx, session_id, &now).await?;
@@ -613,6 +624,49 @@ mod tests {
         .fetch_one(pool)
         .await
         .unwrap()
+    }
+
+    #[test]
+    fn help_is_offered_with_a_card_rated_again_three_times_in_a_row() {
+        tauri::async_runtime::block_on(async {
+            let (pool, _) = seeded().await;
+            let deck = add_deck(&pool, "Hard").await;
+            let card = add_card(&pool, deck, None).await;
+            let mut now = at(NOW);
+
+            // The card as shown next: its streak, and whether help is offered.
+            async fn shown(pool: &SqlitePool, deck: i64, now: DateTime<Utc>) -> (i64, i64, bool) {
+                let session = start(pool, deck, now).await;
+                match session_card(pool, session, now).await.unwrap() {
+                    SessionCard::Due {
+                        card,
+                        again_streak,
+                        offer_help,
+                        ..
+                    } => (card.reps, again_streak, offer_help),
+                    SessionCard::Completed { .. } => panic!("expected a due card"),
+                }
+            }
+
+            let mut seen = Vec::new();
+            for rating in [Rating::Again, Rating::Again, Rating::Again, Rating::Good] {
+                let (reps, streak, offered) = shown(&pool, deck, now).await;
+                seen.push((streak, offered));
+                let session = start(&pool, deck, now).await;
+                record_review(&pool, session, card, reps, rating, now)
+                    .await
+                    .unwrap();
+                // Long enough for the card to be due again.
+                now += TimeDelta::days(30);
+            }
+            let (_, streak, offered) = shown(&pool, deck, now).await;
+            seen.push((streak, offered));
+
+            assert_eq!(
+                seen,
+                [(0, false), (1, false), (2, false), (3, true), (0, false)]
+            );
+        });
     }
 
     #[test]

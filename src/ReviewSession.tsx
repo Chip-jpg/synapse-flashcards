@@ -7,12 +7,19 @@ import {
   type Rating,
   type SessionProgress,
 } from "./api";
+import { CardHelp } from "./CardHelp";
 import { Message, useFocusOnMount } from "./ui";
 
 type SessionState =
   | { status: "loading" }
   | { status: "error"; message: string }
-  | { status: "due"; card: Flashcard; progress: SessionProgress }
+  | {
+      status: "due";
+      card: Flashcard;
+      progress: SessionProgress;
+      againStreak: number;
+      offerHelp: boolean;
+    }
   | { status: "completed"; cardsReviewed: number };
 
 /**
@@ -36,9 +43,9 @@ async function loadCard(sessionId: number): Promise<SessionState> {
 }
 
 /**
- * Whether a key press is someone typing rather than answering a card. The
- * review screen has no such fields today; the guard keeps the shortcuts from
- * eating keystrokes if one is ever added to it.
+ * Whether a key press is someone typing rather than answering a card, such
+ * as choosing a kind of help or a model in the card-help panel: the guard
+ * keeps the shortcuts from eating those keystrokes.
  */
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -112,6 +119,8 @@ export function ReviewSession({
             key={`${state.card.id}:${state.card.reps}`}
             sessionId={sessionId}
             card={state.card}
+            againStreak={state.againStreak ?? 0}
+            offerHelp={state.offerHelp === true}
             onReviewed={reload}
           />
         </>
@@ -170,10 +179,14 @@ function Progress({ progress }: { progress: SessionProgress }) {
 function Card({
   sessionId,
   card,
+  againStreak,
+  offerHelp,
   onReviewed,
 }: {
   sessionId: number;
   card: Flashcard;
+  againStreak: number;
+  offerHelp: boolean;
   onReviewed: () => void;
 }) {
   const [revealed, setRevealed] = useState(false);
@@ -343,6 +356,9 @@ function Card({
           </p>
         </div>
       )}
+
+      {/* After the answer, since the help repeats it. Rating never waits on it. */}
+      {revealed && <CardHelp card={card} offered={offerHelp} againStreak={againStreak} />}
     </article>
   );
 }
