@@ -10,6 +10,7 @@ mod import;
 mod notes;
 mod optimizer;
 mod scheduler;
+mod search;
 mod stats;
 mod study;
 mod suggest;
@@ -69,6 +70,7 @@ pub fn run() {
             commands::get_notes,
             commands::get_deleted_notes,
             commands::search_notes,
+            commands::search_everything,
             commands::get_note,
             commands::create_note,
             commands::update_note,
