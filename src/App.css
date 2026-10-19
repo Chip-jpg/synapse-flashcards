@@ -1462,6 +1462,18 @@ textarea.field-input {
   color: var(--danger);
 }
 
+/* The notes library's search field, with Clear beside it. */
+.note-search-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.note-search-row .field-input {
+  flex: 1;
+  min-width: 0;
+}
+
 .form-status:empty {
   display: none;
 }

@@ -161,6 +161,51 @@ pub async fn deleted_notes(pool: &SqlitePool) -> Result<Vec<DeletedNote>, sqlx::
     .await
 }
 
+/// An active note's text, read only to search it.
+#[derive(sqlx::FromRow)]
+struct SearchRow {
+    id: i64,
+    title: String,
+    body: String,
+    created_at: String,
+    updated_at: String,
+}
+
+/// The active (not deleted) notes whose title or body contains `query`,
+/// ignoring case, in the library's order (most recently saved first). Deleted
+/// notes are never searched.
+///
+/// The query's outer whitespace is trimmed; a blank query matches every
+/// active note, so it lists exactly what [`notes`] does. Matching is plain
+/// substring matching on Unicode lowercase (Rust's `to_lowercase`, not
+/// SQLite's `LOWER`, which only folds ASCII), so "ÉTÉ" finds "été". There is
+/// no index and no fuzzy matching: every active note is read and checked.
+pub async fn search_notes(pool: &SqlitePool, query: &str) -> Result<Vec<NoteSummary>, sqlx::Error> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return notes(pool).await;
+    }
+    let rows = sqlx::query_as::<_, SearchRow>(
+        "SELECT id, title, body, created_at, updated_at FROM notes
+         WHERE deleted_at IS NULL
+         ORDER BY updated_at DESC, id DESC",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter(|row| {
+            row.title.to_lowercase().contains(&needle) || row.body.to_lowercase().contains(&needle)
+        })
+        .map(|row| NoteSummary {
+            id: row.id,
+            title: row.title,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        })
+        .collect())
+}
+
 /// A note as stored, whether or not it has been deleted.
 #[derive(sqlx::FromRow)]
 struct NoteRow {
@@ -1492,6 +1537,89 @@ mod tests {
             pool.close().await;
 
             let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    /// The titles `search_notes` finds for `query`, in the order it lists them.
+    async fn found(pool: &SqlitePool, query: &str) -> Vec<String> {
+        search_notes(pool, query)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|note| note.title)
+            .collect()
+    }
+
+    #[test]
+    fn searching_finds_title_or_body_ignoring_case_in_library_order() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let older = create_note(&pool, "Cell biology", "Mitochondria make ATP.", at(NOW))
+                .await
+                .unwrap();
+            create_note(&pool, "Été en France", "Le soleil brille.", at(LATER))
+                .await
+                .unwrap();
+            let newer = create_note(&pool, "Mitosis", "Prophase, then metaphase.", at(DELETED))
+                .await
+                .unwrap();
+
+            // Title or body, either case, in the library's order.
+            assert_eq!(found(&pool, "MITO").await, ["Mitosis", "Cell biology"]);
+            assert_eq!(found(&pool, "metaphase").await, ["Mitosis"]);
+            assert_eq!(found(&pool, "  atp  ").await, ["Cell biology"]);
+            // Unicode lowercase, not just ASCII.
+            assert_eq!(found(&pool, "ÉTÉ").await, ["Été en France"]);
+            assert_eq!(found(&pool, "SOLEIL BRILLE").await, ["Été en France"]);
+            // Plain substrings only: no fuzzy matching.
+            assert!(found(&pool, "mitoses").await.is_empty());
+            assert!(found(&pool, "phase metaphase").await.is_empty());
+
+            // A blank query lists exactly the library.
+            for blank in ["", "   ", "\n\t"] {
+                assert_eq!(
+                    search_notes(&pool, blank).await.unwrap(),
+                    notes(&pool).await.unwrap()
+                );
+            }
+
+            // Results are the library's own summaries.
+            let summaries = search_notes(&pool, "mito").await.unwrap();
+            assert_eq!(
+                summaries.iter().map(|note| note.id).collect::<Vec<_>>(),
+                [newer.id, older.id]
+            );
+            assert_eq!(summaries[1].created_at, older.created_at);
+            assert_eq!(summaries[1].updated_at, older.updated_at);
+        });
+    }
+
+    #[test]
+    fn searching_skips_deleted_notes_and_changes_nothing() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            create_note(&pool, "Kept", "shared word", at(NOW))
+                .await
+                .unwrap();
+            let gone = create_note(&pool, "Gone", "shared word", at(LATER))
+                .await
+                .unwrap();
+            delete_note(&pool, gone.id, at(DELETED)).await.unwrap();
+            let before = all_notes(&pool).await;
+            let study_before = study_rows(&pool).await;
+
+            assert_eq!(found(&pool, "shared").await, ["Kept"]);
+            assert!(found(&pool, "gone").await.is_empty());
+            assert_eq!(found(&pool, "").await, ["Kept"]);
+
+            // Once restored, it's found again.
+            restore_note(&pool, gone.id).await.unwrap();
+            assert_eq!(found(&pool, "shared").await, ["Gone", "Kept"]);
+            delete_note(&pool, gone.id, at(DELETED)).await.unwrap();
+
+            // Searching only reads.
+            assert_eq!(all_notes(&pool).await, before);
+            assert_eq!(study_rows(&pool).await, study_before);
         });
     }
 }

@@ -369,6 +369,14 @@ export function getNotes(): Promise<NoteSummary[]> {
   return invoke<NoteSummary[]>("get_notes");
 }
 
+/**
+ * The active notes whose title or body contains `query`, ignoring case, most
+ * recently saved first. A blank query lists every active note. Reads only.
+ */
+export function searchNotes(query: string): Promise<NoteSummary[]> {
+  return invoke<NoteSummary[]>("search_notes", { query });
+}
+
 /** Every deleted note, most recently deleted first. Read-only history. */
 export function getDeletedNotes(): Promise<DeletedNote[]> {
   return invoke<DeletedNote[]>("get_deleted_notes");
