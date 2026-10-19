@@ -508,6 +508,16 @@ Added on branch `claude/nightly-2026-10-19-memory-aids-i9x6j9` (not yet released
 - **Drafts only.** Nothing is stored unless the user picks *Add as a note*, which uses `create_note`. No table, no migration, backups unchanged.
 - **Never in the way.** Rating doesn't wait for help; rating replaces the panel and stops a request still running. Without Ollama, review is unchanged.
 
+## 4.9 Quiz on a note
+
+Added on branch `claude/nightly-2026-10-19-note-quiz` (not yet released). Note → *Quiz me* → choose a model → *Start quiz*.
+
+- **Same rules as suggestions.** `quiz.rs` asks through `suggest.rs`'s `Ollama::ask`: 127.0.0.1 only, local models only (checked again before sending), user-initiated, *Stop* (`stop_quiz`, its own `Quizzing` state), 12,000-character limit with `noteParts` splitting. No migration, no table; backups unchanged.
+- **Checked like suggested cards.** Up to 8 questions (`MAX_QUESTIONS`), each with an answer, exactly 3 distractors and a quote. Kept only if the quote is in the note word for word (`quoted_from`) and the answer is drawn from it (`drawn_from`), both now `pub(crate)` in `suggest.rs`; the four options must all differ (`comparable`), so the answer is never a distractor. Distractors aren't checked against the note.
+- **Taking it.** One question at a time; options shuffled in React (`shuffled`); 1–4 answer (modifier and held keys ignored), then the right option is marked with the quote, and Enter/Space or *Next question* moves on. Summary: score and each missed question with both answers.
+- **Missed questions → cards.** Ticked ones are added to a chosen deck with `create_flashcards` (front = question, back = right answer). Nothing else is stored.
+- **Unsaved changes.** Leaving counts as unsaved only while some question has been missed and not added as a card: which questions were missed can't be got back, but the quiz can be written again. Adding the cards returns to the note.
+
 ______________________________________________________________________
 
 ## 5. FSRS and personalization
@@ -708,6 +718,7 @@ Current README identifies these main files:
 | `ReviewSession.tsx` | Review interaction |
 | `Notes.tsx` | Notes library and note flows, including importing a file as a note and searching the library |
 | `SuggestCards.tsx` | Suggesting cards from a note and checking them before saving |
+| `Quiz.tsx` | A multiple-choice quiz on a note, and adding missed questions as cards |
 | `deckChoices.ts` | The decks a card can be added to, for both card-from-note screens |
 | `Statistics.tsx` | Statistics: reviews per day, true retention, cards by state, due forecast (plain SVG charts) |
 | `ArchivedDecks.tsx` | Archived-deck recovery |
@@ -739,6 +750,7 @@ For example, hiding a Restore button is useful UX, but the Rust command must sti
 | `authoring.rs` | Deck/card creation and lifecycle |
 | `notes.rs` | Note lifecycle and note search |
 | `suggest.rs` | Asking Ollama for suggested cards, and checking them against the note |
+| `quiz.rs` | Asking Ollama for a multiple-choice quiz on a note, and checking its questions against the note |
 | `extract.rs` | Reading a file's text for import; the PDF helper process |
 | `cards_csv.rs` | Reading and checking CSV/TSV files of cards, saving them all together, and writing a deck as CSV (formula cells protected) |
 | `anki.rs` | Reading an Anki package's collection read-only and adding its front/back notes as new decks |
@@ -1042,7 +1054,7 @@ The current README is explicit about these gaps.
 
 - Flashcard generation beyond v0.4.0's local suggestions: no cloud providers, no choice of card count, and no suggestions from notes over 12,000 characters.
 - Summaries.
-- Quizzes.
+- Quizzes beyond multiple choice on one note (section 4.9).
 - Memory aids beyond help with a card after repeated Agains (section 4.8).
 - Feynman feedback.
 - Socratic tutoring.

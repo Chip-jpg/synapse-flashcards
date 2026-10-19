@@ -52,6 +52,10 @@ migrations, validation, scheduling, and every business rule; React only calls ty
   cards from a note, each shown with the passage of the note it comes from. You check, edit, and
   remove them, then save the ones you want into a deck. Nothing is saved until you do, and the
   note never leaves your computer.
+- **Quiz on a note (optional)** — have a model in Ollama, on your own computer, write up to eight
+  multiple-choice questions about a note, and answer them one at a time (keys 1–4 work). After each
+  answer you see the passage of the note it comes from; at the end, your score, and any question you
+  missed can be added to a deck as a card. Nothing else is saved.
 - **Help with hard cards (optional)** — after you answer Again on a card three times in a row,
   Synapse offers help with it once its answer is shown: a model in Ollama, on your computer, writes
   a mnemonic, a simpler explanation, an analogy, or the question asked another way, from the
@@ -301,6 +305,21 @@ is offered in parts of up to 12,000 characters, each ending where a paragraph do
 *Part of the note*; the screen shows that part, the model reads only that part, and its cards are
 checked against it. Come back to *Suggest cards* for the other parts.
 
+**Take a quiz on a note.** With Ollama set up as above, open a note → *Quiz me* → choose a model →
+*Start quiz*. The model writes up to eight questions, each with one right answer and three wrong
+ones, under the same rules as suggestions: Ollama on this computer only, local models only, *Stop*
+at any time, and a long note quizzed one part at a time. Each question must quote the passage of
+your note its answer comes from, and Synapse leaves out (and tells you about) any whose quote isn't
+in your note word for word, whose right answer isn't taken from its quote, or whose four answers
+aren't all different. The answers are shown in a random order. Choose one with a click or with
+1–4; the right one is then marked, with its passage under it, and Enter (or *Next question*) moves
+on. At the end you see your score and every question you missed, with your answer and the right
+one. Tick the ones you want, choose a deck, and *Add* them: each becomes an ordinary card, with the
+question on the front and the right answer on the back, saved all together like suggested cards.
+The quiz itself isn't kept anywhere. Leaving asks first only while you have missed questions that
+haven't been added as cards, since those can't be got back; a quiz with nothing missed can simply be
+written again.
+
 **Get help with a card you keep forgetting.** A card's *Again streak* is how many of its latest
 reviews, in the order they were recorded, were all rated Again; a Hard, Good or Easy ends it.
 Every review of the card counts, in any session, including before it was edited or deleted and
@@ -371,6 +390,11 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   How good they are depends on the model: small ones often copy the passage as the answer. The
   check that a card comes from your note compares words, so it's loosest for languages written
   without spaces, such as Chinese or Japanese.
+- **Quizzes are a first step too.** Only multiple choice, one note (or one part) at a time, and
+  nothing about a quiz is kept: no scores, no history, and no link between a card added from a
+  missed question and its note. The wrong answers are the model's own and aren't checked against
+  the note, so a weak model can write one that is arguably also right; the passage shown after
+  each answer is there to settle it.
 - **Frontend tests cover the risky interactions, not every screen.** The Rust core has unit tests
   (`cargo test`). On the React side, `npm test` runs the screens against a stand-in for the Rust
   core and checks reviewing (reveal before rating, the keyboard shortcuts, never rating twice),
@@ -386,8 +410,8 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   `DeckDetail.tsx`, `ReviewSession.tsx`, `Notes.tsx`, `Statistics.tsx`, `ArchivedDecks.tsx`,
   `Backup.tsx`, and `Settings.tsx`;
   `CardHelp.tsx` is the review screen's *Get help with this card*,
-  `SuggestCards.tsx` is the note screen's *Suggest cards*, and `noteParts.ts` splits a note too
-  long to suggest from whole into parts.
+  `SuggestCards.tsx` is the note screen's *Suggest cards*, `Quiz.tsx` its *Quiz me*, and
+  `noteParts.ts` splits a note too long to suggest from whole into parts.
   `CardsCsv.tsx` and `AnkiImport.tsx` are *Backup & restore*'s *Cards in a spreadsheet* and
   *Decks from Anki*.
   `unsaved.tsx` tracks which form holds unsaved text and asks before it's discarded. Tests sit
@@ -408,6 +432,9 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   - `notes.rs` — typed notes: writing, editing, searching, soft-deleting, and restoring them.
   - `suggest.rs` — asking Ollama, on this computer, to suggest cards from a note, and checking
     its answer. It writes nothing; suggested cards are saved through `authoring.rs`.
+  - `quiz.rs` — asking Ollama, through `suggest.rs`'s client, for a multiple-choice quiz on a
+    note, and checking each question against the note as suggested cards are. It writes nothing;
+    missed questions are added as cards through `authoring.rs`.
   - `aid.rs` — a card's Again streak, and asking Ollama, through `suggest.rs`'s client, for help
     with a card. It writes nothing; help is kept as a note through `notes.rs`.
   - `extract.rs` — reading the text of a file to import as a note, and the PDF helper (Synapse

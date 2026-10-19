@@ -10,6 +10,7 @@ pub mod extract;
 mod import;
 mod notes;
 mod optimizer;
+mod quiz;
 mod scheduler;
 mod stats;
 mod study;
@@ -30,6 +31,8 @@ pub fn run() {
         .manage(suggest::Suggesting::default())
         // The card help Ollama is writing, so it can be stopped.
         .manage(aid::Helping::default())
+        // The quiz Ollama is writing, so it can be stopped.
+        .manage(quiz::Quizzing::default())
         // Fitting FSRS parameters, so it can be stopped, and its result.
         .manage(optimizer::Optimizing::default())
         // An Anki package read and waiting for the user to add it.
@@ -91,6 +94,8 @@ pub fn run() {
             commands::export_cards_csv,
             commands::get_card_help,
             commands::stop_card_help,
+            commands::quiz_note,
+            commands::stop_quiz,
             commands::read_anki_package,
             commands::import_anki_package,
             commands::cancel_anki_import

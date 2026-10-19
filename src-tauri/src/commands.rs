@@ -23,6 +23,7 @@ use crate::extract::{self, ExtractError, ExtractedText, FileKind};
 use crate::import::{self, ImportError, ImportState, RestoreError};
 use crate::notes::{self, DeletedNote, InvalidNote, Note, NoteError, NoteSummary};
 use crate::optimizer::{self, IntervalChange, Optimized, OptimizerError, Optimizing, Settings};
+use crate::quiz::{self, QuizQuestion, Quizzing};
 use crate::scheduler::Rating;
 use crate::stats::{self, Statistics};
 use crate::study::{self, DeckSummary, SessionCard, StartedSession, StudyError, TodaySummary};
@@ -1121,6 +1122,121 @@ pub async fn get_card_help(
 #[tauri::command]
 pub fn stop_card_help(helping: State<'_, Helping>) {
     helping.0.stop();
+}
+
+/// Turns a failed quiz into a user-safe error, logging internal detail.
+/// Neither the note nor the model's answer is ever logged.
+fn quiz_error(err: SuggestError) -> CommandError {
+    match err {
+        SuggestError::NoteTooLong => CommandError::invalid(
+            "This is too long to write a quiz from: up to 12,000 characters of a note can be \
+             used at a time.",
+        ),
+        SuggestError::NoteOverflowed => CommandError::failed(
+            "This note was too long for the model to read all at once, so no quiz was written. \
+             Try a shorter note.",
+        ),
+        SuggestError::Unusable(detail) => {
+            eprintln!("[synapse] the model's quiz was unusable: {detail}");
+            CommandError::failed(
+                "The model's answer didn't include any usable questions. Try again, or choose \
+                 another model.",
+            )
+        }
+        SuggestError::Ungrounded => CommandError::failed(
+            "None of the questions the model wrote could be traced back to your note, so none \
+             are shown. Try again, or choose a larger model.",
+        ),
+        SuggestError::Internal(detail) => {
+            eprintln!("[synapse] setting up a request to Ollama failed: {detail}");
+            CommandError::failed("Synapse couldn't ask Ollama for a quiz.")
+        }
+        other => suggest_error(other),
+    }
+}
+
+/// What asking for a quiz did: `{ "status": "written", "questions": [{
+/// question, answer, distractors, source, unfamiliar }], "leftOut": 1,
+/// "unsupported": 2 }` or `{ "status": "stopped" }`.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum QuizOutcome {
+    Written {
+        /// The questions, to take on screen: nothing has been saved.
+        questions: Vec<QuizQuestion>,
+        /// Questions left out as unusable, so the user can be told.
+        left_out: usize,
+        /// Questions left out as not coming from the note.
+        unsupported: usize,
+    },
+    /// `stop_quiz` was called first.
+    Stopped,
+}
+
+/// Asks a local model in Ollama for a multiple-choice quiz on a note: up to
+/// eight questions, each with one correct answer and three wrong ones. Only
+/// Ollama on this computer is asked, and nothing is saved; the user may add
+/// questions they missed as cards with `create_flashcards`. Asking again, or
+/// `stop_quiz`, stops this one. Card suggestions and card help are separate.
+///
+/// Arguments: `{ noteId, model, part? }`, as for `suggest_cards`. Returns
+/// [`QuizOutcome`]; rejects with kind "stale" if the note was deleted, no
+/// longer has that part, or the model is no longer in Ollama.
+#[tauri::command]
+pub async fn quiz_note(
+    app: AppHandle,
+    database: State<'_, Database>,
+    quizzing: State<'_, Quizzing>,
+    note_id: i64,
+    model: String,
+    part: Option<NotePart>,
+) -> Result<QuizOutcome, CommandError> {
+    if note_id < 1 {
+        return Err(CommandError::invalid(NOTE_NOT_FOUND));
+    }
+    // Tracked from the start, so a stop while the note loads counts too.
+    let request = quizzing.0.begin();
+    let work = async {
+        let pool = pool(&app, &database).await?;
+        let note = notes::note(&pool, note_id).await.map_err(|err| {
+            note_error(
+                err,
+                "loading a note to write a quiz from",
+                "Synapse couldn't load this note.",
+            )
+        })?;
+        let body = match part {
+            None => note.body.as_str(),
+            Some(part) => suggest::part_of(&note.body, part).ok_or_else(|| {
+                CommandError::stale(
+                    "That part of the note has changed. Go back to the note and try again.",
+                )
+            })?,
+        };
+        let ollama = Ollama::local().map_err(quiz_error)?;
+        quiz::quiz(&ollama, &model, &note.title, body)
+            .await
+            .map_err(quiz_error)
+    };
+    match request.run(work).await {
+        None => Ok(QuizOutcome::Stopped),
+        Some(result) => result.map(|written| QuizOutcome::Written {
+            questions: written.questions,
+            left_out: written.left_out,
+            unsupported: written.unsupported,
+        }),
+    }
+}
+
+/// Stops the quiz being written, if any; its `quiz_note` call then returns
+/// `{ status: "stopped" }`. Takes no arguments; returns `null`.
+#[tauri::command]
+pub fn stop_quiz(quizzing: State<'_, Quizzing>) {
+    quizzing.0.stop();
 }
 
 /// What choosing a file to import as a note did: `{ "status": "read", "fileName",
@@ -2694,6 +2810,67 @@ mod tests {
             serde_json::to_value(SuggestOutcome::Stopped).unwrap(),
             json!({ "status": "stopped" })
         );
+    }
+
+    #[test]
+    fn quizzes_serialize_to_the_shape_react_expects() {
+        assert_eq!(
+            serde_json::to_value(QuizOutcome::Written {
+                questions: vec![QuizQuestion {
+                    question: "What does mitosis produce?".to_string(),
+                    answer: "Two identical cells".to_string(),
+                    distractors: vec!["One cell".into(), "Four cells".into(), "No cells".into()],
+                    source: "It produces two identical cells.".to_string(),
+                    unfamiliar: vec![],
+                }],
+                left_out: 1,
+                unsupported: 2,
+            })
+            .unwrap(),
+            json!({
+                "status": "written",
+                "questions": [{
+                    "question": "What does mitosis produce?",
+                    "answer": "Two identical cells",
+                    "distractors": ["One cell", "Four cells", "No cells"],
+                    "source": "It produces two identical cells.",
+                    "unfamiliar": []
+                }],
+                "leftOut": 1,
+                "unsupported": 2
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(QuizOutcome::Stopped).unwrap(),
+            json!({ "status": "stopped" })
+        );
+    }
+
+    #[test]
+    fn failed_quizzes_are_reported_without_detail_and_never_mention_cards() {
+        let detail = || -> crate::db::DbError { "http://127.0.0.1:11434/api/chat: secret".into() };
+        for (err, kind) in [
+            (SuggestError::Unreachable(detail()), "failed"),
+            (SuggestError::ModelMissing, "stale"),
+            (SuggestError::NoteTooLong, "invalid"),
+            (SuggestError::NoteOverflowed, "failed"),
+            (SuggestError::TimedOut, "failed"),
+            (SuggestError::Unusable(detail()), "failed"),
+            (SuggestError::Ungrounded, "failed"),
+            (SuggestError::Internal(detail()), "failed"),
+        ] {
+            let value = serde_json::to_value(quiz_error(err)).unwrap();
+            assert_eq!(value["kind"], kind, "{value}");
+            let message = value["message"].as_str().unwrap();
+            assert!(
+                !message.contains("secret") && !message.contains("11434"),
+                "{message}"
+            );
+            assert!(
+                !message.contains("card") && !message.contains("suggest"),
+                "{message}"
+            );
+        }
     }
 
     #[test]

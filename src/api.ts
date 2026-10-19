@@ -738,6 +738,45 @@ export function stopCardHelp(): Promise<void> {
 }
 
 /**
+ * Mirrors `QuizQuestion` in `src-tauri/src/quiz.rs`: one multiple-choice
+ * question, with its correct answer, three wrong ones, the passage of the
+ * note the answer comes from, and answer words the note never uses.
+ */
+export type QuizQuestion = {
+  question: string;
+  answer: string;
+  distractors: string[];
+  source: string;
+  unfamiliar: string[];
+};
+
+/** Mirrors `QuizOutcome` in `src-tauri/src/commands.rs`. Nothing has been saved. */
+export type QuizOutcome =
+  | { status: "written"; questions: QuizQuestion[]; leftOut: number; unsupported: number }
+  | { status: "stopped" };
+
+/**
+ * Asks `model`, in Ollama on this computer, for a multiple-choice quiz on a
+ * note, or on `part` of one too long to use whole (see `noteParts.ts`).
+ * Nothing is saved. Resolves with `{ status: "stopped" }` if `stopQuiz` is
+ * called first; rejects with kind "stale" if the model has left Ollama, or
+ * the note was deleted or no longer has that part.
+ */
+export function quizNote(
+  noteId: number,
+  model: string,
+  part?: { start: number; end: number }
+): Promise<QuizOutcome> {
+  const where = part && { part: { start: part.start, end: part.end } };
+  return invoke<QuizOutcome>("quiz_note", { noteId, model, ...where });
+}
+
+/** Stops the quiz being written, if any, which frees up the model. */
+export function stopQuiz(): Promise<void> {
+  return invoke<void>("stop_quiz");
+}
+
+/**
  * Mirrors `Settings` in `src-tauri/src/optimizer.rs`: the FSRS parameters
  * reviews are scheduled with, and how many reviews an optimization could learn
  * from. `version` changes with every apply and reset.
