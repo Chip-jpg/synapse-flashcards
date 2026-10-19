@@ -281,6 +281,10 @@ The user must unarchive a deck before restoring one of its deleted cards.
 
 With two or more deleted cards in a deck, *Restore all* (`restore_deleted_cards` in `authoring.rs`) restores every one of them in one transaction, by the same preservation rules and deck refusals. It sends the number the user confirmed; if the deck no longer has exactly that many deleted cards, it is refused as stale and nothing is written.
 
+### Several cards at once
+
+Added after v0.6.0. On the deck screen, *Search cards* filters the deck's active cards by exact text in front or back, ignoring case (in React: the cards are already loaded and nothing is written). Cards are ticked one by one or with *Select all* (the cards the search shows), then *Delete selected* (`delete_flashcards`) or *Move selected* (`move_flashcards`, both in `authoring.rs`). Each sends the ids the user confirmed and works in one transaction; if any of them is no longer an active card of that deck, it is refused as stale and nothing is written. A move changes only `deck_id` and `updated_at`, so FSRS state, due date, counts and review logs carry over. The Sample deck and archived decks are refused on either side. No migration: 0006 already refuses moves into or out of an archived deck, and 0010 a move of a deleted card.
+
 ### Timestamp caveat
 
 Your implementation report identified one historical detail worth retaining: deleting a card already changes its `updated_at` timestamp. Restoring it cannot recover an earlier edit timestamp that was not stored separately.
@@ -1019,10 +1023,10 @@ The current README is explicit about these gaps.
 
 ### Organization
 
-- Card search. Notes can be searched by exact text (title or body, ignoring case), with no index or fuzzy matching.
+- Card search across decks. Within one deck, cards can be searched by exact text (section 4.2); notes by exact text (title or body, ignoring case), with no index or fuzzy matching.
 - Tags.
 - Folders.
-- Bulk actions.
+- Bulk actions beyond deleting and moving a deck's selected cards (and *Restore all*).
 - Card movement between decks through restoration.
 - Standard external deck import formats.
 

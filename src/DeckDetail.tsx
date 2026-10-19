@@ -13,6 +13,7 @@ import {
   type DeckDetail as Deck,
   type DeletedCard,
 } from "./api";
+import { CardSearchField, cardCount, matchingCards, SelectionActions } from "./CardBulkActions";
 import { FormActions, TextField, useFormSave } from "./forms";
 import {
   ArchiveIcon,
@@ -214,6 +215,23 @@ export function DeckDetail({
         // the deck was archived meanwhile. Nothing was restored.
         reload("The deleted cards couldn't be restored. Here's this deck as it is now.")
       }
+      onBulkDeleted={(deck, deleted) =>
+        showSaved(
+          deck,
+          `${cardCount(deleted)} deleted. ${deleted === 1 ? "It's" : "They're"} kept under Deleted cards, where you can restore ${deleted === 1 ? "it" : "them"}.`,
+        )
+      }
+      onBulkMoved={(deck, moved, toDeckName) =>
+        showSaved(
+          deck,
+          `${cardCount(moved)} moved to ${toDeckName}, with ${moved === 1 ? "its schedule" : "their schedules"} unchanged.`,
+        )
+      }
+      onBulkStale={(message) =>
+        // The selected cards aren't all in this deck any more, or a deck was
+        // archived meanwhile. Nothing was changed; say why, and reload.
+        reload(`${message} Nothing was changed. Here's this deck as it is now.`)
+      }
       onRename={() => setMode({ kind: "rename" })}
       onArchived={onArchived}
       onBack={onBack}
@@ -234,6 +252,9 @@ function DeckView({
   onRestoreStale,
   onRestoredAll,
   onRestoreAllStale,
+  onBulkDeleted,
+  onBulkMoved,
+  onBulkStale,
   onRename,
   onArchived,
   onBack,
@@ -253,6 +274,12 @@ function DeckView({
   onRestoredAll: (deck: Deck, restored: number) => void;
   /** *Restore all* was refused because this screen is out of date. */
   onRestoreAllStale: () => void;
+  /** The selected cards were deleted. */
+  onBulkDeleted: (deck: Deck, deleted: number) => void;
+  /** The selected cards were moved to the deck named `toDeckName`. */
+  onBulkMoved: (deck: Deck, moved: number, toDeckName: string) => void;
+  /** A change to the selected cards was refused because this screen is out of date. */
+  onBulkStale: (message: string) => void;
   onRename: () => void;
   onArchived: () => void;
   onBack: () => void;
@@ -267,6 +294,35 @@ function DeckView({
   const cards = deck.cardCount;
   const due = deck.dueCount;
   const deleted = deck.deletedCards.length;
+  // The search and selection last as long as this view: any change to the
+  // deck remounts it (see `ViewState`), which clears both.
+  const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState<ReadonlySet<number>>(new Set());
+  const shown = matchingCards(deck.cards, query);
+  // In the deck's order, which is the order they are sent in.
+  const selectedIds = deck.cards.map((card) => card.id).filter((id) => selected.has(id));
+  const shownSelected = shown.filter((card) => selected.has(card.id)).length;
+  const allShownSelected = shown.length > 0 && shownSelected === shown.length;
+
+  function toggle(cardId: number) {
+    setSelected((previous) => {
+      const next = new Set(previous);
+      if (!next.delete(cardId)) next.add(cardId);
+      return next;
+    });
+  }
+
+  /** Selects every card the search shows, or unselects them if all already are. */
+  function toggleShown() {
+    setSelected((previous) => {
+      const next = new Set(previous);
+      for (const card of shown) {
+        if (allShownSelected) next.delete(card.id);
+        else next.add(card.id);
+      }
+      return next;
+    });
+  }
 
   return (
     <section ref={screenRef} className="deck-detail" tabIndex={-1} aria-labelledby="deck-detail-name">
@@ -338,14 +394,35 @@ function DeckView({
         <h3 id="cards-heading" className="section-title">
           Cards <span className="count">{cards}</span>
         </h3>
+        {deck.cards.length >= 2 && (
+          <CardSearchField query={query} shown={shown.length} onChange={setQuery} />
+        )}
+        {deck.cards.length > 0 && shown.length > 0 && (
+          <label className="select-all">
+            <SelectAllBox
+              checked={allShownSelected}
+              mixed={shownSelected > 0 && !allShownSelected}
+              onChange={toggleShown}
+            />
+            {query.trim() === ""
+              ? "Select all cards"
+              : `Select all ${shown.length === 1 ? "matching card" : `${shown.length} matching cards`}`}
+          </label>
+        )}
         {deck.cards.length === 0 ? (
           <p className="empty">Choose Add card to write this deck's first card.</p>
+        ) : shown.length === 0 ? (
+          <p className="empty">
+            No cards in this deck match “{query.trim()}”. Try other words, or clear the search.
+          </p>
         ) : (
           <ul className="card-list">
-            {deck.cards.map((card) => (
+            {shown.map((card) => (
               <li key={card.id}>
                 <CardItem
                   card={card}
+                  selected={selected.has(card.id)}
+                  onToggle={() => toggle(card.id)}
                   focusEdit={card.id === editFocusId}
                   onEdit={() => onEdit(card)}
                   onDeleted={onDeleted}
@@ -354,6 +431,19 @@ function DeckView({
               </li>
             ))}
           </ul>
+        )}
+        {/* After the list, and held at the bottom of the window while the list
+            scrolls past, so selecting a card never moves the cards. */}
+        {selectedIds.length > 0 && (
+          <SelectionActions
+            deck={deck}
+            selected={selectedIds}
+            hidden={selectedIds.length - shownSelected}
+            onClear={() => setSelected(new Set())}
+            onDeleted={onBulkDeleted}
+            onMoved={onBulkMoved}
+            onStale={onBulkStale}
+          />
         )}
       </section>
 
@@ -567,15 +657,40 @@ function CardText({ frontId, front, back }: { frontId: string; front: string; ba
   );
 }
 
-/** One card in the list: its full text, Edit, and a two-step Delete. */
+/**
+ * The "select all" checkbox, shown as partly checked (`mixed`) when only some
+ * of the cards it covers are selected.
+ */
+function SelectAllBox({
+  checked,
+  mixed,
+  onChange,
+}: {
+  checked: boolean;
+  mixed: boolean;
+  onChange: () => void;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = mixed;
+  }, [mixed]);
+  return <input ref={ref} type="checkbox" checked={checked} onChange={onChange} />;
+}
+
+/** One card in the list: its full text, a Select box, Edit, and a two-step Delete. */
 function CardItem({
   card,
+  selected,
+  onToggle,
   focusEdit,
   onEdit,
   onDeleted,
   onStale,
 }: {
   card: DeckCard;
+  /** Whether the card is selected for a change to several cards at once. */
+  selected: boolean;
+  onToggle: () => void;
   focusEdit: boolean;
   onEdit: () => void;
   onDeleted: (deck: Deck) => void;
@@ -665,6 +780,15 @@ function CardItem({
         </div>
       ) : (
         <div className="deck-actions item-actions">
+          <label className="card-select">
+            <input
+              type="checkbox"
+              checked={selected}
+              aria-describedby={frontId}
+              onChange={onToggle}
+            />
+            Select
+          </label>
           <button
             ref={editRef}
             type="button"

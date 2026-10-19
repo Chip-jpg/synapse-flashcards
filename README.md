@@ -146,6 +146,16 @@ and the Sample deck's cards stay out of this entirely. With two or more deleted 
 asks for confirmation, naming how many, then restores every one of them the same way, all together
 or not at all.
 
+**Search, select, and change several cards.** With two or more cards, the deck screen has *Search
+cards*, which shows only the cards whose front or back contains what you type (ignoring capitals).
+Tick *Select* on any cards, or *Select all* for every card the search shows, then *Delete selected*
+or *Move selected*. Both ask first, naming how many (and saying if the search is hiding some of
+them). Deleting works as deleting one card does. Moving takes the cards to another of your decks
+with the same id, text, FSRS state, due date, reps, lapses, and review log, so each is due there
+exactly when it would have been here. All the selected cards change together, or none do: if any
+of them was changed meanwhile, nothing happens and the screen reloads. The Sample deck and
+archived decks can't be moved to or from.
+
 **Rename or archive a deck.** Also on the deck screen. Archiving asks for confirmation, then moves
 the deck to *Archived decks*: it can't be reviewed, changed, or given new cards, and any unfinished
 session in it is closed. Its cards and history are kept, and its name stays taken.
@@ -274,7 +284,9 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
 - **Default FSRS parameters only.** The optimizer that re-fits weights to your own history is
   future work and isn't built.
 - **One card type.** Front/back text only: no images, audio, cloze, or tags.
-- **No card search, bulk actions, or folders.** Only notes can be searched.
+- **Card search is per deck, and bulk actions are delete and move.** Searching cards is exact
+  text within one deck's active cards; there's no search across decks or of deleted cards, no
+  tags or folders, and restoring several cards at once is only *Restore all*.
 - **Statistics are counts, not scores.** The Study Desk counts today's reviews and the different
   cards they were for; the *Statistics* screen adds the last 30 days, true retention, cards by
   state, and a 14-day due forecast. There are no streaks, XP, or mastery percentages. Review

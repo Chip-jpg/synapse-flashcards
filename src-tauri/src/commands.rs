@@ -208,6 +208,25 @@ fn authoring_error(err: AuthoringError, context: &str, failed: &'static str) -> 
         AuthoringError::DeletedCardsChanged => {
             CommandError::stale("This deck's deleted cards have changed.")
         }
+        AuthoringError::NoneSelected => CommandError::invalid("Select at least one card."),
+        AuthoringError::TooManySelected => {
+            CommandError::invalid("At most 10,000 cards can be changed at once.")
+        }
+        AuthoringError::DuplicateSelected => {
+            CommandError::invalid("The same card was selected twice.")
+        }
+        // The cards on screen aren't the ones the deck has now: reload rather
+        // than retry. Nothing was written.
+        AuthoringError::SelectionChanged => {
+            CommandError::stale("Some of the selected cards have changed.")
+        }
+        AuthoringError::SameDeck => CommandError::invalid("The cards are already in that deck."),
+        // The deck list the user chose from is out of date (the deck was
+        // archived since), so React reloads it. The sample deck and a missing
+        // deck are never offered, so they only arrive here from a stale list.
+        AuthoringError::MoveTargetUnavailable => {
+            CommandError::stale("That deck can't take cards any more.")
+        }
         AuthoringError::Internal(detail) => {
             eprintln!("[synapse] {context} failed: {detail}");
             CommandError::failed(failed)
@@ -579,6 +598,60 @@ pub async fn restore_deleted_cards(
                 "Synapse couldn't restore the cards.",
             )
         })
+}
+
+/// Soft-deletes several cards of one deck at once, each exactly as
+/// `delete_flashcard` deletes one.
+///
+/// Arguments: `{ deckId, cardIds }`, the cards the user selected and
+/// confirmed. Returns `{ changed, deck }`: how many were deleted, and the deck
+/// now listing them under `deletedCards` (same shape as `get_deck_detail`).
+/// Rejects with kind "stale" if any of them is no longer an active card of the
+/// deck, or the deck has been archived, writing nothing either way.
+#[tauri::command]
+pub async fn delete_flashcards(
+    app: AppHandle,
+    database: State<'_, Database>,
+    deck_id: i64,
+    card_ids: Vec<i64>,
+) -> Result<authoring::ChangedCards, CommandError> {
+    if deck_id < 1 {
+        return Err(CommandError::invalid(DECK_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    authoring::delete_flashcards(&pool, deck_id, &card_ids, Utc::now())
+        .await
+        .map_err(|err| {
+            authoring_error(
+                err,
+                "deleting selected cards",
+                "Synapse couldn't delete the cards.",
+            )
+        })
+}
+
+/// Moves several cards of one deck into another active normal deck. Each card
+/// keeps its id, text, FSRS state, due date, counts, and review history.
+///
+/// Arguments: `{ deckId, cardIds, toDeckId }`. Returns `{ changed, deck }`:
+/// how many moved, and the deck they came from, without them. Rejects with
+/// kind "stale" if any card is no longer an active card of `deckId`, or either
+/// deck has been archived, writing nothing either way.
+#[tauri::command]
+pub async fn move_flashcards(
+    app: AppHandle,
+    database: State<'_, Database>,
+    deck_id: i64,
+    card_ids: Vec<i64>,
+    to_deck_id: i64,
+) -> Result<authoring::ChangedCards, CommandError> {
+    if deck_id < 1 || to_deck_id < 1 {
+        return Err(CommandError::invalid(DECK_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    authoring::move_flashcards(&pool, deck_id, &card_ids, to_deck_id, Utc::now())
+        .await
+        .map_err(|err| authoring_error(err, "moving cards", "Synapse couldn't move the cards."))
 }
 
 /// Renames an active normal deck; its cards, schedule, and history are kept.
@@ -1380,7 +1453,8 @@ pub async fn cancel_import(
 mod tests {
     use super::*;
     use crate::authoring::{
-        CARD_BATCH_MAX, CARD_TEXT_MAX_CHARS, DECK_DESCRIPTION_MAX_CHARS, DECK_NAME_MAX_CHARS,
+        CARD_BATCH_MAX, CARD_SELECTION_MAX, CARD_TEXT_MAX_CHARS, DECK_DESCRIPTION_MAX_CHARS,
+        DECK_NAME_MAX_CHARS,
     };
     use crate::notes::{NOTE_BODY_MAX_CHARS, NOTE_TITLE_MAX_CHARS};
     use serde_json::json;
@@ -1434,6 +1508,33 @@ mod tests {
         assert_eq!(
             to_json(AuthoringError::DeckNotFound),
             json!({ "kind": "invalid", "message": "That deck doesn't exist." })
+        );
+    }
+
+    #[test]
+    fn bulk_card_errors_tell_react_whether_to_reload() {
+        let to_json = |err| serde_json::to_value(authoring_error(err, "test", "failed")).unwrap();
+        assert_eq!(
+            to_json(AuthoringError::SelectionChanged),
+            json!({ "kind": "stale", "message": "Some of the selected cards have changed." })
+        );
+        assert_eq!(
+            to_json(AuthoringError::MoveTargetUnavailable),
+            json!({ "kind": "stale", "message": "That deck can't take cards any more." })
+        );
+        assert_eq!(
+            to_json(AuthoringError::NoneSelected),
+            json!({ "kind": "invalid", "message": "Select at least one card." })
+        );
+        assert_eq!(
+            to_json(AuthoringError::SameDeck),
+            json!({ "kind": "invalid", "message": "The cards are already in that deck." })
+        );
+        // The limit in the message must match `authoring.rs`.
+        assert_eq!(CARD_SELECTION_MAX, 10_000);
+        assert_eq!(
+            to_json(AuthoringError::TooManySelected),
+            json!({ "kind": "invalid", "message": "At most 10,000 cards can be changed at once." })
         );
     }
 

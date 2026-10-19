@@ -340,6 +340,38 @@ export function restoreDeletedCards(deckId: number, expected: number): Promise<R
   return invoke<RestoredCards>("restore_deleted_cards", { deckId, expected });
 }
 
+/** Mirrors `ChangedCards` in `src-tauri/src/authoring.rs`. */
+export type ChangedCards = {
+  /** How many cards were deleted or moved. */
+  changed: number;
+  /** The deck they were selected in, now without them. */
+  deck: DeckDetail;
+};
+
+/**
+ * Soft-deletes several cards of a deck at once, each exactly as
+ * `deleteFlashcard` deletes one. `cardIds` are the cards the user confirmed.
+ * Rejects with kind "stale", having written nothing, if any of them is no
+ * longer an active card of the deck, or the deck was archived meanwhile.
+ */
+export function deleteFlashcards(deckId: number, cardIds: number[]): Promise<ChangedCards> {
+  return invoke<ChangedCards>("delete_flashcards", { deckId, cardIds });
+}
+
+/**
+ * Moves several cards of a deck into another active normal deck. Each keeps
+ * its id, text, FSRS state, due date, counts, and review history. Rejects with
+ * kind "stale", having written nothing, if any card is no longer an active
+ * card of `deckId`, or either deck can no longer take the change.
+ */
+export function moveFlashcards(
+  deckId: number,
+  cardIds: number[],
+  toDeckId: number,
+): Promise<ChangedCards> {
+  return invoke<ChangedCards>("move_flashcards", { deckId, cardIds, toDeckId });
+}
+
 /** Renames an active normal deck (Rust trims and validates the name); resolves with the deck. */
 export function renameDeck(deckId: number, name: string): Promise<DeckDetail> {
   return invoke<DeckDetail>("rename_deck", { deckId, name });
