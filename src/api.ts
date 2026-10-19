@@ -638,6 +638,45 @@ export function searchNotes(query: string): Promise<NoteSummary[]> {
   return invoke<NoteSummary[]>("search_notes", { query });
 }
 
+/** What *Search* looks through: cards and notes, or only one of them. */
+export type SearchScope = "all" | "cards" | "notes";
+
+/** A run of snippet text; `hit` marks a word the search matched. */
+export type SnippetPiece = { text: string; hit: boolean };
+
+/**
+ * One search result. Text comes as snippets: a long side or body is cut
+ * around its matches, with "…" where text was left out.
+ */
+export type SearchHit =
+  | {
+      kind: "card";
+      cardId: number;
+      deckId: number;
+      deckName: string;
+      front: SnippetPiece[];
+      back: SnippetPiece[];
+    }
+  | { kind: "note"; noteId: number; title: SnippetPiece[]; body: SnippetPiece[] };
+
+/** The best results first, at most 50; `more` says whether others matched too. */
+export type SearchResults = { results: SearchHit[]; more: boolean };
+
+/**
+ * Searches every active card (in decks that aren't archived) and every active
+ * note at once. Each word matches the start of a word, ignoring capitals and
+ * accents; every word must match. `deckId` limits cards to one active deck,
+ * with scope "cards" only; refused as stale if that deck was archived since.
+ * Reads only.
+ */
+export function searchEverything(
+  query: string,
+  scope: SearchScope,
+  deckId: number | null,
+): Promise<SearchResults> {
+  return invoke<SearchResults>("search_everything", { query, scope, deckId });
+}
+
 /** Every deleted note, most recently deleted first. Read-only history. */
 export function getDeletedNotes(): Promise<DeletedNote[]> {
   return invoke<DeletedNote[]>("get_deleted_notes");

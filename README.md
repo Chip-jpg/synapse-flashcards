@@ -264,6 +264,16 @@ edited first. It's plain matching: no fuzzy matches, and deleted notes aren't se
 Escape) brings back the whole library. Searching saves nothing, so leaving with text in the search
 field doesn't ask about unsaved changes, and the search is gone when you come back.
 
+**Search everything at once.** *Search*, in the sidebar, looks through every card in every active
+deck (front and back) and every note (title and text) together. Each word you type matches the
+start of a word, ignoring capitals and accents ("ete" finds "Été"), and every word must match.
+Results come best first (a match in a card's front or a note's title counts more), at most 50,
+with the matched words marked. *Show* narrows them to cards or notes, and for cards to one deck.
+*Open in deck* shows the card in its deck, marked; *Open note* opens the note; *Back to search*
+returns to the same search. Deleted cards and notes, and cards in archived decks, aren't found
+until they're restored. Rust keeps a full-text index (SQLite FTS5) of cards and notes in step as
+they're written; it's part of the database, so it travels in backups.
+
 **Delete or restore a note.** Open a note → *Delete note* asks for confirmation, then takes the note
 out of your library: it can't be opened, edited, or used to write a card. Nothing is lost — the note
 appears under *Deleted notes* at the bottom of the library, with when it was deleted, and *Restore
@@ -360,9 +370,13 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   scheduled keep their due dates. Fitted parameters are only offered when they predict your own
   reviews better than the ones in use, measured on those same reviews.
 - **One card type.** Front/back text only: no images, audio, cloze, or tags.
-- **Card search is per deck, and bulk actions are delete and move.** Searching cards is exact
-  text within one deck's active cards; there's no search across decks or of deleted cards, no
-  tags or folders, and restoring several cards at once is only *Restore all*.
+- **Search matches words, not meanings.** *Search* finds words by their start (no fuzzy matching,
+  no matching inside a word, no synonyms), never searches deleted cards or notes, and shows at most
+  50 results. Words are split on anything that isn't a letter or digit, so text in scripts written
+  without spaces (Chinese, Japanese) is only found from the start of a run. The deck screen's own
+  *Search cards* and the library's *Search notes* are plain contains-text filters.
+- **Bulk actions are delete and move.** There are no tags or folders, and restoring several cards
+  at once is only *Restore all*.
 - **Statistics are counts, not scores.** The Study Desk counts today's reviews and the different
   cards they were for; the *Statistics* screen adds the last 30 days, true retention, cards by
   state, and a 14-day due forecast. There are no streaks, XP, or mastery percentages. Review
@@ -407,7 +421,7 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
 - **`src/`** — the React UI. `api.ts` is the only file that calls Rust, through typed Tauri
   commands (and the window, to hold it open while something is unsaved). `Shell.tsx` is the
   sidebar and the bar above each screen. The screens are `Dashboard.tsx` (the Study Desk),
-  `DeckDetail.tsx`, `ReviewSession.tsx`, `Notes.tsx`, `Statistics.tsx`, `ArchivedDecks.tsx`,
+  `DeckDetail.tsx`, `ReviewSession.tsx`, `Notes.tsx`, `Search.tsx`, `Statistics.tsx`, `ArchivedDecks.tsx`,
   `Backup.tsx`, and `Settings.tsx`;
   `CardHelp.tsx` is the review screen's *Get help with this card*,
   `SuggestCards.tsx` is the note screen's *Suggest cards*, `Quiz.tsx` its *Quiz me*, and
@@ -425,6 +439,8 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
     and stopped after two minutes), and which parameters are in use. Each apply or reset is a new
     row in `fsrs_parameters`; nothing already scheduled is rewritten.
   - `study.rs` — the deck dashboard, review sessions, recording reviews, and today's count.
+  - `search.rs` — *Search*: every active card and note through the FTS5 index migration 0013
+    keeps in step. It writes nothing.
   - `stats.rs` — the Statistics screen's numbers, read from the review log and the cards. It
     writes nothing.
   - `authoring.rs` — creating, renaming, archiving, and unarchiving decks; adding, editing,
@@ -445,5 +461,5 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
     read-only, never attached to Synapse's database) and adding its front/back notes as new decks.
     `testdata/anki/` holds packages exported by Anki itself, and the script that made them.
   - `export.rs` / `import.rs` — writing a `.zip` backup, and checking and restoring one.
-- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0011`), embedded in the
+- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0011`, `0013`), embedded in the
   binary at compile time.

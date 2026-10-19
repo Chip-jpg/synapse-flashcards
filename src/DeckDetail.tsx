@@ -71,12 +71,18 @@ async function loadDeck(deckId: number): Promise<DetailState> {
 export function DeckDetail({
   deckId,
   justCreated,
+  focusCardId = null,
+  backLabel = "Back to Study Desk",
   onBack,
   onStart,
   onArchived,
 }: {
   deckId: number;
   justCreated: boolean;
+  /** A card to focus when the deck opens, e.g. one opened from a search. */
+  focusCardId?: number | null;
+  /** Where Back goes, e.g. "Back to search". */
+  backLabel?: string;
   onBack: () => void;
   onStart: (sessionId: number, deckName: string) => void;
   /** The deck was archived, so this screen can't show it any more. */
@@ -90,7 +96,11 @@ export function DeckDetail({
   const [view, setView] = useState<ViewState>({
     key: 0,
     notice: justCreated ? "Deck created. Add your first card." : null,
-    focus: justCreated ? { to: "notice" } : { to: "screen" },
+    focus: justCreated
+      ? { to: "notice" }
+      : focusCardId !== null
+        ? { to: "editCard", cardId: focusCardId }
+        : { to: "screen" },
   });
 
   useEffect(() => {
@@ -144,7 +154,7 @@ export function DeckDetail({
             Retry
           </button>
           <button type="button" className="button" onClick={onBack}>
-            Back to Study Desk
+            {backLabel}
           </button>
         </div>
       </Message>
@@ -188,6 +198,7 @@ export function DeckDetail({
     <DeckView
       key={view.key}
       deck={state.deck}
+      foundCardId={focusCardId}
       notice={view.notice}
       focus={view.focus}
       onAdd={() => setMode({ kind: "add" })}
@@ -234,6 +245,7 @@ export function DeckDetail({
       }
       onRename={() => setMode({ kind: "rename" })}
       onArchived={onArchived}
+      backLabel={backLabel}
       onBack={onBack}
       onStart={onStart}
       onChanged={reload}
@@ -257,6 +269,8 @@ function DeckView({
   onBulkStale,
   onRename,
   onArchived,
+  foundCardId,
+  backLabel,
   onBack,
   onStart,
   onChanged,
@@ -282,6 +296,9 @@ function DeckView({
   onBulkStale: (message: string) => void;
   onRename: () => void;
   onArchived: () => void;
+  /** The card a search opened this deck for, marked in the list. */
+  foundCardId: number | null;
+  backLabel: string;
   onBack: () => void;
   onStart: (sessionId: number, deckName: string) => void;
   onChanged: () => void;
@@ -328,7 +345,7 @@ function DeckView({
     <section ref={screenRef} className="deck-detail" tabIndex={-1} aria-labelledby="deck-detail-name">
       <button type="button" className="button button-quiet back-button" onClick={onBack}>
         <ArrowLeftIcon />
-        Back to Study Desk
+        {backLabel}
       </button>
 
       <div className="detail-header">
@@ -423,6 +440,7 @@ function DeckView({
                   card={card}
                   selected={selected.has(card.id)}
                   onToggle={() => toggle(card.id)}
+                  found={card.id === foundCardId}
                   focusEdit={card.id === editFocusId}
                   onEdit={() => onEdit(card)}
                   onDeleted={onDeleted}
@@ -682,6 +700,7 @@ function CardItem({
   card,
   selected,
   onToggle,
+  found,
   focusEdit,
   onEdit,
   onDeleted,
@@ -691,6 +710,8 @@ function CardItem({
   /** Whether the card is selected for a change to several cards at once. */
   selected: boolean;
   onToggle: () => void;
+  /** Marked as the card a search opened the deck for. */
+  found: boolean;
   focusEdit: boolean;
   onEdit: () => void;
   onDeleted: (deck: Deck) => void;
@@ -744,7 +765,7 @@ function CardItem({
   }
 
   return (
-    <div className="card-item card-row">
+    <div className={found ? "card-item card-row card-found" : "card-item card-row"}>
       <CardText frontId={frontId} front={card.front} back={card.back} />
 
       {confirming ? (

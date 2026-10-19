@@ -25,6 +25,7 @@ use crate::notes::{self, DeletedNote, InvalidNote, Note, NoteError, NoteSummary}
 use crate::optimizer::{self, IntervalChange, Optimized, OptimizerError, Optimizing, Settings};
 use crate::quiz::{self, QuizQuestion, Quizzing};
 use crate::scheduler::Rating;
+use crate::search::{self, Scope, SearchResults};
 use crate::stats::{self, Statistics};
 use crate::study::{self, DeckSummary, SessionCard, StartedSession, StudyError, TodaySummary};
 use crate::suggest::{self, NotePart, Ollama, SuggestError, SuggestedCard, Suggesting};
@@ -762,6 +763,45 @@ pub async fn search_notes(
         eprintln!("[synapse] searching notes failed: {err}");
         CommandError::failed("Synapse couldn't search your notes.")
     })
+}
+
+/// The *Search* screen: every active card (in decks that aren't archived) and
+/// every active note matching `{ query }`, each word as a prefix, ignoring
+/// case and accents, best first. `{ scope }` is "all", "cards" or "notes";
+/// `{ deckId }` limits cards to one active deck, with scope "cards" only.
+/// Reads only. Returns `{ results, more }`; see `search::Hit`.
+#[tauri::command]
+pub async fn search_everything(
+    app: AppHandle,
+    database: State<'_, Database>,
+    query: String,
+    scope: Scope,
+    deck_id: Option<i64>,
+) -> Result<SearchResults, CommandError> {
+    if query.chars().count() > search::MAX_QUERY_CHARS {
+        return Err(CommandError::invalid(
+            "Search for at most 500 characters at a time.",
+        ));
+    }
+    if deck_id.is_some() && scope != Scope::Cards {
+        return Err(CommandError::invalid(
+            "Only cards can be searched in one deck.",
+        ));
+    }
+    if deck_id.is_some_and(|id| id < 1) {
+        return Err(CommandError::invalid(DECK_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    search::search(&pool, &query, scope, deck_id)
+        .await
+        .map_err(|err| {
+            study_error(
+                err,
+                "searching",
+                DECK_NOT_FOUND,
+                "Synapse couldn't search your cards and notes.",
+            )
+        })
 }
 
 /// The library's history: every deleted note, most recently deleted first.
