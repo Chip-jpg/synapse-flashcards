@@ -20,7 +20,9 @@ use crate::export::{self, ExportError};
 use crate::extract::{self, ExtractError, ExtractedText, FileKind};
 use crate::import::{self, ImportError, ImportState, RestoreError};
 use crate::notes::{self, DeletedNote, InvalidNote, Note, NoteError, NoteSummary};
+use crate::optimizer::{self, IntervalChange, Optimized, OptimizerError, Optimizing, Settings};
 use crate::scheduler::Rating;
+use crate::stats::{self, Statistics};
 use crate::study::{self, DeckSummary, SessionCard, StartedSession, StudyError, TodaySummary};
 use crate::suggest::{self, NotePart, Ollama, SuggestError, SuggestedCard, Suggesting};
 
@@ -208,6 +210,25 @@ fn authoring_error(err: AuthoringError, context: &str, failed: &'static str) -> 
         AuthoringError::DeletedCardsChanged => {
             CommandError::stale("This deck's deleted cards have changed.")
         }
+        AuthoringError::NoneSelected => CommandError::invalid("Select at least one card."),
+        AuthoringError::TooManySelected => {
+            CommandError::invalid("At most 10,000 cards can be changed at once.")
+        }
+        AuthoringError::DuplicateSelected => {
+            CommandError::invalid("The same card was selected twice.")
+        }
+        // The cards on screen aren't the ones the deck has now: reload rather
+        // than retry. Nothing was written.
+        AuthoringError::SelectionChanged => {
+            CommandError::stale("Some of the selected cards have changed.")
+        }
+        AuthoringError::SameDeck => CommandError::invalid("The cards are already in that deck."),
+        // The deck list the user chose from is out of date (the deck was
+        // archived since), so React reloads it. The sample deck and a missing
+        // deck are never offered, so they only arrive here from a stale list.
+        AuthoringError::MoveTargetUnavailable => {
+            CommandError::stale("That deck can't take cards any more.")
+        }
         AuthoringError::Internal(detail) => {
             eprintln!("[synapse] {context} failed: {detail}");
             CommandError::failed(failed)
@@ -260,6 +281,32 @@ pub async fn get_today(
         .map_err(|err| {
             eprintln!("[synapse] loading today's reviews failed: {err}");
             CommandError::failed("Synapse couldn't count today's reviews.")
+        })
+}
+
+/// The Statistics screen: review history over the last 30 days and the
+/// current cards' states and due dates, on this computer's calendar, for
+/// every deck or only `deckId` (an active deck). Reads only.
+/// Returns `{ reviewsByDay, retention, cardStates, forecast }`.
+#[tauri::command]
+pub async fn get_statistics(
+    app: AppHandle,
+    database: State<'_, Database>,
+    deck_id: Option<i64>,
+) -> Result<Statistics, CommandError> {
+    if deck_id.is_some_and(|id| id < 1) {
+        return Err(CommandError::invalid(DECK_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    stats::statistics(&pool, deck_id, Utc::now(), &chrono::Local)
+        .await
+        .map_err(|err| {
+            study_error(
+                err,
+                "loading statistics",
+                DECK_NOT_FOUND,
+                "Synapse couldn't load your statistics.",
+            )
         })
 }
 
@@ -553,6 +600,60 @@ pub async fn restore_deleted_cards(
                 "Synapse couldn't restore the cards.",
             )
         })
+}
+
+/// Soft-deletes several cards of one deck at once, each exactly as
+/// `delete_flashcard` deletes one.
+///
+/// Arguments: `{ deckId, cardIds }`, the cards the user selected and
+/// confirmed. Returns `{ changed, deck }`: how many were deleted, and the deck
+/// now listing them under `deletedCards` (same shape as `get_deck_detail`).
+/// Rejects with kind "stale" if any of them is no longer an active card of the
+/// deck, or the deck has been archived, writing nothing either way.
+#[tauri::command]
+pub async fn delete_flashcards(
+    app: AppHandle,
+    database: State<'_, Database>,
+    deck_id: i64,
+    card_ids: Vec<i64>,
+) -> Result<authoring::ChangedCards, CommandError> {
+    if deck_id < 1 {
+        return Err(CommandError::invalid(DECK_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    authoring::delete_flashcards(&pool, deck_id, &card_ids, Utc::now())
+        .await
+        .map_err(|err| {
+            authoring_error(
+                err,
+                "deleting selected cards",
+                "Synapse couldn't delete the cards.",
+            )
+        })
+}
+
+/// Moves several cards of one deck into another active normal deck. Each card
+/// keeps its id, text, FSRS state, due date, counts, and review history.
+///
+/// Arguments: `{ deckId, cardIds, toDeckId }`. Returns `{ changed, deck }`:
+/// how many moved, and the deck they came from, without them. Rejects with
+/// kind "stale" if any card is no longer an active card of `deckId`, or either
+/// deck has been archived, writing nothing either way.
+#[tauri::command]
+pub async fn move_flashcards(
+    app: AppHandle,
+    database: State<'_, Database>,
+    deck_id: i64,
+    card_ids: Vec<i64>,
+    to_deck_id: i64,
+) -> Result<authoring::ChangedCards, CommandError> {
+    if deck_id < 1 || to_deck_id < 1 {
+        return Err(CommandError::invalid(DECK_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    authoring::move_flashcards(&pool, deck_id, &card_ids, to_deck_id, Utc::now())
+        .await
+        .map_err(|err| authoring_error(err, "moving cards", "Synapse couldn't move the cards."))
 }
 
 /// Renames an active normal deck; its cards, schedule, and history are kept.
@@ -1309,6 +1410,7 @@ pub async fn confirm_import(
     app: AppHandle,
     database: State<'_, Database>,
     imports: State<'_, ImportState>,
+    optimizing: State<'_, Optimizing>,
     token: u64,
 ) -> Result<(), CommandError> {
     let (db_path, workspace) = import_paths(&app)?;
@@ -1331,6 +1433,9 @@ pub async fn confirm_import(
 
     // Whatever happened, the checked copy is now the database or not needed.
     import::discard_staged(&workspace);
+    // Parameters fitted to the history that was just replaced don't belong
+    // to the restored one.
+    optimizing.forget();
     result
 }
 
@@ -1348,6 +1453,159 @@ pub async fn cancel_import(
         import::discard_staged(&workspace);
     }
     Ok(())
+}
+
+/// Turns a failed optimization, apply, or reset into a user-safe error,
+/// logging internal detail.
+fn optimizer_error(err: OptimizerError, context: &str, failed: &'static str) -> CommandError {
+    match err {
+        OptimizerError::NotEnoughReviews => CommandError::invalid(
+            "There aren't enough reviews yet to fit FSRS to your history. Keep reviewing and \
+             try again later.",
+        ),
+        OptimizerError::Stale => CommandError::stale(
+            "The scheduling parameters changed since this was shown. Synapse has reloaded them.",
+        ),
+        OptimizerError::NotBetter => CommandError::invalid(
+            "These parameters don't predict your reviews better than the ones in use, so they \
+             weren't applied.",
+        ),
+        OptimizerError::TimedOut => CommandError::failed(
+            "Optimizing took too long, so Synapse stopped it. Nothing was changed.",
+        ),
+        OptimizerError::Internal(detail) => {
+            eprintln!("[synapse] {context} failed: {detail}");
+            CommandError::failed(failed)
+        }
+    }
+}
+
+/// The scheduling settings: which FSRS parameters are in use, and how many
+/// reviews an optimization could learn from. Returns [`Settings`].
+#[tauri::command]
+pub async fn get_scheduling(
+    app: AppHandle,
+    database: State<'_, Database>,
+) -> Result<Settings, CommandError> {
+    let pool = pool(&app, &database).await?;
+    optimizer::settings(&pool).await.map_err(|err| {
+        eprintln!("[synapse] loading scheduling settings failed: {err}");
+        CommandError::failed("Synapse couldn't load the scheduling settings.")
+    })
+}
+
+/// What an optimization did: `{ "status": "optimized", token, reviewsUsed,
+/// current, proposed, currentError, proposedError, better, intervals }` or
+/// `{ "status": "stopped" }`. `current` and `proposed` are FSRS's 21
+/// parameters; the errors are how far predicted recall is from actual
+/// recall on average (0 to 1, lower is better); `intervals` is
+/// `[{ case, current, proposed }]` in days.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum OptimizeOutcome {
+    Optimized {
+        /// Pass to `apply_parameters` to use the proposed parameters.
+        token: u64,
+        reviews_used: usize,
+        current: Vec<f32>,
+        proposed: Vec<f32>,
+        current_error: f32,
+        proposed_error: f32,
+        /// Whether the proposed parameters predict the history better. Only
+        /// then can they be applied.
+        better: bool,
+        intervals: Vec<IntervalChange>,
+    },
+    /// `stop_optimizing` was called, or another optimization started.
+    Stopped,
+}
+
+/// Fits FSRS's parameters to the whole review history, off the UI thread,
+/// and compares them with the ones in use. Nothing is saved: the result
+/// waits for `apply_parameters`. Takes no arguments. Returns
+/// [`OptimizeOutcome`]; rejects with kind "invalid" below the minimum number
+/// of reviews, or "failed" if it took too long.
+#[tauri::command]
+pub async fn optimize_parameters(
+    app: AppHandle,
+    database: State<'_, Database>,
+    optimizing: State<'_, Optimizing>,
+) -> Result<OptimizeOutcome, CommandError> {
+    let pool = pool(&app, &database).await?;
+    let outcome = optimizer::optimize(&pool, &optimizing, optimizer::TIME_LIMIT)
+        .await
+        .map_err(|err| {
+            optimizer_error(
+                err,
+                "optimizing FSRS parameters",
+                "Synapse couldn't optimize the scheduling parameters. Nothing was changed.",
+            )
+        })?;
+    Ok(match outcome {
+        Optimized::Stopped => OptimizeOutcome::Stopped,
+        Optimized::Proposed { token, proposal } => OptimizeOutcome::Optimized {
+            token,
+            reviews_used: proposal.reviews_used,
+            current: proposal.current,
+            proposed: proposal.proposed,
+            current_error: proposal.current_fit.error,
+            proposed_error: proposal.proposed_fit.error,
+            better: proposal.better,
+            intervals: proposal.intervals,
+        },
+    })
+}
+
+/// Stops the optimization running now, if any. Returns `null`.
+#[tauri::command]
+pub fn stop_optimizing(optimizing: State<'_, Optimizing>) {
+    optimizing.stop();
+}
+
+/// Uses the parameters from the optimization held under `{ token }` for
+/// every rating from now on. Past schedules and reviews don't change.
+/// Returns the new [`Settings`]; rejects with kind "stale" if that result is
+/// no longer waiting or the parameters in use changed since.
+#[tauri::command]
+pub async fn apply_parameters(
+    app: AppHandle,
+    database: State<'_, Database>,
+    optimizing: State<'_, Optimizing>,
+    token: u64,
+) -> Result<Settings, CommandError> {
+    let pool = pool(&app, &database).await?;
+    let Some(proposal) = optimizing.take(token) else {
+        return Err(CommandError::stale(
+            "That optimization is no longer ready to apply. Optimize again.",
+        ));
+    };
+    let failed = "Synapse couldn't apply the new parameters. Nothing was changed.";
+    optimizer::apply(&pool, &proposal, Utc::now())
+        .await
+        .map_err(|err| optimizer_error(err, "applying FSRS parameters", failed))?;
+    get_scheduling(app, database).await
+}
+
+/// Goes back to FSRS's default parameters for every rating from now on.
+/// `{ version }` is the `version` of the settings shown. Returns the new
+/// [`Settings`]; rejects with kind "stale" if they changed since, or the
+/// defaults are already in use.
+#[tauri::command]
+pub async fn reset_parameters(
+    app: AppHandle,
+    database: State<'_, Database>,
+    version: i64,
+) -> Result<Settings, CommandError> {
+    let pool = pool(&app, &database).await?;
+    let failed = "Synapse couldn't reset the parameters. Nothing was changed.";
+    optimizer::reset(&pool, version, Utc::now())
+        .await
+        .map_err(|err| optimizer_error(err, "resetting FSRS parameters", failed))?;
+    get_scheduling(app, database).await
 }
 
 /// One row of a cards file, checked: `{ line, front, back, problem, duplicate }`.
@@ -1660,7 +1918,8 @@ pub async fn export_cards_csv(
 mod tests {
     use super::*;
     use crate::authoring::{
-        CARD_BATCH_MAX, CARD_TEXT_MAX_CHARS, DECK_DESCRIPTION_MAX_CHARS, DECK_NAME_MAX_CHARS,
+        CARD_BATCH_MAX, CARD_SELECTION_MAX, CARD_TEXT_MAX_CHARS, DECK_DESCRIPTION_MAX_CHARS,
+        DECK_NAME_MAX_CHARS,
     };
     use crate::notes::{NOTE_BODY_MAX_CHARS, NOTE_TITLE_MAX_CHARS};
     use serde_json::json;
@@ -1714,6 +1973,33 @@ mod tests {
         assert_eq!(
             to_json(AuthoringError::DeckNotFound),
             json!({ "kind": "invalid", "message": "That deck doesn't exist." })
+        );
+    }
+
+    #[test]
+    fn bulk_card_errors_tell_react_whether_to_reload() {
+        let to_json = |err| serde_json::to_value(authoring_error(err, "test", "failed")).unwrap();
+        assert_eq!(
+            to_json(AuthoringError::SelectionChanged),
+            json!({ "kind": "stale", "message": "Some of the selected cards have changed." })
+        );
+        assert_eq!(
+            to_json(AuthoringError::MoveTargetUnavailable),
+            json!({ "kind": "stale", "message": "That deck can't take cards any more." })
+        );
+        assert_eq!(
+            to_json(AuthoringError::NoneSelected),
+            json!({ "kind": "invalid", "message": "Select at least one card." })
+        );
+        assert_eq!(
+            to_json(AuthoringError::SameDeck),
+            json!({ "kind": "invalid", "message": "The cards are already in that deck." })
+        );
+        // The limit in the message must match `authoring.rs`.
+        assert_eq!(CARD_SELECTION_MAX, 10_000);
+        assert_eq!(
+            to_json(AuthoringError::TooManySelected),
+            json!({ "kind": "invalid", "message": "At most 10,000 cards can be changed at once." })
         );
     }
 
@@ -2218,5 +2504,79 @@ mod tests {
                 "deletedAt": "2026-09-16T14:00:00.000Z"
             })
         );
+    }
+
+    #[test]
+    fn optimizations_serialize_to_the_shape_react_expects() {
+        assert_eq!(
+            serde_json::to_value(OptimizeOutcome::Optimized {
+                token: 3,
+                reviews_used: 600,
+                current: vec![0.5],
+                proposed: vec![1.5],
+                current_error: 0.25,
+                proposed_error: 0.125,
+                better: true,
+                intervals: vec![IntervalChange {
+                    case: optimizer::IntervalCase::SecondGood,
+                    current: 2.0,
+                    proposed: 4.0,
+                }],
+            })
+            .unwrap(),
+            json!({
+                "status": "optimized",
+                "token": 3,
+                "reviewsUsed": 600,
+                "current": [0.5],
+                "proposed": [1.5],
+                "currentError": 0.25,
+                "proposedError": 0.125,
+                "better": true,
+                "intervals": [{ "case": "secondGood", "current": 2.0, "proposed": 4.0 }]
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(OptimizeOutcome::Stopped).unwrap(),
+            json!({ "status": "stopped" })
+        );
+        assert_eq!(
+            serde_json::to_value(Settings {
+                version: 2,
+                personal: true,
+                parameters: vec![1.5],
+                defaults: vec![0.5],
+                reviews_used: Some(600),
+                applied_at: Some("2026-10-19T09:00:00.000Z".to_string()),
+                usable_reviews: 650,
+                minimum_reviews: 400,
+            })
+            .unwrap(),
+            json!({
+                "version": 2,
+                "personal": true,
+                "parameters": [1.5],
+                "defaults": [0.5],
+                "reviewsUsed": 600,
+                "appliedAt": "2026-10-19T09:00:00.000Z",
+                "usableReviews": 650,
+                "minimumReviews": 400
+            })
+        );
+    }
+
+    #[test]
+    fn optimizer_errors_tell_react_what_to_do() {
+        for (err, kind) in [
+            (OptimizerError::NotEnoughReviews, "invalid"),
+            (OptimizerError::NotBetter, "invalid"),
+            (OptimizerError::Stale, "stale"),
+            (OptimizerError::TimedOut, "failed"),
+            (OptimizerError::Internal("detail".into()), "failed"),
+        ] {
+            let value = serde_json::to_value(optimizer_error(err, "testing", "Failed.")).unwrap();
+            assert_eq!(value["kind"], kind, "{value}");
+            assert!(!value["message"].as_str().unwrap().contains("detail"));
+        }
     }
 }

@@ -1861,6 +1861,98 @@ mod tests {
     }
 
     #[test]
+    fn a_backup_from_before_personal_parameters_restores_with_the_defaults() {
+        tauri::async_runtime::block_on(async {
+            use crate::optimizer::{self, Optimized, Optimizing};
+
+            let dir = scratch("import-pre-0011");
+            // A backup from v0.6.0 (schema 10), before FSRS parameters could
+            // be fitted: a deck with months of reviews.
+            let source_path = dir.join("source").join("synapse.sqlite");
+            std::fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+            let source =
+                sqlx::SqlitePool::connect(&format!("sqlite:{}?mode=rwc", source_path.display()))
+                    .await
+                    .unwrap();
+            migrations_up_to(10).run(&source).await.unwrap();
+            sqlx::query("INSERT INTO seed_markers (name) VALUES ('sample_card')")
+                .execute(&source)
+                .await
+                .unwrap();
+            optimizer::tests::add_history(&source, 150).await;
+            let archive = dir.join("backup.zip");
+            write_package(&source, &archive, at(NOW), "0.6.0")
+                .await
+                .unwrap();
+            let source_rows = dump(&source).await;
+            source.close().await;
+
+            // The database it replaces uses parameters of its own.
+            let target_path = dir.join("target").join("synapse.sqlite");
+            let database = Database::default();
+            let target = target_database(&target_path).await;
+            sqlx::query(
+                "INSERT INTO fsrs_parameters (parameters, reviews_used, applied_at)
+                 VALUES ('[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0.1]', 900, ?1)",
+            )
+            .bind(NOW)
+            .execute(&target)
+            .await
+            .unwrap();
+            *database.slot().lock().await = Some(target);
+            let workspace = dir.join("target").join("import-workspace");
+            let staged = stage_package(&archive, &workspace).await.unwrap();
+            assert_eq!(staged.manifest.schema_version, 10);
+            replace_database(&database, &target_path, &staged.database, &workspace)
+                .await
+                .unwrap();
+            discard_staged(&workspace);
+            let restored = installed(&database).await;
+
+            // The backup's history is all there, and its ratings are
+            // scheduled with FSRS's defaults, not the replaced database's.
+            let imported = dump(&restored).await;
+            for (name, rows) in &source_rows {
+                if name != "sqlite_master" && name != "_sqlx_migrations" {
+                    let found = imported.iter().find(|(table, _)| table == name).unwrap();
+                    assert_eq!(&found.1, rows, "{name}");
+                }
+            }
+            let settings = optimizer::settings(&restored).await.unwrap();
+            assert!(!settings.personal);
+            assert_eq!(settings.version, 0);
+            assert_eq!(settings.usable_reviews, 600);
+
+            // Its history can be optimized, and the parameters applied are
+            // kept in the next backup.
+            let optimizing = Optimizing::default();
+            let Optimized::Proposed { proposal, .. } =
+                optimizer::optimize(&restored, &optimizing, optimizer::TIME_LIMIT)
+                    .await
+                    .unwrap()
+            else {
+                panic!("expected parameters to be proposed");
+            };
+            optimizer::apply(&restored, &proposal, at(LATER))
+                .await
+                .unwrap();
+            let next = dir.join("next.zip");
+            write_package(&restored, &next, at(LATER), "0.7.0")
+                .await
+                .unwrap();
+            let workspace = dir.join("next-workspace");
+            let staged = stage_package(&next, &workspace).await.unwrap();
+            let copy = open_file(&staged.database).await.unwrap();
+            let kept = optimizer::settings(&copy).await.unwrap();
+            assert!(kept.personal);
+            assert_eq!(kept.parameters, proposal.proposed);
+            copy.close().await;
+            discard_staged(&workspace);
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    #[test]
     fn a_v0_1_0_backup_is_restored_and_what_it_put_away_can_be_brought_back() {
         tauri::async_runtime::block_on(async {
             let dir = scratch("import-v0-1-0");

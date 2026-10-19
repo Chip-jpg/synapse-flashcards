@@ -212,6 +212,41 @@ export function getToday(): Promise<TodaySummary> {
   return invoke<TodaySummary>("get_today");
 }
 
+/** Mirrors `DayCount` in `src-tauri/src/stats.rs`: a local date (`YYYY-MM-DD`) and a count. */
+export type DayCount = {
+  day: string;
+  count: number;
+};
+
+/**
+ * Mirrors `Statistics` in `src-tauri/src/stats.rs`. Days are calendar days on
+ * this computer's clock.
+ */
+export type Statistics = {
+  /** Ratings recorded on each of the last 30 days, oldest first, ending today. */
+  reviewsByDay: DayCount[];
+  /**
+   * Reviews in the last 30 days of cards that were in the Review state, and
+   * how many of them weren't rated Again.
+   */
+  retention: { reviews: number; recalled: number };
+  /** Current cards (not deleted, in active decks) in each FSRS state. */
+  cardStates: { new: number; learning: number; review: number; relearning: number };
+  /**
+   * Cards due on each of the next 14 days, starting today. Today also holds
+   * cards already overdue and new cards not yet studied.
+   */
+  forecast: DayCount[];
+};
+
+/**
+ * The Statistics screen's numbers, for every deck or only `deckId` (an active
+ * deck). Reads only. Refused as stale if that deck was archived since.
+ */
+export function getStatistics(deckId: number | null): Promise<Statistics> {
+  return invoke<Statistics>("get_statistics", { deckId });
+}
+
 /** Every archived deck, most recently archived first. */
 export function getArchivedDecks(): Promise<ArchivedDeck[]> {
   return invoke<ArchivedDeck[]>("get_archived_decks");
@@ -303,6 +338,38 @@ export type RestoredCards = {
  */
 export function restoreDeletedCards(deckId: number, expected: number): Promise<RestoredCards> {
   return invoke<RestoredCards>("restore_deleted_cards", { deckId, expected });
+}
+
+/** Mirrors `ChangedCards` in `src-tauri/src/authoring.rs`. */
+export type ChangedCards = {
+  /** How many cards were deleted or moved. */
+  changed: number;
+  /** The deck they were selected in, now without them. */
+  deck: DeckDetail;
+};
+
+/**
+ * Soft-deletes several cards of a deck at once, each exactly as
+ * `deleteFlashcard` deletes one. `cardIds` are the cards the user confirmed.
+ * Rejects with kind "stale", having written nothing, if any of them is no
+ * longer an active card of the deck, or the deck was archived meanwhile.
+ */
+export function deleteFlashcards(deckId: number, cardIds: number[]): Promise<ChangedCards> {
+  return invoke<ChangedCards>("delete_flashcards", { deckId, cardIds });
+}
+
+/**
+ * Moves several cards of a deck into another active normal deck. Each keeps
+ * its id, text, FSRS state, due date, counts, and review history. Rejects with
+ * kind "stale", having written nothing, if any card is no longer an active
+ * card of `deckId`, or either deck can no longer take the change.
+ */
+export function moveFlashcards(
+  deckId: number,
+  cardIds: number[],
+  toDeckId: number,
+): Promise<ChangedCards> {
+  return invoke<ChangedCards>("move_flashcards", { deckId, cardIds, toDeckId });
 }
 
 /** Renames an active normal deck (Rust trims and validates the name); resolves with the deck. */
@@ -555,6 +622,91 @@ export function suggestCards(
 /** Stops the suggestion being worked on, if any, which frees up the model. */
 export function stopSuggesting(): Promise<void> {
   return invoke<void>("stop_suggesting");
+}
+
+/**
+ * Mirrors `Settings` in `src-tauri/src/optimizer.rs`: the FSRS parameters
+ * reviews are scheduled with, and how many reviews an optimization could learn
+ * from. `version` changes with every apply and reset.
+ */
+export type SchedulingSettings = {
+  version: number;
+  /** Parameters fitted to the user's history are in use (else FSRS's defaults). */
+  personal: boolean;
+  /** The 21 parameters in use. */
+  parameters: number[];
+  defaults: number[];
+  /** How many reviews the parameters in use were fitted to. */
+  reviewsUsed: number | null;
+  /** When they were applied, or the defaults restored (ISO-8601 UTC). */
+  appliedAt: string | null;
+  /** Ratings made at least a day after the card's previous one. */
+  usableReviews: number;
+  /** Optimizing is refused below this many usable reviews. */
+  minimumReviews: number;
+};
+
+/** Mirrors `IntervalCase` in `src-tauri/src/optimizer.rs`. */
+export type IntervalCase = "firstAgain" | "firstHard" | "firstGood" | "firstEasy" | "secondGood";
+
+/** Mirrors `IntervalChange` in `src-tauri/src/optimizer.rs`: intervals in days. */
+export type IntervalChange = { case: IntervalCase; current: number; proposed: number };
+
+/**
+ * Mirrors `OptimizeOutcome` in `src-tauri/src/commands.rs`. Nothing is saved
+ * until `applyParameters`. The errors are how far predicted recall is from
+ * actual recall, on average (0 to 1, lower is better). Only a result that is
+ * `better` can be applied.
+ */
+export type OptimizeOutcome =
+  | {
+      status: "optimized";
+      token: number;
+      reviewsUsed: number;
+      current: number[];
+      proposed: number[];
+      currentError: number;
+      proposedError: number;
+      better: boolean;
+      intervals: IntervalChange[];
+    }
+  | { status: "stopped" };
+
+/** The scheduling settings. */
+export function getScheduling(): Promise<SchedulingSettings> {
+  return invoke<SchedulingSettings>("get_scheduling");
+}
+
+/**
+ * Fits FSRS to the whole review history and compares the result with the
+ * parameters in use. Nothing is saved. Resolves with `{ status: "stopped" }` if
+ * `stopOptimizing` is called first; rejects with kind "invalid" below the
+ * minimum number of reviews, or "failed" if it took too long.
+ */
+export function optimizeParameters(): Promise<OptimizeOutcome> {
+  return invoke<OptimizeOutcome>("optimize_parameters");
+}
+
+/** Stops the optimization running now, if any. */
+export function stopOptimizing(): Promise<void> {
+  return invoke<void>("stop_optimizing");
+}
+
+/**
+ * Schedules every rating from now on with the parameters of the optimization
+ * held under `token`. Rejects with kind "stale" if it's no longer waiting or
+ * the parameters in use changed since.
+ */
+export function applyParameters(token: number): Promise<SchedulingSettings> {
+  return invoke<SchedulingSettings>("apply_parameters", { token });
+}
+
+/**
+ * Goes back to FSRS's defaults for every rating from now on. `version` is the
+ * settings' version as shown; rejects with kind "stale" if they changed since.
+ */
+export function resetParameters(version: number): Promise<SchedulingSettings> {
+  return invoke<SchedulingSettings>("reset_parameters", { version });
 }
 
 /**

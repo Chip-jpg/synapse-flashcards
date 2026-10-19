@@ -129,6 +129,16 @@ export function DeskIcon() {
   );
 }
 
+/** Bars rising from a baseline: statistics. */
+export function ChartIcon() {
+  return (
+    <Icon>
+      <path d="M4 20h16" />
+      <path d="M7 16v-4M12 16V7M17 16v-6" />
+    </Icon>
+  );
+}
+
 /** Stacked cards: a deck. */
 export function DeckIcon() {
   return (
@@ -161,6 +171,18 @@ export function DatabaseIcon() {
     <Icon>
       <ellipse cx="12" cy="6" rx="7.5" ry="2.75" />
       <path d="M4.5 6v12c0 1.5 3.4 2.75 7.5 2.75s7.5-1.25 7.5-2.75V6M4.5 12c0 1.5 3.4 2.75 7.5 2.75s7.5-1.25 7.5-2.75" />
+    </Icon>
+  );
+}
+
+/** Three sliders: settings. */
+export function SlidersIcon() {
+  return (
+    <Icon>
+      <path d="M5 4v8.5M5 16.5V20M12 4v2.5M12 10.5V20M19 4v9.5M19 17.5V20" />
+      <circle cx="5" cy="14.5" r="2" />
+      <circle cx="12" cy="8.5" r="2" />
+      <circle cx="19" cy="15.5" r="2" />
     </Icon>
   );
 }

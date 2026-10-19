@@ -7,7 +7,9 @@ mod export;
 pub mod extract;
 mod import;
 mod notes;
+mod optimizer;
 mod scheduler;
+mod stats;
 mod study;
 mod suggest;
 
@@ -24,6 +26,8 @@ pub fn run() {
         .manage(import::ImportState::default())
         // The card suggestion Ollama is working on, so it can be stopped.
         .manage(suggest::Suggesting::default())
+        // Fitting FSRS parameters, so it can be stopped, and its result.
+        .manage(optimizer::Optimizing::default())
         .setup(|app| {
             // A backup checked in an earlier run but never confirmed or
             // cancelled (the window closed while Synapse asked) can't be
@@ -37,6 +41,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_decks,
             commands::get_today,
+            commands::get_statistics,
             commands::get_archived_decks,
             commands::start_session,
             commands::get_session_card,
@@ -49,6 +54,8 @@ pub fn run() {
             commands::delete_flashcard,
             commands::restore_flashcard,
             commands::restore_deleted_cards,
+            commands::delete_flashcards,
+            commands::move_flashcards,
             commands::rename_deck,
             commands::archive_deck,
             commands::unarchive_deck,
@@ -68,6 +75,11 @@ pub fn run() {
             commands::get_models,
             commands::suggest_cards,
             commands::stop_suggesting,
+            commands::get_scheduling,
+            commands::optimize_parameters,
+            commands::stop_optimizing,
+            commands::apply_parameters,
+            commands::reset_parameters,
             commands::read_cards_csv,
             commands::import_cards_csv,
             commands::export_cards_csv

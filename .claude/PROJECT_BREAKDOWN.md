@@ -281,6 +281,10 @@ The user must unarchive a deck before restoring one of its deleted cards.
 
 With two or more deleted cards in a deck, *Restore all* (`restore_deleted_cards` in `authoring.rs`) restores every one of them in one transaction, by the same preservation rules and deck refusals. It sends the number the user confirmed; if the deck no longer has exactly that many deleted cards, it is refused as stale and nothing is written.
 
+### Several cards at once
+
+Added after v0.6.0. On the deck screen, *Search cards* filters the deck's active cards by exact text in front or back, ignoring case (in React: the cards are already loaded and nothing is written). Cards are ticked one by one or with *Select all* (the cards the search shows), then *Delete selected* (`delete_flashcards`) or *Move selected* (`move_flashcards`, both in `authoring.rs`). Each sends the ids the user confirmed and works in one transaction; if any of them is no longer an active card of that deck, it is refused as stale and nothing is written. A move changes only `deck_id` and `updated_at`, so FSRS state, due date, counts and review logs carry over. The Sample deck and archived decks are refused on either side. No migration: 0006 already refuses moves into or out of an archived deck, and 0010 a move of a deleted card.
+
 ### Timestamp caveat
 
 Your implementation report identified one historical detail worth retaining: deleting a card already changes its `updated_at` timestamp. Restoring it cannot recover an earlier edit timestamp that was not stored separately.
@@ -520,15 +524,18 @@ At a project level, the important concepts are:
 
 Retrievability was planned as something computed from memory state and elapsed time rather than permanently stored as a fixed percentage.
 
-### 5.3 What is not implemented
+### 5.3 Personalized parameters
 
-The personalized FSRS parameter optimizer is not built.
+Added after v0.6.0 (nightly round of 2026-10-19; not yet released). *Settings* → *Optimize* fits one global parameter set to every `review_logs` row with `fsrs::compute_parameters` (`optimizer.rs`).
 
-That means:
+- **Usable reviews** are ratings made at least a day after the card's previous rating (FSRS's training items). Optimizing is refused below 400 (`MINIMUM_REVIEWS`).
+- **Nothing is written by optimizing.** The result is compared with the parameters in use (FSRS log loss decides; the screen shows the average prediction error and the intervals a new card would get) and held in memory under a token.
+- **Applying** is only allowed when the fit predicts better, and is refused as stale if the parameters in use changed meanwhile. Each apply or *Reset to defaults* appends a row to `fsrs_parameters` (migration `0011`, rows never updated or deleted); the newest row is in use.
+- **Future ratings only.** `study::record_review` reads the parameters in use for each rating. No stored schedule or review log is rewritten.
+- **Bounded.** Fitting runs on a blocking thread; *Stop*, leaving the screen, or another run aborts it, and it stops after 120 seconds.
+- **Not established:** the evaluation is on the same reviews the parameters were fitted to (as Anki does); no per-deck parameters, no desired-retention setting, no automatic re-fitting. It hasn't been tried on a real long review history, only on generated ones in tests.
 
-- Scheduling responds to the stored state and ratings.
-- The app is not yet fitting its global parameter set to your personal history.
-- It should not claim that it has already learned your individual forgetting curve through optimizer runs.
+The older spec's policy (review-count doubling, daily cap) was not adopted: optimizing happens only when the user asks.
 
 The older technical spec proposes an optimizer policy with a minimum review count, a review-count-doubling condition, and a daily cap. Those are project proposals, not a guarantee of appropriate behavior or a shipped capability. They should be revisited against the actual library and available data before implementation.
 
@@ -682,8 +689,10 @@ Current README identifies these main files:
 | `Notes.tsx` | Notes library and note flows, including importing a file as a note and searching the library |
 | `SuggestCards.tsx` | Suggesting cards from a note and checking them before saving |
 | `deckChoices.ts` | The decks a card can be added to, for both card-from-note screens |
+| `Statistics.tsx` | Statistics: reviews per day, true retention, cards by state, due forecast (plain SVG charts) |
 | `ArchivedDecks.tsx` | Archived-deck recovery |
 | `Backup.tsx` | Export and restore |
+| `Settings.tsx` | Settings: personal FSRS parameters (optimize, compare, apply, reset) |
 | `CardsCsv.tsx` | Importing cards from a CSV/TSV file into a deck and exporting a deck's cards, on the Backup & restore screen |
 | `App.css` | Shared visual tokens and presentation |
 | `forms.tsx` | Shared form fields and saving (one save at a time, field errors) |
@@ -703,7 +712,9 @@ For example, hiding a Restore button is useful UX, but the Rust command must sti
 | `commands.rs` | Frontend-facing command layer |
 | `db.rs` | Database location, opening, migration, seeding |
 | `scheduler.rs` | FSRS scheduling calculations |
+| `optimizer.rs` | Fitting FSRS parameters to the review history, and which parameters are in use |
 | `study.rs` | Deck study data, sessions, recording reviews, today's review count |
+| `stats.rs` | Read-only statistics: 30 days of reviews, true retention, cards by state, 14-day due forecast |
 | `authoring.rs` | Deck/card creation and lifecycle |
 | `notes.rs` | Note lifecycle and note search |
 | `suggest.rs` | Asking Ollama for suggested cards, and checking them against the note |
@@ -852,6 +863,7 @@ The project history gives this high-level progression:
 | `0008` | Note soft deletion/restoration |
 | `0009` | Deck unarchive |
 | `0010` | Card restore |
+| `0011` | FSRS parameters fitted to the user's history (append-only) |
 
 The first seven are described in the original specification. The final three are established by your later feature reports and repository history.
 
@@ -1019,21 +1031,21 @@ The current README is explicit about these gaps.
 
 ### Organization
 
-- Card search. Notes can be searched by exact text (title or body, ignoring case), with no index or fuzzy matching.
+- Card search across decks. Within one deck, cards can be searched by exact text (section 4.2); notes by exact text (title or body, ignoring case), with no index or fuzzy matching.
 - Tags.
 - Folders.
-- Bulk actions.
+- Bulk actions beyond deleting and moving a deck's selected cards (and *Restore all*).
 - Card movement between decks through restoration.
 - Standard external deck import formats.
 
 
 ### Analytics and personalization
 
-- User-facing statistics beyond the Study Desk's count of today's reviews and cards.
+- User-facing statistics beyond the Study Desk's count of today's reviews and the Statistics screen (30 days of reviews, true retention, cards by state, 14-day due forecast).
 - Streaks.
 - XP.
 - Mastery percentages.
-- FSRS parameter optimization.
+- Per-deck FSRS parameters or automatic re-fitting (one global set, fitted on request since the 2026-10-19 round).
 
 
 ### UX and testing
