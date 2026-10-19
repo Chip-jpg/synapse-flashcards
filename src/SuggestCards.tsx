@@ -188,7 +188,7 @@ type ChooseStage = {
 };
 
 /** How a part of a long note is offered: where it is, and how it begins. */
-function partLabel(part: NotePart, index: number, count: number): string {
+export function partLabel(part: NotePart, index: number, count: number): string {
   const firstLine = part.text.split("\n", 1)[0].replace(/\s+/gu, " ").trim();
   const begins = Array.from(firstLine);
   const opening = begins.length > 60 ? `${begins.slice(0, 60).join("").trimEnd()}…` : firstLine;

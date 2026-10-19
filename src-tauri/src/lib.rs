@@ -1,4 +1,5 @@
 mod aid;
+mod anki;
 mod authoring;
 mod cards_csv;
 mod commands;
@@ -9,6 +10,7 @@ pub mod extract;
 mod import;
 mod notes;
 mod optimizer;
+mod quiz;
 mod scheduler;
 mod search;
 mod stats;
@@ -30,8 +32,12 @@ pub fn run() {
         .manage(suggest::Suggesting::default())
         // The card help Ollama is writing, so it can be stopped.
         .manage(aid::Helping::default())
+        // The quiz Ollama is writing, so it can be stopped.
+        .manage(quiz::Quizzing::default())
         // Fitting FSRS parameters, so it can be stopped, and its result.
         .manage(optimizer::Optimizing::default())
+        // An Anki package read and waiting for the user to add it.
+        .manage(anki::AnkiImports::default())
         .setup(|app| {
             // A backup checked in an earlier run but never confirmed or
             // cancelled (the window closed while Synapse asked) can't be
@@ -89,7 +95,12 @@ pub fn run() {
             commands::import_cards_csv,
             commands::export_cards_csv,
             commands::get_card_help,
-            commands::stop_card_help
+            commands::stop_card_help,
+            commands::quiz_note,
+            commands::stop_quiz,
+            commands::read_anki_package,
+            commands::import_anki_package,
+            commands::cancel_anki_import
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

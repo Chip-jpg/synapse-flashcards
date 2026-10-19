@@ -488,6 +488,17 @@ Added in v0.5.0. *Notes* → *Import file* reads a PDF, TXT, MD, DOCX or PPTX an
 - **Limits.** Files up to 50 MB. Text over a note's 100,000 characters is shown with a warning and must be shortened before saving. `.doc`/`.ppt` aren't supported. Suggestions are limited to 12,000 characters, so long imports need splitting before *Suggest cards*.
 - Checked in the real app on Linux, through the GTK file window, with files made by LibreOffice, pandoc and python-pptx. Not yet checked on Windows.
 
+## 4.7b Decks from Anki, and safe CSV export
+
+Added on branch `claude/nightly-2026-10-19-anki-import-t3vnsu` (not yet released). *Backup & restore* → *Decks from Anki* reads an `.apkg` or `.colpkg` and adds its front/back notes as new decks of new cards (`anki.rs`, `AnkiImport.tsx`). No migration; backups unchanged.
+
+- **Reading.** Only the collection entry is unpacked, into a temporary folder removed afterwards: `collection.anki21b` (zstd, via the pure-Rust `ruzstd`) first, then `collection.anki21`, then `collection.anki2` (newer packages add a "please update Anki" stub as `.anki2`). Limits: 2 GB file, 512 MB unpacked collection. A WAL-marked copy is switched to a rollback journal, then opened read-only and immutable on its own connection, never attached to Synapse's database. Schema 11 (JSON in `col`) and 18 (tables, protobuf settings) are both read.
+- **Which notes.** Decided by templates, not names: the first template shows one field on the question and adds one on the answer; other templates repeat or reverse it. Reversible only when Anki made the reversed card. Cloze (incl. image occlusion), other types, empty sides and sides over 2,000 characters are left out and counted. HTML becomes plain text (`html_to_text`); pictures and sounds are dropped and counted.
+- **Saving.** Preview first; Rust holds the package under a token (`AnkiImports`). Saving creates one deck per Anki deck with cards (`Parent::Child` names, made unique against every existing deck including archived, within 100 characters, description "Imported from Anki."), forward cards then reversed ones, in one `BEGIN IMMEDIATE` transaction. All cards start New; Anki scheduling, history, tags and media are not imported. Up to 50,000 cards and 1,000 decks.
+- **Tested against real Anki output.** `src-tauri/testdata/anki/` holds packages exported by Anki 25.09 (PyPI `anki`) in all three formats, and `make_fixtures.py` that made them.
+- **CSV formulas (v0.7.0's known issue, fixed).** `cards_csv.rs` exports a cell starting with `=`, `+`, `-`, `@`, tab or CR with a `'` in front (`protect_formula`), and also one that starts with `'` then such a character. Import strips exactly one such `'` (`unprotect_formula`), so Synapse's own exports round-trip; any other cell is read as is.
+- **CSS fix found on the way.** `App.css` in v0.7.0 lost the `}` closing `.chart-axis`, so every rule after it (the CSV preview table, the check boxes, card help's choices) was nested under `.chart-axis` and never applied. Restored.
+
 ## 4.8 Help with hard cards (memory aids)
 
 Added on branch `claude/nightly-2026-10-19-memory-aids-i9x6j9` (not yet released). The first part of section 14.4.
@@ -497,7 +508,17 @@ Added on branch `claude/nightly-2026-10-19-memory-aids-i9x6j9` (not yet released
 - **Drafts only.** Nothing is stored unless the user picks *Add as a note*, which uses `create_note`. No table, no migration, backups unchanged.
 - **Never in the way.** Rating doesn't wait for help; rating replaces the panel and stops a request still running. Without Ollama, review is unchanged.
 
-## 4.9 Searching everything
+## 4.9 Quiz on a note
+
+Added on branch `claude/nightly-2026-10-19-note-quiz` (not yet released). Note → *Quiz me* → choose a model → *Start quiz*.
+
+- **Same rules as suggestions.** `quiz.rs` asks through `suggest.rs`'s `Ollama::ask`: 127.0.0.1 only, local models only (checked again before sending), user-initiated, *Stop* (`stop_quiz`, its own `Quizzing` state), 12,000-character limit with `noteParts` splitting. No migration, no table; backups unchanged.
+- **Checked like suggested cards.** Up to 8 questions (`MAX_QUESTIONS`), each with an answer, exactly 3 distractors and a quote. Kept only if the quote is in the note word for word (`quoted_from`) and the answer is drawn from it (`drawn_from`), both now `pub(crate)` in `suggest.rs`; the four options must all differ (`comparable`), so the answer is never a distractor. Distractors aren't checked against the note.
+- **Taking it.** One question at a time; options shuffled in React (`shuffled`); 1–4 answer (modifier and held keys ignored), then the right option is marked with the quote, and Enter/Space or *Next question* moves on. Summary: score and each missed question with both answers.
+- **Missed questions → cards.** Ticked ones are added to a chosen deck with `create_flashcards` (front = question, back = right answer). Nothing else is stored.
+- **Unsaved changes.** Leaving counts as unsaved only while some question has been missed and not added as a card: which questions were missed can't be got back, but the quiz can be written again. Adding the cards returns to the note.
+
+## 4.10 Searching everything
 
 Added on branch `claude/nightly-2026-10-19-search-everywhere-tombun` (not yet released). *Search* in the sidebar searches every active card (front and back, decks not archived) and every active note (title and body) at once.
 
@@ -708,6 +729,7 @@ Current README identifies these main files:
 | `ReviewSession.tsx` | Review interaction |
 | `Notes.tsx` | Notes library and note flows, including importing a file as a note and searching the library |
 | `SuggestCards.tsx` | Suggesting cards from a note and checking them before saving |
+| `Quiz.tsx` | A multiple-choice quiz on a note, and adding missed questions as cards |
 | `deckChoices.ts` | The decks a card can be added to, for both card-from-note screens |
 | `Search.tsx` | Search: every card and note at once, with snippets and filters |
 | `Statistics.tsx` | Statistics: reviews per day, true retention, cards by state, due forecast (plain SVG charts) |
@@ -715,6 +737,7 @@ Current README identifies these main files:
 | `Backup.tsx` | Export and restore |
 | `Settings.tsx` | Settings: personal FSRS parameters (optimize, compare, apply, reset) |
 | `CardsCsv.tsx` | Importing cards from a CSV/TSV file into a deck and exporting a deck's cards, on the Backup & restore screen |
+| `AnkiImport.tsx` | Importing an Anki package as new decks, on the Backup & restore screen |
 | `App.css` | Shared visual tokens and presentation |
 | `forms.tsx` | Shared form fields and saving (one save at a time, field errors) |
 | `unsaved.tsx` | Tracks unsaved forms and asks before discarding them |
@@ -740,8 +763,10 @@ For example, hiding a Restore button is useful UX, but the Rust command must sti
 | `authoring.rs` | Deck/card creation and lifecycle |
 | `notes.rs` | Note lifecycle and note search |
 | `suggest.rs` | Asking Ollama for suggested cards, and checking them against the note |
+| `quiz.rs` | Asking Ollama for a multiple-choice quiz on a note, and checking its questions against the note |
 | `extract.rs` | Reading a file's text for import; the PDF helper process |
-| `cards_csv.rs` | Reading and checking CSV/TSV files of cards, saving them all together, and writing a deck as CSV |
+| `cards_csv.rs` | Reading and checking CSV/TSV files of cards, saving them all together, and writing a deck as CSV (formula cells protected) |
+| `anki.rs` | Reading an Anki package's collection read-only and adding its front/back notes as new decks |
 | `export.rs` | Backup creation |
 | `import.rs` | Backup checking and replacement |
 
@@ -1043,7 +1068,7 @@ The current README is explicit about these gaps.
 
 - Flashcard generation beyond v0.4.0's local suggestions: no cloud providers, no choice of card count, and no suggestions from notes over 12,000 characters.
 - Summaries.
-- Quizzes.
+- Quizzes beyond multiple choice on one note (section 4.9).
 - Memory aids beyond help with a card after repeated Agains (section 4.8).
 - Feynman feedback.
 - Socratic tutoring.
@@ -1059,7 +1084,7 @@ The current README is explicit about these gaps.
 - Folders.
 - Bulk actions beyond deleting and moving a deck's selected cards (and *Restore all*).
 - Card movement between decks through restoration.
-- Standard external deck import formats.
+- External deck formats beyond CSV/TSV and Anki packages (Anki: front/back text only, section 4.7b).
 
 
 ### Analytics and personalization

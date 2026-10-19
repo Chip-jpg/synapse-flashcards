@@ -1234,6 +1234,112 @@ html:has(.note-context) {
   color: var(--text-muted);
 }
 
+/* A quiz on a note: four options per question, marked once answered, then
+   the passage of the note the answer comes from. Built from the review
+   screen's progress, card and rating styles. */
+
+.quiz-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.625rem;
+}
+
+@media (max-width: 40rem) {
+  .quiz-options {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Two classes, so these win over `.button`, which comes later. */
+.button.quiz-option {
+  align-self: stretch;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  min-height: 3.25rem;
+  padding: 0.75rem 1rem;
+  font-size: 0.9375rem;
+  text-align: left;
+  border-color: var(--border);
+  border-radius: var(--radius-lg);
+  overflow-wrap: anywhere;
+}
+
+.quiz-option-text {
+  flex: 1 1 8rem;
+}
+
+.quiz-option-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.button.quiz-option-right {
+  color: var(--sage-ink);
+  background-color: var(--sage-soft);
+  border-color: var(--sage-line);
+}
+
+.button.quiz-option-wrong {
+  color: var(--danger);
+  background-color: var(--danger-soft);
+  border-color: var(--danger-line);
+}
+
+.button.quiz-option-other {
+  color: var(--text-muted);
+}
+
+/* Once answered the options can't be chosen, but they aren't busy: keep the
+   marks at full strength rather than faded like a button that's saving. */
+.button.quiz-option[aria-disabled="true"] {
+  cursor: default;
+  opacity: 1;
+}
+
+.quiz-feedback {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* A missed question: like a notice, in the soft red of a wrong answer. */
+.quiz-missed {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  font-weight: 500;
+  color: var(--danger);
+  background-color: var(--danger-soft);
+  border: 1px solid var(--danger-line);
+  border-radius: var(--radius-lg);
+}
+
+.quiz-missed-question {
+  margin: 0;
+  font-weight: 600;
+  white-space: pre-wrap;
+}
+
+.quiz-answers {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.25rem 1rem;
+  margin: 0;
+  font-size: 0.9375rem;
+}
+
+.quiz-answers dt {
+  color: var(--text-muted);
+}
+
+.quiz-answers dd {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
 /* Review session */
 
 .session {
@@ -1536,6 +1642,7 @@ html:has(.note-context) {
    programmatically rather than by the keyboard; clicking one also shows it,
    which is a fair price for never hiding where focus went. */
 .notice:focus,
+.quiz-missed:focus,
 .confirm-question:focus {
   outline: 3px solid var(--focus);
   outline-offset: 3px;
