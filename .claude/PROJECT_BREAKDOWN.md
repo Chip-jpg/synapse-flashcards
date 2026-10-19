@@ -277,6 +277,10 @@ The normal restore flow refuses:
 
 The user must unarchive a deck before restoring one of its deleted cards.
 
+### Restore all
+
+With two or more deleted cards in a deck, *Restore all* (`restore_deleted_cards` in `authoring.rs`) restores every one of them in one transaction, by the same preservation rules and deck refusals. It sends the number the user confirmed; if the deck no longer has exactly that many deleted cards, it is refused as stale and nothing is written.
+
 ### Timestamp caveat
 
 Your implementation report identified one historical detail worth retaining: deleting a card already changes its `updated_at` timestamp. Restoring it cannot recover an earlier edit timestamp that was not stored separately.
