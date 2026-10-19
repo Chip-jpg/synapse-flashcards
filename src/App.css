@@ -952,6 +952,60 @@ body {
   justify-content: flex-end;
 }
 
+/* Choosing several of a deck's cards: a Select box on each card, a
+   "select all" box above the list, and the bar of actions for the selection. */
+.card-select,
+.select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.card-select {
+  padding: 0 0.5rem;
+}
+
+.card-select input,
+.select-all input {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  accent-color: var(--primary);
+}
+
+.select-all {
+  align-self: flex-start;
+}
+
+/* Follows the card list, but stays in view at the bottom of the window while
+   the list is longer than the window. */
+.selection-bar {
+  position: sticky;
+  bottom: 1rem;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.875rem 1.125rem;
+  background-color: var(--primary-soft);
+  border: 1px solid var(--primary-line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+}
+
+.selection-summary {
+  margin: 0;
+  color: var(--primary-ink);
+}
+
+.selection-bar .confirm-calm {
+  background-color: var(--surface);
+}
+
 .item-meta {
   margin: 0.125rem 0 0;
   font-size: 0.8125rem;
