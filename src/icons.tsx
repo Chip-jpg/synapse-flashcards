@@ -175,6 +175,18 @@ export function DatabaseIcon() {
   );
 }
 
+/** Three sliders: settings. */
+export function SlidersIcon() {
+  return (
+    <Icon>
+      <path d="M5 4v8.5M5 16.5V20M12 4v2.5M12 10.5V20M19 4v9.5M19 17.5V20" />
+      <circle cx="5" cy="14.5" r="2" />
+      <circle cx="12" cy="8.5" r="2" />
+      <circle cx="19" cy="15.5" r="2" />
+    </Icon>
+  );
+}
+
 /** A four-pointed spark: cards a model suggests. */
 export function SparkleIcon() {
   return (

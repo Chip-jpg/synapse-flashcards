@@ -6,6 +6,7 @@ import { Dashboard } from "./Dashboard";
 import { DeckDetail } from "./DeckDetail";
 import { NotesArea } from "./Notes";
 import { ReviewSession } from "./ReviewSession";
+import { Settings } from "./Settings";
 import { Shell, type Place } from "./Shell";
 import { StatisticsScreen } from "./Statistics";
 import { DiscardDialog, UnsavedChangesProvider, useUnsavedTracker } from "./unsaved";
@@ -18,7 +19,8 @@ type View =
   | { screen: "notes" }
   | { screen: "stats" }
   | { screen: "archived" }
-  | { screen: "backup" };
+  | { screen: "backup" }
+  | { screen: "settings" };
 
 const DECKS: View = { screen: "decks", notice: null };
 
@@ -29,6 +31,7 @@ const PLACE_VIEWS: Record<Place, View> = {
   stats: { screen: "stats" },
   archived: { screen: "archived" },
   backup: { screen: "backup" },
+  settings: { screen: "settings" },
 };
 
 /** Which sidebar place a screen belongs to, and where it is within it. */
@@ -48,6 +51,8 @@ function locate(view: View): { place: Place; atPlace: boolean; trail: string[] }
       return { place: "archived", atPlace: true, trail: ["Synapse", "Archived decks"] };
     case "backup":
       return { place: "backup", atPlace: true, trail: ["Synapse", "Backup & restore"] };
+    case "settings":
+      return { place: "settings", atPlace: true, trail: ["Synapse", "Settings"] };
   }
 }
 
@@ -155,6 +160,7 @@ function App() {
         )}
         {view.screen === "stats" && <StatisticsScreen key={`${restores}:${visits}`} />}
         {view.screen === "archived" && <ArchivedDecks key={visits} />}
+        {view.screen === "settings" && <Settings key={visits} />}
         {view.screen === "backup" && (
           <Backup
             key={visits}

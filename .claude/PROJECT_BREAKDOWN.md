@@ -524,15 +524,18 @@ At a project level, the important concepts are:
 
 Retrievability was planned as something computed from memory state and elapsed time rather than permanently stored as a fixed percentage.
 
-### 5.3 What is not implemented
+### 5.3 Personalized parameters
 
-The personalized FSRS parameter optimizer is not built.
+Added after v0.6.0 (nightly round of 2026-10-19; not yet released). *Settings* → *Optimize* fits one global parameter set to every `review_logs` row with `fsrs::compute_parameters` (`optimizer.rs`).
 
-That means:
+- **Usable reviews** are ratings made at least a day after the card's previous rating (FSRS's training items). Optimizing is refused below 400 (`MINIMUM_REVIEWS`).
+- **Nothing is written by optimizing.** The result is compared with the parameters in use (FSRS log loss decides; the screen shows the average prediction error and the intervals a new card would get) and held in memory under a token.
+- **Applying** is only allowed when the fit predicts better, and is refused as stale if the parameters in use changed meanwhile. Each apply or *Reset to defaults* appends a row to `fsrs_parameters` (migration `0011`, rows never updated or deleted); the newest row is in use.
+- **Future ratings only.** `study::record_review` reads the parameters in use for each rating. No stored schedule or review log is rewritten.
+- **Bounded.** Fitting runs on a blocking thread; *Stop*, leaving the screen, or another run aborts it, and it stops after 120 seconds.
+- **Not established:** the evaluation is on the same reviews the parameters were fitted to (as Anki does); no per-deck parameters, no desired-retention setting, no automatic re-fitting. It hasn't been tried on a real long review history, only on generated ones in tests.
 
-- Scheduling responds to the stored state and ratings.
-- The app is not yet fitting its global parameter set to your personal history.
-- It should not claim that it has already learned your individual forgetting curve through optimizer runs.
+The older spec's policy (review-count doubling, daily cap) was not adopted: optimizing happens only when the user asks.
 
 The older technical spec proposes an optimizer policy with a minimum review count, a review-count-doubling condition, and a daily cap. Those are project proposals, not a guarantee of appropriate behavior or a shipped capability. They should be revisited against the actual library and available data before implementation.
 
@@ -689,6 +692,7 @@ Current README identifies these main files:
 | `Statistics.tsx` | Statistics: reviews per day, true retention, cards by state, due forecast (plain SVG charts) |
 | `ArchivedDecks.tsx` | Archived-deck recovery |
 | `Backup.tsx` | Export and restore |
+| `Settings.tsx` | Settings: personal FSRS parameters (optimize, compare, apply, reset) |
 | `App.css` | Shared visual tokens and presentation |
 | `forms.tsx` | Shared form fields and saving (one save at a time, field errors) |
 | `unsaved.tsx` | Tracks unsaved forms and asks before discarding them |
@@ -707,6 +711,7 @@ For example, hiding a Restore button is useful UX, but the Rust command must sti
 | `commands.rs` | Frontend-facing command layer |
 | `db.rs` | Database location, opening, migration, seeding |
 | `scheduler.rs` | FSRS scheduling calculations |
+| `optimizer.rs` | Fitting FSRS parameters to the review history, and which parameters are in use |
 | `study.rs` | Deck study data, sessions, recording reviews, today's review count |
 | `stats.rs` | Read-only statistics: 30 days of reviews, true retention, cards by state, 14-day due forecast |
 | `authoring.rs` | Deck/card creation and lifecycle |
@@ -856,6 +861,7 @@ The project history gives this high-level progression:
 | `0008` | Note soft deletion/restoration |
 | `0009` | Deck unarchive |
 | `0010` | Card restore |
+| `0011` | FSRS parameters fitted to the user's history (append-only) |
 
 The first seven are described in the original specification. The final three are established by your later feature reports and repository history.
 
@@ -1037,7 +1043,7 @@ The current README is explicit about these gaps.
 - Streaks.
 - XP.
 - Mastery percentages.
-- FSRS parameter optimization.
+- Per-deck FSRS parameters or automatic re-fitting (one global set, fitted on request since the 2026-10-19 round).
 
 
 ### UX and testing

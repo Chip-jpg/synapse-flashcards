@@ -548,6 +548,91 @@ export function stopSuggesting(): Promise<void> {
 }
 
 /**
+ * Mirrors `Settings` in `src-tauri/src/optimizer.rs`: the FSRS parameters
+ * reviews are scheduled with, and how many reviews an optimization could learn
+ * from. `version` changes with every apply and reset.
+ */
+export type SchedulingSettings = {
+  version: number;
+  /** Parameters fitted to the user's history are in use (else FSRS's defaults). */
+  personal: boolean;
+  /** The 21 parameters in use. */
+  parameters: number[];
+  defaults: number[];
+  /** How many reviews the parameters in use were fitted to. */
+  reviewsUsed: number | null;
+  /** When they were applied, or the defaults restored (ISO-8601 UTC). */
+  appliedAt: string | null;
+  /** Ratings made at least a day after the card's previous one. */
+  usableReviews: number;
+  /** Optimizing is refused below this many usable reviews. */
+  minimumReviews: number;
+};
+
+/** Mirrors `IntervalCase` in `src-tauri/src/optimizer.rs`. */
+export type IntervalCase = "firstAgain" | "firstHard" | "firstGood" | "firstEasy" | "secondGood";
+
+/** Mirrors `IntervalChange` in `src-tauri/src/optimizer.rs`: intervals in days. */
+export type IntervalChange = { case: IntervalCase; current: number; proposed: number };
+
+/**
+ * Mirrors `OptimizeOutcome` in `src-tauri/src/commands.rs`. Nothing is saved
+ * until `applyParameters`. The errors are how far predicted recall is from
+ * actual recall, on average (0 to 1, lower is better). Only a result that is
+ * `better` can be applied.
+ */
+export type OptimizeOutcome =
+  | {
+      status: "optimized";
+      token: number;
+      reviewsUsed: number;
+      current: number[];
+      proposed: number[];
+      currentError: number;
+      proposedError: number;
+      better: boolean;
+      intervals: IntervalChange[];
+    }
+  | { status: "stopped" };
+
+/** The scheduling settings. */
+export function getScheduling(): Promise<SchedulingSettings> {
+  return invoke<SchedulingSettings>("get_scheduling");
+}
+
+/**
+ * Fits FSRS to the whole review history and compares the result with the
+ * parameters in use. Nothing is saved. Resolves with `{ status: "stopped" }` if
+ * `stopOptimizing` is called first; rejects with kind "invalid" below the
+ * minimum number of reviews, or "failed" if it took too long.
+ */
+export function optimizeParameters(): Promise<OptimizeOutcome> {
+  return invoke<OptimizeOutcome>("optimize_parameters");
+}
+
+/** Stops the optimization running now, if any. */
+export function stopOptimizing(): Promise<void> {
+  return invoke<void>("stop_optimizing");
+}
+
+/**
+ * Schedules every rating from now on with the parameters of the optimization
+ * held under `token`. Rejects with kind "stale" if it's no longer waiting or
+ * the parameters in use changed since.
+ */
+export function applyParameters(token: number): Promise<SchedulingSettings> {
+  return invoke<SchedulingSettings>("apply_parameters", { token });
+}
+
+/**
+ * Goes back to FSRS's defaults for every rating from now on. `version` is the
+ * settings' version as shown; rejects with kind "stale" if they changed since.
+ */
+export function resetParameters(version: number): Promise<SchedulingSettings> {
+  return invoke<SchedulingSettings>("reset_parameters", { version });
+}
+
+/**
  * Until the returned function is called, closing the window doesn't close it:
  * `onRequest` runs instead, and the window stays open until `closeWindow`.
  * With no hold in place, the window closes as usual.
