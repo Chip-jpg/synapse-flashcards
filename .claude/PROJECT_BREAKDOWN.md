@@ -488,6 +488,16 @@ Added in v0.5.0. *Notes* → *Import file* reads a PDF, TXT, MD, DOCX or PPTX an
 - **Limits.** Files up to 50 MB. Text over a note's 100,000 characters is shown with a warning and must be shortened before saving. `.doc`/`.ppt` aren't supported. Suggestions are limited to 12,000 characters, so long imports need splitting before *Suggest cards*.
 - Checked in the real app on Linux, through the GTK file window, with files made by LibreOffice, pandoc and python-pptx. Not yet checked on Windows.
 
+## 4.7b Decks from Anki, and safe CSV export
+
+Added on branch `claude/nightly-2026-10-19-anki-import-t3vnsu` (not yet released). *Backup & restore* → *Decks from Anki* reads an `.apkg` or `.colpkg` and adds its front/back notes as new decks of new cards (`anki.rs`, `AnkiImport.tsx`). No migration; backups unchanged.
+
+- **Reading.** Only the collection entry is unpacked, into a temporary folder removed afterwards: `collection.anki21b` (zstd, via the pure-Rust `ruzstd`) first, then `collection.anki21`, then `collection.anki2` (newer packages add a "please update Anki" stub as `.anki2`). Limits: 2 GB file, 512 MB unpacked collection. A WAL-marked copy is switched to a rollback journal, then opened read-only and immutable on its own connection, never attached to Synapse's database. Schema 11 (JSON in `col`) and 18 (tables, protobuf settings) are both read.
+- **Which notes.** Decided by templates, not names: the first template shows one field on the question and adds one on the answer; other templates repeat or reverse it. Reversible only when Anki made the reversed card. Cloze (incl. image occlusion), other types, empty sides and sides over 2,000 characters are left out and counted. HTML becomes plain text (`html_to_text`); pictures and sounds are dropped and counted.
+- **Saving.** Preview first; Rust holds the package under a token (`AnkiImports`). Saving creates one deck per Anki deck with cards (`Parent::Child` names, made unique against every existing deck including archived, within 100 characters, description "Imported from Anki."), forward cards then reversed ones, in one `BEGIN IMMEDIATE` transaction. All cards start New; Anki scheduling, history, tags and media are not imported. Up to 50,000 cards and 1,000 decks.
+- **Tested against real Anki output.** `src-tauri/testdata/anki/` holds packages exported by Anki 25.09 (PyPI `anki`) in all three formats, and `make_fixtures.py` that made them.
+- **CSV formulas (v0.7.0's known issue, fixed).** `cards_csv.rs` exports a cell starting with `=`, `+`, `-`, `@`, tab or CR with a `'` in front (`protect_formula`), and also one that starts with `'` then such a character. Import strips exactly one such `'` (`unprotect_formula`), so Synapse's own exports round-trip; any other cell is read as is.
+
 ## 4.8 Help with hard cards (memory aids)
 
 Added on branch `claude/nightly-2026-10-19-memory-aids-i9x6j9` (not yet released). The first part of section 14.4.
@@ -703,6 +713,7 @@ Current README identifies these main files:
 | `Backup.tsx` | Export and restore |
 | `Settings.tsx` | Settings: personal FSRS parameters (optimize, compare, apply, reset) |
 | `CardsCsv.tsx` | Importing cards from a CSV/TSV file into a deck and exporting a deck's cards, on the Backup & restore screen |
+| `AnkiImport.tsx` | Importing an Anki package as new decks, on the Backup & restore screen |
 | `App.css` | Shared visual tokens and presentation |
 | `forms.tsx` | Shared form fields and saving (one save at a time, field errors) |
 | `unsaved.tsx` | Tracks unsaved forms and asks before discarding them |
@@ -728,7 +739,8 @@ For example, hiding a Restore button is useful UX, but the Rust command must sti
 | `notes.rs` | Note lifecycle and note search |
 | `suggest.rs` | Asking Ollama for suggested cards, and checking them against the note |
 | `extract.rs` | Reading a file's text for import; the PDF helper process |
-| `cards_csv.rs` | Reading and checking CSV/TSV files of cards, saving them all together, and writing a deck as CSV |
+| `cards_csv.rs` | Reading and checking CSV/TSV files of cards, saving them all together, and writing a deck as CSV (formula cells protected) |
+| `anki.rs` | Reading an Anki package's collection read-only and adding its front/back notes as new decks |
 | `export.rs` | Backup creation |
 | `import.rs` | Backup checking and replacement |
 
@@ -1045,7 +1057,7 @@ The current README is explicit about these gaps.
 - Folders.
 - Bulk actions beyond deleting and moving a deck's selected cards (and *Restore all*).
 - Card movement between decks through restoration.
-- Standard external deck import formats.
+- External deck formats beyond CSV/TSV and Anki packages (Anki: front/back text only, section 4.7b).
 
 
 ### Analytics and personalization
