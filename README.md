@@ -19,6 +19,8 @@ migrations, validation, scheduling, and every business rule; React only calls ty
   Good / Easy**, with **Card 2 of 5** and a progress bar as you go. The whole session can be
   answered from the keyboard: **Space** reveals, **1–4** rate. FSRS computes the next due date, and
   every rating is appended to `review_logs`.
+- **Today** — the Study Desk shows how many reviews you've recorded today and for how many
+  different cards (*Today: 12 reviews · 9 cards*), counted since midnight on your computer's clock.
 - **History is kept** — deleting a card, archiving a deck, and deleting a note are all *soft*: the
   rows stay in the database, a card keeps its FSRS state and review log, and a note keeps its text
   and its times. Every one of them can be brought back: a deleted card restored, an archived deck
@@ -257,7 +259,11 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
 - **Default FSRS parameters only.** The optimizer that re-fits weights to your own history is
   future work and isn't built.
 - **One card type.** Front/back text only: no images, audio, cloze, or tags.
-- **No search, bulk actions, folders, or statistics.**
+- **No search, bulk actions, or folders.**
+- **Statistics are one daily count.** The Study Desk counts today's reviews and the different
+  cards they were for, nothing more: no history of earlier days, no streaks, no percentages. It
+  counts every rating made today, including ones of cards deleted or decks archived since. "Today"
+  is the computer's current time zone, so changing it (or travelling) moves where the day begins.
 - **Suggestions are a first step.** They come only from Ollama on this computer, from one note
   at a time, and from one part of up to 12,000 characters of a longer note, as front/back cards.
   A file is suggested from once it's imported as a note. There's no cloud option, no choice of how
@@ -289,7 +295,7 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   - `commands.rs` — the Tauri commands, the only way the frontend reaches the core.
   - `db.rs` — where the database lives, opening it, running migrations, and the one-time seed.
   - `scheduler.rs` — FSRS scheduling via the `fsrs` crate, with no database access.
-  - `study.rs` — the deck dashboard, review sessions, and recording reviews.
+  - `study.rs` — the deck dashboard, review sessions, recording reviews, and today's count.
   - `authoring.rs` — creating, renaming, archiving, and unarchiving decks; adding, editing,
     deleting, and restoring cards.
   - `notes.rs` — typed notes: writing, editing, soft-deleting, and restoring them.

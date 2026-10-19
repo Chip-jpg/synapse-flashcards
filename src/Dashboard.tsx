@@ -1,5 +1,12 @@
 import { useEffect, useState } from "react";
-import { getDecks, toCommandError, type Deck, type DeckDetail } from "./api";
+import {
+  getDecks,
+  getToday,
+  toCommandError,
+  type Deck,
+  type DeckDetail,
+  type TodaySummary,
+} from "./api";
 import { CreateDeckForm } from "./CreateDeckForm";
 import { ArrowRightIcon, BookIcon, CheckIcon, PlayIcon, PlusIcon } from "./icons";
 import { Message, useFocusOnMount } from "./ui";
@@ -8,12 +15,17 @@ import { useStartReview } from "./useStartReview";
 type DecksState =
   | { status: "loading" }
   | { status: "error"; message: string }
-  | { status: "ready"; decks: Deck[] };
+  | { status: "ready"; decks: Deck[]; today: TodaySummary | null };
 
-/** Fetches the active decks and describes the outcome; never rejects. */
+/**
+ * Fetches the active decks and today's review count, and describes the
+ * outcome; never rejects. Today's count is a side note: if it can't be read,
+ * the desk shows without it rather than failing.
+ */
 async function loadDecks(): Promise<DecksState> {
   try {
-    return { status: "ready", decks: await getDecks() };
+    const [decks, today] = await Promise.all([getDecks(), getToday().catch(() => null)]);
+    return { status: "ready", decks, today };
   } catch (err) {
     return { status: "error", message: toCommandError(err).message };
   }
@@ -116,6 +128,7 @@ export function Dashboard({
   return (
     <StudyDesk
       decks={state.decks}
+      today={state.today}
       notice={notice}
       focus={focus}
       onCreate={() => {
@@ -132,6 +145,7 @@ export function Dashboard({
 
 function StudyDesk({
   decks,
+  today,
   notice,
   focus,
   onCreate,
@@ -141,6 +155,7 @@ function StudyDesk({
   onChanged,
 }: {
   decks: Deck[];
+  today: TodaySummary | null;
   notice: string | null;
   /** What takes focus when the desk appears, if anything. */
   focus: "list" | "create" | "notice" | "notes" | null;
@@ -167,6 +182,7 @@ function StudyDesk({
           <p className="page-intro">
             Review the cards that are due, or open a deck you made to add and edit its cards.
           </p>
+          {today && <TodayLine today={today} />}
         </div>
         <button ref={createRef} type="button" className="button" onClick={onCreate}>
           <PlusIcon />
@@ -208,6 +224,21 @@ function StudyDesk({
 
       <NotesLink focus={focus === "notes"} onOpen={onOpenNotes} />
     </section>
+  );
+}
+
+/**
+ * How much reviewing happened today: ratings recorded, and the different cards
+ * they were for, which differ once a card is rated more than once.
+ */
+function TodayLine({ today }: { today: TodaySummary }) {
+  const { reviews, cards } = today;
+  return (
+    <p className="today-line">
+      {reviews === 0
+        ? "No reviews yet today"
+        : `Today: ${reviews} ${reviews === 1 ? "review" : "reviews"} · ${cards} ${cards === 1 ? "card" : "cards"}`}
+    </p>
   );
 }
 

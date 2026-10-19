@@ -197,6 +197,21 @@ export function getDecks(): Promise<Deck[]> {
   return invoke<Deck[]>("get_decks");
 }
 
+/**
+ * Today's reviewing, counted since local midnight: `reviews` is every rating
+ * recorded, `cards` how many different cards they were for. Ratings of cards
+ * deleted or archived since still count.
+ */
+export type TodaySummary = {
+  reviews: number;
+  cards: number;
+};
+
+/** How many reviews were recorded today, and for how many cards. */
+export function getToday(): Promise<TodaySummary> {
+  return invoke<TodaySummary>("get_today");
+}
+
 /** Every archived deck, most recently archived first. */
 export function getArchivedDecks(): Promise<ArchivedDeck[]> {
   return invoke<ArchivedDeck[]>("get_archived_decks");

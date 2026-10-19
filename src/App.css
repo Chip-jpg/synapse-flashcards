@@ -607,6 +607,14 @@ body {
 
 /* Study Desk */
 
+/* Today's review count, under the desk's intro: a quiet fact, not a goal. */
+.today-line {
+  margin: 0.5rem 0 0;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
 /* The deck to review first, or that nothing is due. */
 .focus-card {
   display: flex;

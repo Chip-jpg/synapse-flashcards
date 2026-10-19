@@ -20,7 +20,7 @@ use crate::extract::{self, ExtractError, ExtractedText, FileKind};
 use crate::import::{self, ImportError, ImportState, RestoreError};
 use crate::notes::{self, DeletedNote, InvalidNote, Note, NoteError, NoteSummary};
 use crate::scheduler::Rating;
-use crate::study::{self, DeckSummary, SessionCard, StartedSession, StudyError};
+use crate::study::{self, DeckSummary, SessionCard, StartedSession, StudyError, TodaySummary};
 use crate::suggest::{self, NotePart, Ollama, SuggestError, SuggestedCard, Suggesting};
 
 /// Error sent to React: `{ "kind": "failed" | "stale" | "invalid", "message": "..." }`,
@@ -238,6 +238,23 @@ pub async fn get_decks(
         eprintln!("[synapse] loading decks failed: {err}");
         CommandError::failed("Synapse couldn't load your decks.")
     })
+}
+
+/// The Study Desk's "today": reviews recorded since local midnight on this
+/// computer's clock, and how many different cards they were for.
+/// Returns `{ reviews, cards }`.
+#[tauri::command]
+pub async fn get_today(
+    app: AppHandle,
+    database: State<'_, Database>,
+) -> Result<TodaySummary, CommandError> {
+    let pool = pool(&app, &database).await?;
+    study::today(&pool, Utc::now(), &chrono::Local)
+        .await
+        .map_err(|err| {
+            eprintln!("[synapse] loading today's reviews failed: {err}");
+            CommandError::failed("Synapse couldn't count today's reviews.")
+        })
 }
 
 /// The dashboard's history: every archived deck, most recently archived first.
