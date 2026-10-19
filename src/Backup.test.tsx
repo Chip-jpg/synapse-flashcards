@@ -87,8 +87,9 @@ describe("restoring a backup", () => {
       ),
     ).toBeTruthy();
     await vi.waitFor(() => expect(sidebarLocked()).toBe(false));
-    // The Study Desk loaded once at launch, and again from the restored data.
-    expect(backup.argsOf("get_decks")).toHaveLength(2);
+    // The decks loaded once at launch, once for this screen's cards-file
+    // choices, and again on the Study Desk from the restored data.
+    expect(backup.argsOf("get_decks")).toHaveLength(3);
   });
 
   it("says why a restore failed, and unlocks the sidebar", async () => {

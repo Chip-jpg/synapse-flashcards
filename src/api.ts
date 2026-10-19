@@ -397,6 +397,83 @@ export function importFile(): Promise<FileImport> {
   return invoke<FileImport>("import_file");
 }
 
+/**
+ * Mirrors `CardsFileRow` in `src-tauri/src/commands.rs`: one row of a cards
+ * file, checked by Rust as a typed card. `line` is where the row starts in
+ * the file (from 1); `front` and `back` are trimmed. `problem` says why the
+ * row can't become a card; `duplicate` that its front is already in the deck,
+ * or on an earlier `line` of the file.
+ */
+export type CardsFileRow = {
+  line: number;
+  front: string;
+  back: string;
+  problem: { field: Field; message: string } | null;
+  duplicate: { kind: "inDeck" } | { kind: "inFile"; line: number } | null;
+};
+
+/**
+ * Mirrors `CardsFile` in `src-tauri/src/commands.rs`: a CSV or TSV file read
+ * and checked against a deck, with nothing saved, or the file window closed.
+ * `header` says the first row held column names and isn't among `rows`.
+ */
+export type CardsFile =
+  | {
+      status: "read";
+      fileName: string;
+      delimiter: "comma" | "semicolon" | "tab";
+      header: boolean;
+      rows: CardsFileRow[];
+      /** Rows with something in a third or later column, which is ignored. */
+      rowsWithExtraColumns: number;
+    }
+  | { status: "cancelled" };
+
+/** A cards file that has been read. */
+export type ReadCardsFile = CardsFile & { status: "read" };
+
+/** Mirrors `CardsImported` in `src-tauri/src/cards_csv.rs`. */
+export type CardsImported = {
+  added: number;
+  /** Cards left out because their front was already in the deck. */
+  skipped: number;
+  /** The deck's active cards afterwards. */
+  cardCount: number;
+};
+
+/**
+ * Chooses a CSV or TSV file of cards for an active normal deck, and checks
+ * every row against it. Rust opens the OS "open file" dialog (after checking
+ * the deck); closing it resolves with `{ status: "cancelled" }`. Nothing is
+ * saved.
+ */
+export function readCardsCsv(deckId: number): Promise<CardsFile> {
+  return invoke<CardsFile>("read_cards_csv", { deckId });
+}
+
+/**
+ * Adds cards read from a file to a deck, all or nothing. With
+ * `skipDuplicates`, Rust leaves out cards whose front the deck already has.
+ * A refused card rejects with its `field` and `index` in `cards`; nothing new
+ * to add rejects with kind "stale".
+ */
+export function importCardsCsv(
+  deckId: number,
+  cards: CardText[],
+  skipDuplicates: boolean,
+): Promise<CardsImported> {
+  return invoke<CardsImported>("import_cards_csv", { deckId, cards, skipDuplicates });
+}
+
+/**
+ * Saves an active deck's cards (front and back only) as a CSV file. Rust
+ * opens the OS "save as" dialog; closing it resolves with
+ * `{ status: "cancelled" }` and writes nothing.
+ */
+export function exportCardsCsv(deckId: number): Promise<ExportOutcome> {
+  return invoke<ExportOutcome>("export_cards_csv", { deckId });
+}
+
 /** Every active (not deleted) note, most recently saved first. */
 export function getNotes(): Promise<NoteSummary[]> {
   return invoke<NoteSummary[]>("get_notes");
