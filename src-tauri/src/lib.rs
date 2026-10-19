@@ -46,6 +46,7 @@ pub fn run() {
             commands::update_flashcard,
             commands::delete_flashcard,
             commands::restore_flashcard,
+            commands::restore_deleted_cards,
             commands::rename_deck,
             commands::archive_deck,
             commands::unarchive_deck,

@@ -135,7 +135,9 @@ lists, counts, and reviews. The card and its review log stay in the database, an
 back in the deck exactly as it was: same text, FSRS state, due date, reps, lapses, and review log.
 It is not reset to a new card, so it becomes due again only on the date it already had, and no
 review session starts. Cards in an archived deck can't be restored until the deck is unarchived,
-and the Sample deck's cards stay out of this entirely.
+and the Sample deck's cards stay out of this entirely. With two or more deleted cards, *Restore all*
+asks for confirmation, naming how many, then restores every one of them the same way, all together
+or not at all.
 
 **Rename or archive a deck.** Also on the deck screen. Archiving asks for confirmation, then moves
 the deck to *Archived decks*: it can't be reviewed, changed, or given new cards, and any unfinished
@@ -251,9 +253,9 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   (the process killed mid-swap) can leave a rollback copy in Synapse's data folder
   (`import-workspace/rollback.sqlite`, later renamed `rollback-kept-<time>.sqlite`); these are never
   deleted automatically.
-- **Restoring is one card at a time.** *Deleted cards* lists a deck's deleted cards and restores
-  them one by one; there's no "restore all", no undo of a restore beyond deleting the card again,
-  and no way to move a card to a different deck on the way back.
+- **Restoring is per deck.** *Deleted cards* restores one card, or with *Restore all* every deleted
+  card of that deck at once; there's no choosing several, no undo of a restore beyond deleting the
+  cards again, and no way to move a card to a different deck on the way back.
 - **Notes are plain text.** No formatting, attachments, audio, web clips, tags, or folders. Search
   is exact text only (no fuzzy matching, no search inside deleted notes) and has no index, so each
   search reads every note.

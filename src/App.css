@@ -792,6 +792,13 @@ body {
   border-color: var(--primary-line);
 }
 
+/* *Restore all*, above a deck's deleted cards. */
+.restore-all {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
 /* Replacing all data can't be undone. */
 .confirm-danger {
   background-color: var(--danger-soft);
