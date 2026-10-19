@@ -851,6 +851,11 @@ body {
   white-space: nowrap;
 }
 
+/* The desired retention being chosen: as wide as its longest option. */
+.retention-choice {
+  max-width: 22rem;
+}
+
 .compare-table-numbers {
   max-width: 22rem;
   font-family: var(--font-mono);

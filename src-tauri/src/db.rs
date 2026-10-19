@@ -221,6 +221,19 @@ pub mod test_support {
             .unwrap()
     }
 
+    /// How many migrations this build has. Not always the latest version:
+    /// migration numbers can skip (reserved for work on other branches).
+    pub fn migration_count() -> i64 {
+        sqlx::migrate!().iter().count() as i64
+    }
+
+    /// The version of this build's next-to-last migration.
+    pub fn previous_schema_version() -> i64 {
+        let mut versions: Vec<i64> = sqlx::migrate!().iter().map(|m| m.version).collect();
+        versions.sort_unstable();
+        versions[versions.len() - 2]
+    }
+
     pub fn at(s: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
     }
@@ -229,13 +242,6 @@ pub mod test_support {
     // queries from runtime strings (a guard against SQL injection).
     pub async fn count(pool: &SqlitePool, sql: &'static str) -> i64 {
         sqlx::query_scalar(sql).fetch_one(pool).await.unwrap()
-    }
-
-    /// How many migrations this build has. Not always the latest version:
-    /// migration numbers are handed out ahead of merging, so a branch can
-    /// have a gap (0013 without 0012) until the other one lands.
-    pub fn migration_count() -> i64 {
-        sqlx::migrate!().iter().count() as i64
     }
 
     pub async fn sample_deck_id(pool: &SqlitePool) -> i64 {
@@ -377,7 +383,7 @@ mod tests {
 
             assert_eq!(
                 count(&pool, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-                crate::db::test_support::migration_count()
+                migration_count()
             );
             assert_eq!(seed_markers(&pool).await, vec![SAMPLE_CARD_SEED]);
             assert_eq!(count(&pool, "SELECT COUNT(*) FROM flashcards").await, 1);
@@ -432,7 +438,7 @@ mod tests {
 
             assert_eq!(
                 count(&pool, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-                crate::db::test_support::migration_count()
+                migration_count()
             );
             assert_eq!(seed_markers(&pool).await, vec![SAMPLE_CARD_SEED]);
             assert_eq!(all_cards(&pool).await, cards_before);
@@ -485,7 +491,7 @@ mod tests {
 
             assert_eq!(
                 count(&pool, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-                crate::db::test_support::migration_count()
+                migration_count()
             );
             let decks_after: Vec<DeckRow> =
                 sqlx::query_as(decks_sql).fetch_all(&pool).await.unwrap();
@@ -588,7 +594,7 @@ mod tests {
 
             assert_eq!(
                 count(&pool, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-                crate::db::test_support::migration_count()
+                migration_count()
             );
             // Already seeded, so the marker is recorded and no card is added.
             assert_eq!(seed_markers(&pool).await, vec![SAMPLE_CARD_SEED]);
@@ -683,7 +689,7 @@ mod tests {
 
             assert_eq!(
                 count(&pool, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-                crate::db::test_support::migration_count()
+                migration_count()
             );
             // Every row is kept as it was, and nothing is seeded again.
             let decks_after: Vec<DeckRow> =
@@ -813,7 +819,7 @@ mod tests {
 
             assert_eq!(
                 count(&pool, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-                crate::db::test_support::migration_count()
+                migration_count()
             );
             // Every row is kept exactly, nothing is seeded again, and there
             // are no notes yet.
@@ -902,7 +908,7 @@ mod tests {
 
             assert_eq!(
                 count(&pool, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-                crate::db::test_support::migration_count()
+                migration_count()
             );
             // Every deck, card, log, session, marker, and note is kept exactly,
             // the archived deck included, and nothing is seeded again.
@@ -1038,7 +1044,7 @@ mod tests {
 
             assert_eq!(
                 count(&pool, "SELECT COUNT(*) FROM _sqlx_migrations").await,
-                crate::db::test_support::migration_count()
+                migration_count()
             );
             // Every deck, card, log, session, and marker is kept exactly — the
             // archived deck still archived, both deleted cards still deleted —

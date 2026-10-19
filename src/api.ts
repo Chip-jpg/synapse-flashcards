@@ -901,6 +901,72 @@ export function resetParameters(version: number): Promise<SchedulingSettings> {
 }
 
 /**
+ * Mirrors `Settings` in `src-tauri/src/retention.rs`, in whole percentages:
+ * the desired retention FSRS aims for, globally and per deck. `decks` are the
+ * active, ordinary decks by name, `percent` null when a deck follows the
+ * global value; `archivedOwn` counts archived decks with a value of their own,
+ * kept for when they're unarchived. `version` changes with every change.
+ */
+export type RetentionSettings = {
+  version: number;
+  global: number;
+  default: number;
+  minimum: number;
+  maximum: number;
+  decks: { id: number; name: string; percent: number | null }[];
+  archivedOwn: number;
+};
+
+/** Mirrors `Estimate` in `src-tauri/src/retention.rs`. */
+export type RetentionEstimate = {
+  /** Reviews a day on average over the estimate's days, first reviews included. */
+  reviewsPerDay: number;
+  /** How many cards the user would remember on the last day. */
+  remembered: number;
+};
+
+/** Mirrors `Preview` in `src-tauri/src/retention.rs`. Nothing is saved. */
+export type RetentionPreview = {
+  version: number;
+  cards: number;
+  days: number;
+  current: RetentionEstimate;
+  proposed: RetentionEstimate;
+  /** Whether simulated ratings follow the user's own mix (else FSRS's averages). */
+  ownRatings: boolean;
+};
+
+/**
+ * A desired-retention change: the global value (`deckId` null), or a deck's
+ * own, where `percent` null means following the global value again.
+ */
+export type RetentionChange = { deckId: number | null; percent: number | null };
+
+/** The desired retention settings. */
+export function getRetention(): Promise<RetentionSettings> {
+  return invoke<RetentionSettings>("get_retention");
+}
+
+/**
+ * Estimates the daily reviews with `change`, against the values in use.
+ * Nothing is saved. Rejects as `setRetention` would.
+ */
+export function previewRetention(
+  version: number,
+  change: RetentionChange
+): Promise<RetentionPreview> {
+  return invoke<RetentionPreview>("preview_retention", { version, ...change });
+}
+
+/**
+ * Makes `change` for every rating from now on; due dates already set stay.
+ * Rejects with kind "stale" if the settings changed since `version`.
+ */
+export function setRetention(version: number, change: RetentionChange): Promise<RetentionSettings> {
+  return invoke<RetentionSettings>("set_retention", { version, ...change });
+}
+
+/**
  * Until the returned function is called, closing the window doesn't close it:
  * `onRequest` runs instead, and the window stays open until `closeWindow`.
  * With no hold in place, the window closes as usual.

@@ -24,6 +24,7 @@ use crate::import::{self, ImportError, ImportState, RestoreError};
 use crate::notes::{self, DeletedNote, InvalidNote, Note, NoteError, NoteSummary};
 use crate::optimizer::{self, IntervalChange, Optimized, OptimizerError, Optimizing, Settings};
 use crate::quiz::{self, QuizQuestion, Quizzing};
+use crate::retention::{self, RetentionError};
 use crate::scheduler::Rating;
 use crate::search::{self, Scope, SearchResults};
 use crate::stats::{self, Statistics};
@@ -1858,6 +1859,96 @@ pub async fn reset_parameters(
         .await
         .map_err(|err| optimizer_error(err, "resetting FSRS parameters", failed))?;
     get_scheduling(app, database).await
+}
+
+/// Turns a refused or failed desired-retention change into a user-safe
+/// error, logging internal detail.
+fn retention_error(err: RetentionError, context: &str, failed: &'static str) -> CommandError {
+    match err {
+        RetentionError::OutOfRange => {
+            CommandError::invalid("Choose a desired retention from 70% to 97%.")
+        }
+        RetentionError::NotFound => {
+            CommandError::stale("That deck no longer exists. Synapse has reloaded the settings.")
+        }
+        RetentionError::SampleDeck => {
+            CommandError::invalid("The sample deck follows the global desired retention.")
+        }
+        RetentionError::ArchivedDeck => CommandError::stale(
+            "That deck is archived, so it follows the global desired retention. Synapse has \
+             reloaded the settings.",
+        ),
+        RetentionError::Unchanged => {
+            CommandError::invalid("That's already the desired retention in use.")
+        }
+        RetentionError::Stale => CommandError::stale(
+            "The desired retention changed since this was shown. Synapse has reloaded it.",
+        ),
+        RetentionError::Internal(detail) => {
+            eprintln!("[synapse] {context} failed: {detail}");
+            CommandError::failed(failed)
+        }
+    }
+}
+
+/// The desired retention settings. Returns [`retention::Settings`].
+#[tauri::command]
+pub async fn get_retention(
+    app: AppHandle,
+    database: State<'_, Database>,
+) -> Result<retention::Settings, CommandError> {
+    let pool = pool(&app, &database).await?;
+    retention::settings(&pool).await.map_err(|err| {
+        eprintln!("[synapse] loading desired retention failed: {err}");
+        CommandError::failed("Synapse couldn't load the desired retention.")
+    })
+}
+
+/// Estimates the daily reviews with a change, against the values in use.
+/// `{ version, deckId, percent }`: `deckId` `null` for the global value;
+/// `percent` a whole percentage, or `null` for a deck to follow the global
+/// value. Writes nothing. Returns [`retention::Preview`]; rejects as
+/// `set_retention` would.
+#[tauri::command]
+pub async fn preview_retention(
+    app: AppHandle,
+    database: State<'_, Database>,
+    version: i64,
+    deck_id: Option<i64>,
+    percent: Option<i64>,
+) -> Result<retention::Preview, CommandError> {
+    let pool = pool(&app, &database).await?;
+    let change = retention::Change { deck_id, percent };
+    retention::preview(&pool, version, change, Utc::now())
+        .await
+        .map_err(|err| {
+            retention_error(
+                err,
+                "estimating reviews for a desired retention",
+                "Synapse couldn't estimate your reviews. Nothing was changed.",
+            )
+        })
+}
+
+/// Makes a desired-retention change (arguments as `preview_retention`) for
+/// every rating from now on. Stored schedules don't change. Returns the new
+/// [`retention::Settings`]; rejects with kind "stale" if the settings
+/// changed since `version`.
+#[tauri::command]
+pub async fn set_retention(
+    app: AppHandle,
+    database: State<'_, Database>,
+    version: i64,
+    deck_id: Option<i64>,
+    percent: Option<i64>,
+) -> Result<retention::Settings, CommandError> {
+    let pool = pool(&app, &database).await?;
+    let change = retention::Change { deck_id, percent };
+    let failed = "Synapse couldn't change the desired retention. Nothing was changed.";
+    retention::set(&pool, version, change, Utc::now())
+        .await
+        .map_err(|err| retention_error(err, "changing the desired retention", failed))?;
+    get_retention(app, database).await
 }
 
 /// One row of a cards file, checked: `{ line, front, back, problem, duplicate }`.

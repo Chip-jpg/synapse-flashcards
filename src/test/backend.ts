@@ -43,8 +43,8 @@ export function deferred<T = unknown>() {
  * Stands in for the Rust core: one normal deck ("Biology", with one card and
  * nothing due) and one note ("Mitosis"). Adding cards succeeds. Ollama has one
  * model ("llama3.2:3b"), which suggests one card and writes a one-question
- * quiz. Scheduling uses FSRS's
- * defaults, with no reviews to optimize from yet. `overrides`
+ * quiz. Scheduling uses FSRS's defaults, with no reviews to optimize from yet,
+ * aiming for 90%. `overrides`
  * replace or add commands; any command left unanswered rejects as a failure.
  * `calls` lists every command the app sent, Tauri's own included (listening
  * for events, closing the window), and `argsOf` the arguments of one.
@@ -146,6 +146,15 @@ export function fakeBackend(overrides: Record<string, Handler> = {}) {
       minimumReviews: 400,
     }),
     stop_optimizing: () => null,
+    get_retention: () => ({
+      version: 0,
+      global: 90,
+      default: 90,
+      minimum: 70,
+      maximum: 97,
+      decks: [{ id: deck.id, name: deck.name, percent: null }],
+      archivedOwn: 0,
+    }),
     "plugin:window|destroy": () => null,
     ...overrides,
   };
