@@ -6,17 +6,22 @@ import { Dashboard } from "./Dashboard";
 import { DeckDetail } from "./DeckDetail";
 import { NotesArea } from "./Notes";
 import { ReviewSession } from "./ReviewSession";
+import { NEW_SEARCH, SearchScreen, type SearchCriteria } from "./Search";
 import { Settings } from "./Settings";
 import { Shell, type Place } from "./Shell";
 import { StatisticsScreen } from "./Statistics";
 import { DiscardDialog, UnsavedChangesProvider, useUnsavedTracker } from "./unsaved";
 import "./App.css";
 
+/** A search left to open one of its results, and that result, to come back to. */
+type FromSearch = { criteria: SearchCriteria; returnTo: string };
+
 type View =
   | { screen: "decks"; notice: string | null; fromNotes?: boolean }
-  | { screen: "deck"; deckId: number; justCreated: boolean }
+  | { screen: "deck"; deckId: number; justCreated: boolean; cardId?: number; search?: FromSearch }
   | { screen: "session"; sessionId: number; deckName: string }
-  | { screen: "notes" }
+  | { screen: "search"; criteria: SearchCriteria; returnTo: string | null }
+  | { screen: "notes"; noteId?: number; search?: FromSearch }
   | { screen: "stats" }
   | { screen: "archived" }
   | { screen: "backup" }
@@ -27,6 +32,7 @@ const DECKS: View = { screen: "decks", notice: null };
 /** The screen each sidebar place opens. */
 const PLACE_VIEWS: Record<Place, View> = {
   desk: DECKS,
+  search: { screen: "search", criteria: NEW_SEARCH, returnTo: null },
   notes: { screen: "notes" },
   stats: { screen: "stats" },
   archived: { screen: "archived" },
@@ -40,11 +46,17 @@ function locate(view: View): { place: Place; atPlace: boolean; trail: string[] }
     case "decks":
       return { place: "desk", atPlace: true, trail: ["Synapse", "Study Desk"] };
     case "deck":
-      return { place: "desk", atPlace: false, trail: ["Study Desk", "Deck"] };
+      return view.search
+        ? { place: "search", atPlace: false, trail: ["Search", "Deck"] }
+        : { place: "desk", atPlace: false, trail: ["Study Desk", "Deck"] };
     case "session":
       return { place: "desk", atPlace: false, trail: ["Study Desk", "Review"] };
+    case "search":
+      return { place: "search", atPlace: true, trail: ["Synapse", "Search"] };
     case "notes":
-      return { place: "notes", atPlace: true, trail: ["Synapse", "Notes"] };
+      return view.search
+        ? { place: "search", atPlace: false, trail: ["Search", "Note"] }
+        : { place: "notes", atPlace: true, trail: ["Synapse", "Notes"] };
     case "stats":
       return { place: "stats", atPlace: true, trail: ["Synapse", "Statistics"] };
     case "archived":
@@ -92,6 +104,10 @@ function App() {
     show({ screen: "session", sessionId, deckName });
   }
 
+  function backToSearch(search: FromSearch) {
+    show({ screen: "search", criteria: search.criteria, returnTo: search.returnTo });
+  }
+
   function goTo(next: Place) {
     setVisits((n) => n + 1);
     show(PLACE_VIEWS[next]);
@@ -131,7 +147,9 @@ function App() {
             key={view.deckId}
             deckId={view.deckId}
             justCreated={view.justCreated}
-            onBack={() => show(DECKS)}
+            focusCardId={view.cardId ?? null}
+            backLabel={view.search ? "Back to search" : undefined}
+            onBack={() => (view.search ? backToSearch(view.search) : show(DECKS))}
             onStart={startReview}
             onArchived={() =>
               show({
@@ -151,11 +169,39 @@ function App() {
             onExit={() => show(DECKS)}
           />
         )}
+        {view.screen === "search" && (
+          <SearchScreen
+            key={`${restores}:${visits}`}
+            initial={view.criteria}
+            returnTo={view.returnTo}
+            onOpenCard={(criteria, deckId, cardId, returnTo) =>
+              show({
+                screen: "deck",
+                deckId,
+                justCreated: false,
+                cardId,
+                search: { criteria, returnTo },
+              })
+            }
+            onOpenNote={(criteria, noteId, returnTo) =>
+              show({ screen: "notes", noteId, search: { criteria, returnTo } })
+            }
+          />
+        )}
         {view.screen === "notes" && (
           <NotesArea
             key={visits}
             onBack={() => show({ screen: "decks", notice: null, fromNotes: true })}
             onOpenDeck={(deckId) => show({ screen: "deck", deckId, justCreated: false })}
+            openNote={
+              view.search && view.noteId !== undefined
+                ? {
+                    noteId: view.noteId,
+                    backLabel: "Back to search",
+                    onBack: () => backToSearch(view.search!),
+                  }
+                : undefined
+            }
           />
         )}
         {view.screen === "stats" && <StatisticsScreen key={`${restores}:${visits}`} />}

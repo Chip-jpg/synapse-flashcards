@@ -1,11 +1,21 @@
 import { Fragment, type ReactNode } from "react";
-import { ArchiveIcon, BookIcon, ChartIcon, DatabaseIcon, DeskIcon, LogoIcon, SlidersIcon } from "./icons";
+import {
+  ArchiveIcon,
+  BookIcon,
+  ChartIcon,
+  DatabaseIcon,
+  DeskIcon,
+  LogoIcon,
+  SearchIcon,
+  SlidersIcon,
+} from "./icons";
 
 /** The places the sidebar leads to. */
-export type Place = "desk" | "notes" | "stats" | "archived" | "backup" | "settings";
+export type Place = "desk" | "search" | "notes" | "stats" | "archived" | "backup" | "settings";
 
 const PLACES: { place: Place; label: string; icon: ReactNode }[] = [
   { place: "desk", label: "Study Desk", icon: <DeskIcon /> },
+  { place: "search", label: "Search", icon: <SearchIcon /> },
   { place: "notes", label: "Notes", icon: <BookIcon /> },
   { place: "stats", label: "Statistics", icon: <ChartIcon /> },
   { place: "archived", label: "Archived decks", icon: <ArchiveIcon /> },

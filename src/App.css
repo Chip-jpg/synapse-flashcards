@@ -2195,6 +2195,8 @@ textarea.field-input {
   margin-top: 0.375rem;
   font-size: 0.75rem;
   color: var(--text-muted);
+}
+
 /* Cards in a spreadsheet (Backup & restore): the rows read from a file. */
 .check-field {
   display: flex;
@@ -2317,4 +2319,70 @@ textarea.field-input {
 .card-help-kind input {
   margin-top: 0.25rem;
   accent-color: var(--primary);
+}
+
+/* Search */
+
+.search-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.search-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+}
+
+.search-filters .field {
+  flex: 0 1 16rem;
+}
+
+.search-status {
+  margin-bottom: 0.75rem;
+}
+
+/* A result: what it is, its matched text, and the way in. */
+.search-hit {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  padding: 0.875rem 1.125rem;
+}
+
+.search-hit-main {
+  display: flex;
+  flex: 1 1 16rem;
+  align-items: flex-start;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.search-hit-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.search-hit .note-item-title {
+  color: var(--text);
+}
+
+.search-snippet {
+  margin: 0.25rem 0 0;
+  font-size: 0.875rem;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+/* A matched word inside a snippet. */
+.search-mark {
+  padding: 0 0.125rem;
+  color: var(--primary-ink);
+  background-color: var(--primary-soft);
+  border-radius: 3px;
+  font-weight: 600;
 }

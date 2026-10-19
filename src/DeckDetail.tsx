@@ -71,12 +71,18 @@ async function loadDeck(deckId: number): Promise<DetailState> {
 export function DeckDetail({
   deckId,
   justCreated,
+  focusCardId = null,
+  backLabel = "Back to Study Desk",
   onBack,
   onStart,
   onArchived,
 }: {
   deckId: number;
   justCreated: boolean;
+  /** A card to focus when the deck opens, e.g. one opened from a search. */
+  focusCardId?: number | null;
+  /** Where Back goes, e.g. "Back to search". */
+  backLabel?: string;
   onBack: () => void;
   onStart: (sessionId: number, deckName: string) => void;
   /** The deck was archived, so this screen can't show it any more. */
@@ -90,7 +96,11 @@ export function DeckDetail({
   const [view, setView] = useState<ViewState>({
     key: 0,
     notice: justCreated ? "Deck created. Add your first card." : null,
-    focus: justCreated ? { to: "notice" } : { to: "screen" },
+    focus: justCreated
+      ? { to: "notice" }
+      : focusCardId !== null
+        ? { to: "editCard", cardId: focusCardId }
+        : { to: "screen" },
   });
 
   useEffect(() => {
@@ -144,7 +154,7 @@ export function DeckDetail({
             Retry
           </button>
           <button type="button" className="button" onClick={onBack}>
-            Back to Study Desk
+            {backLabel}
           </button>
         </div>
       </Message>
@@ -234,6 +244,7 @@ export function DeckDetail({
       }
       onRename={() => setMode({ kind: "rename" })}
       onArchived={onArchived}
+      backLabel={backLabel}
       onBack={onBack}
       onStart={onStart}
       onChanged={reload}
@@ -257,6 +268,7 @@ function DeckView({
   onBulkStale,
   onRename,
   onArchived,
+  backLabel,
   onBack,
   onStart,
   onChanged,
@@ -282,6 +294,7 @@ function DeckView({
   onBulkStale: (message: string) => void;
   onRename: () => void;
   onArchived: () => void;
+  backLabel: string;
   onBack: () => void;
   onStart: (sessionId: number, deckName: string) => void;
   onChanged: () => void;
@@ -328,7 +341,7 @@ function DeckView({
     <section ref={screenRef} className="deck-detail" tabIndex={-1} aria-labelledby="deck-detail-name">
       <button type="button" className="button button-quiet back-button" onClick={onBack}>
         <ArrowLeftIcon />
-        Back to Study Desk
+        {backLabel}
       </button>
 
       <div className="detail-header">

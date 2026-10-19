@@ -60,16 +60,22 @@ type Place =
 export function NotesArea({
   onBack,
   onOpenDeck,
+  openNote,
 }: {
   onBack: () => void;
   /** Leaves notes for the deck screen, e.g. to see a card just written. */
   onOpenDeck: (deckId: number) => void;
+  /**
+   * Opens straight at one note, e.g. from a search, and goes back there
+   * instead of to the library.
+   */
+  openNote?: { noteId: number; backLabel: string; onBack: () => void };
 }) {
-  const [place, setPlace] = useState<Place>({
-    screen: "library",
-    focus: { to: "screen" },
-    notice: null,
-  });
+  const [place, setPlace] = useState<Place>(
+    openNote
+      ? { screen: "note", noteId: openNote.noteId, justCreated: false }
+      : { screen: "library", focus: { to: "screen" }, notice: null },
+  );
 
   if (place.screen === "new") {
     const imported = place.imported;
@@ -95,8 +101,11 @@ export function NotesArea({
         key={noteId}
         noteId={noteId}
         justCreated={place.justCreated}
+        backLabel={openNote?.noteId === noteId ? openNote.backLabel : "Back to notes"}
         onBack={() =>
-          setPlace({ screen: "library", focus: { to: "note", noteId }, notice: null })
+          openNote?.noteId === noteId
+            ? openNote.onBack()
+            : setPlace({ screen: "library", focus: { to: "note", noteId }, notice: null })
         }
         // The note is gone from the library, so the screen it was opened from
         // takes over and says what happened.
@@ -707,12 +716,14 @@ async function loadNote(noteId: number): Promise<NoteState> {
 function NoteScreen({
   noteId,
   justCreated,
+  backLabel,
   onBack,
   onDeleted,
   onOpenDeck,
 }: {
   noteId: number;
   justCreated: boolean;
+  backLabel: string;
   onBack: () => void;
   /** The note was deleted, so this screen can't show it any more. */
   onDeleted: () => void;
@@ -772,7 +783,7 @@ function NoteScreen({
             Retry
           </button>
           <button type="button" className="button" onClick={onBack}>
-            Back to notes
+            {backLabel}
           </button>
         </div>
       </Message>
@@ -837,6 +848,7 @@ function NoteScreen({
       onSuggest={() => setMode("suggest")}
       onDeleted={onDeleted}
       onOpenDeck={onOpenDeck}
+      backLabel={backLabel}
       onBack={onBack}
     />
   );
@@ -852,6 +864,7 @@ function NoteView({
   onSuggest,
   onDeleted,
   onOpenDeck,
+  backLabel,
   onBack,
 }: {
   note: Note;
@@ -863,6 +876,7 @@ function NoteView({
   onSuggest: () => void;
   onDeleted: () => void;
   onOpenDeck: (deckId: number) => void;
+  backLabel: string;
   onBack: () => void;
 }) {
   const screenRef = useFocusOnMount<HTMLElement>(focus === "screen");
@@ -926,7 +940,7 @@ function NoteView({
     >
       <button type="button" className="button button-quiet back-button" onClick={onBack}>
         <ArrowLeftIcon />
-        Back to notes
+        {backLabel}
       </button>
 
       <article className="card">
