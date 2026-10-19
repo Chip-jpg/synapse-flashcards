@@ -86,7 +86,7 @@ export function Backup({
 
       {/* Waits while a backup is saved or restored, or waits to be confirmed. */}
       <CardsCsv
-        key={ankiImports}
+        decksChanged={ankiImports}
         blocked={importing || running === "export" || running === "import" || running === "anki"}
         onRunning={(busy) => setRunning(busy ? "cards" : null)}
       />

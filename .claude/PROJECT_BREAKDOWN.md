@@ -497,6 +497,7 @@ Added on branch `claude/nightly-2026-10-19-anki-import-t3vnsu` (not yet released
 - **Saving.** Preview first; Rust holds the package under a token (`AnkiImports`). Saving creates one deck per Anki deck with cards (`Parent::Child` names, made unique against every existing deck including archived, within 100 characters, description "Imported from Anki."), forward cards then reversed ones, in one `BEGIN IMMEDIATE` transaction. All cards start New; Anki scheduling, history, tags and media are not imported. Up to 50,000 cards and 1,000 decks.
 - **Tested against real Anki output.** `src-tauri/testdata/anki/` holds packages exported by Anki 25.09 (PyPI `anki`) in all three formats, and `make_fixtures.py` that made them.
 - **CSV formulas (v0.7.0's known issue, fixed).** `cards_csv.rs` exports a cell starting with `=`, `+`, `-`, `@`, tab or CR with a `'` in front (`protect_formula`), and also one that starts with `'` then such a character. Import strips exactly one such `'` (`unprotect_formula`), so Synapse's own exports round-trip; any other cell is read as is.
+- **CSS fix found on the way.** `App.css` in v0.7.0 lost the `}` closing `.chart-axis`, so every rule after it (the CSV preview table, the check boxes, card help's choices) was nested under `.chart-axis` and never applied. Restored.
 
 ## 4.8 Help with hard cards (memory aids)
 
