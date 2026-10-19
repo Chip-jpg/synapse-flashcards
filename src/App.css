@@ -1292,6 +1292,13 @@ html:has(.note-context) {
   color: var(--text-muted);
 }
 
+/* Once answered the options can't be chosen, but they aren't busy: keep the
+   marks at full strength rather than faded like a button that's saving. */
+.button.quiz-option[aria-disabled="true"] {
+  cursor: default;
+  opacity: 1;
+}
+
 .quiz-feedback {
   display: flex;
   flex-direction: column;
