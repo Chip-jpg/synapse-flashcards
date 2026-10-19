@@ -14,6 +14,7 @@ use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::authoring::{self, ArchivedDeck, AuthoringError, CardText, DeckDetail, InvalidInput};
+use crate::cards_csv::{self, CardsImported, CsvError, Delimiter, Duplicate, RowProblem};
 use crate::db::Database;
 use crate::export::{self, ExportError};
 use crate::extract::{self, ExtractError, ExtractedText, FileKind};
@@ -1607,6 +1608,312 @@ pub async fn reset_parameters(
     get_scheduling(app, database).await
 }
 
+/// One row of a cards file, checked: `{ line, front, back, problem, duplicate }`.
+/// `problem` is `{ field, message }` when the row can't become a card, and
+/// `duplicate` says why its card may already be there (see `cards_csv.rs`).
+#[derive(Debug, serde::Serialize)]
+pub struct CardsFileRow {
+    line: usize,
+    front: String,
+    back: String,
+    problem: Option<RowProblemMessage>,
+    duplicate: Option<Duplicate>,
+}
+
+/// Why a row of a cards file can't become a card, as a typed card's error.
+#[derive(Debug, serde::Serialize)]
+pub struct RowProblemMessage {
+    field: Field,
+    message: &'static str,
+}
+
+impl RowProblemMessage {
+    fn of(problem: RowProblem) -> Self {
+        let (field, message) = match problem {
+            RowProblem::NoBack => (
+                Field::Back,
+                "This row has no back: put the back in a second column.",
+            ),
+            RowProblem::Card(problem) => {
+                let error = CommandError::invalid_input(problem);
+                (error.field.unwrap_or(Field::Front), error.message)
+            }
+        };
+        RowProblemMessage { field, message }
+    }
+}
+
+/// What choosing a cards file did:
+/// `{ "status": "read", "fileName", "delimiter", "header", "rows", "rowsWithExtraColumns" }`
+/// or `{ "status": "cancelled" }`. Nothing has been saved.
+#[derive(Debug, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum CardsFile {
+    Read {
+        file_name: String,
+        delimiter: Delimiter,
+        /// The first row was column names, so it isn't among `rows`.
+        header: bool,
+        rows: Vec<CardsFileRow>,
+        /// Rows with something in a third or later column, which is ignored.
+        rows_with_extra_columns: usize,
+    },
+    /// The user closed the file window without choosing a file.
+    Cancelled,
+}
+
+/// Turns a cards file or import that was refused into a user-safe error,
+/// logging internal detail (never a card's text). The limits in these
+/// messages must match `cards_csv.rs` (checked by a test below).
+fn csv_error(err: CsvError, context: &str, failed: &'static str) -> CommandError {
+    match err {
+        CsvError::TooLarge => {
+            CommandError::invalid("That file is too large to import: the limit is 10 MB.")
+        }
+        CsvError::TooManyRows => CommandError::invalid(
+            "A file can hold at most 5,000 cards. Split it into smaller files.",
+        ),
+        CsvError::NoRows => CommandError::invalid("That file has no cards in it."),
+        CsvError::UnclosedQuote { line } => {
+            eprintln!("[synapse] a cards file has an unclosed quote from line {line}");
+            CommandError::invalid(
+                "A quoted cell in that file never ends, so Synapse can't tell where the cards \
+                 are. Check the file's quote marks.",
+            )
+        }
+        CsvError::OnlyDuplicates => CommandError::stale(
+            "Every one of these cards is already in the deck, so nothing was added.",
+        ),
+        CsvError::Authoring(err) => authoring_error(err, context, failed),
+    }
+}
+
+/// Chooses a CSV or TSV file of cards for an active normal deck and checks
+/// every row, without saving anything: the rows go to the screen, where the
+/// user sees which can be added and saves them with `import_cards_csv`.
+///
+/// Arguments: `{ deckId }`. The deck is checked before the file window opens.
+/// Returns [`CardsFile`]; a file that can't be used rejects with kind
+/// "invalid" or "failed".
+#[tauri::command]
+pub async fn read_cards_csv(
+    app: AppHandle,
+    database: State<'_, Database>,
+    deck_id: i64,
+) -> Result<CardsFile, CommandError> {
+    if deck_id < 1 {
+        return Err(CommandError::invalid(DECK_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    // Refuse a deck that can't take cards before asking for a file.
+    authoring::deck_detail(&pool, deck_id, Utc::now())
+        .await
+        .map_err(|err| {
+            authoring_error(err, "loading a deck", "Synapse couldn't load this deck.")
+        })?;
+
+    // As in `export_data`: the dialog answers through a callback.
+    let (sender, mut receiver) = tauri::async_runtime::channel(1);
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Choose a file of cards to import")
+        .add_filter("Spreadsheet files (CSV, TSV)", &["csv", "tsv", "txt"]);
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.pick_file(move |path| {
+        let _ = sender.try_send(path);
+    });
+
+    let Some(chosen) = receiver.recv().await else {
+        eprintln!("[synapse] the cards file dialog closed without an answer");
+        return Err(CommandError::failed(
+            "Synapse couldn't open the file window.",
+        ));
+    };
+    let Some(chosen) = chosen else {
+        return Ok(CardsFile::Cancelled);
+    };
+    let path = chosen.into_path().map_err(|err| {
+        eprintln!("[synapse] the chosen cards file's path was unusable: {err}");
+        CommandError::invalid("That file can't be used.")
+    })?;
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "your file".to_string());
+    let tsv = path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("tsv"));
+
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        // The size first, so a huge file is refused without reading it.
+        let size = std::fs::metadata(&path)?.len();
+        if size > cards_csv::CSV_FILE_MAX_BYTES {
+            return Ok(None);
+        }
+        std::fs::read(&path).map(Some)
+    })
+    .await
+    .map_err(|err| {
+        eprintln!("[synapse] reading a cards file stopped: {err}");
+        CommandError::failed("Synapse couldn't read that file.")
+    })?
+    .map_err(|err: std::io::Error| {
+        eprintln!("[synapse] reading a cards file failed: {err}");
+        CommandError::failed("Synapse couldn't open that file.")
+    })?
+    .ok_or_else(|| csv_error(CsvError::TooLarge, "", ""))?;
+
+    let preview = cards_csv::read_cards(&pool, deck_id, &bytes, tsv, Utc::now())
+        .await
+        .map_err(|err| {
+            csv_error(
+                err,
+                "reading a cards file",
+                "Synapse couldn't read that file.",
+            )
+        })?;
+    Ok(CardsFile::Read {
+        file_name,
+        delimiter: preview.delimiter,
+        header: preview.header,
+        rows: preview
+            .rows
+            .into_iter()
+            .map(|row| CardsFileRow {
+                line: row.line,
+                front: row.front,
+                back: row.back,
+                problem: row.problem.map(RowProblemMessage::of),
+                duplicate: row.duplicate,
+            })
+            .collect(),
+        rows_with_extra_columns: preview.rows_with_extra_columns,
+    })
+}
+
+/// Adds the cards the user kept from a cards file to an active normal deck,
+/// each checked as `create_flashcard` checks one. All or nothing. With
+/// `skipDuplicates`, cards whose front is already in the deck (or on an
+/// earlier card sent) are left out, judged afresh at saving.
+///
+/// Arguments: `{ deckId, cards: [{ front, back }], skipDuplicates }`. Returns
+/// `{ added, skipped, cardCount }`. A refused card rejects with kind
+/// "invalid", its `field`, and its `index` in `cards`; nothing new to add
+/// rejects with kind "stale".
+#[tauri::command]
+pub async fn import_cards_csv(
+    app: AppHandle,
+    database: State<'_, Database>,
+    deck_id: i64,
+    cards: Vec<CardText>,
+    skip_duplicates: bool,
+) -> Result<CardsImported, CommandError> {
+    if deck_id < 1 {
+        return Err(CommandError::invalid(DECK_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    cards_csv::import_cards(&pool, deck_id, &cards, skip_duplicates, Utc::now())
+        .await
+        .map_err(|err| csv_error(err, "importing cards", "Synapse couldn't save the cards."))
+}
+
+/// Saves an active deck's cards (front and back only) as a CSV file the user
+/// chooses. The sample deck can be exported too. Opens the OS "save as"
+/// dialog, as `export_data` does; closing it returns `{ status: "cancelled" }`
+/// and writes nothing.
+///
+/// Arguments: `{ deckId }`. Returns [`ExportOutcome`]. A deck with no cards
+/// rejects with kind "invalid" before the dialog opens.
+#[tauri::command]
+pub async fn export_cards_csv(
+    app: AppHandle,
+    database: State<'_, Database>,
+    deck_id: i64,
+) -> Result<ExportOutcome, CommandError> {
+    if deck_id < 1 {
+        return Err(CommandError::invalid(DECK_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    let (deck_name, cards) =
+        cards_csv::deck_cards(&pool, deck_id)
+            .await
+            .map_err(|err| match err {
+                AuthoringError::NoCards => {
+                    CommandError::invalid("This deck has no cards to export.")
+                }
+                err => {
+                    authoring_error(err, "exporting cards", "Synapse couldn't export the cards.")
+                }
+            })?;
+
+    let (sender, mut receiver) = tauri::async_runtime::channel(1);
+    let mut dialog = app
+        .dialog()
+        .file()
+        .add_filter("CSV file", &["csv"])
+        .set_file_name(cards_csv::suggested_file_name(&deck_name));
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.save_file(move |path| {
+        let _ = sender.try_send(path);
+    });
+
+    let Some(chosen) = receiver.recv().await else {
+        eprintln!("[synapse] the cards export save dialog closed without an answer");
+        return Err(CommandError::failed(
+            "Synapse couldn't open the save window.",
+        ));
+    };
+    let Some(chosen) = chosen else {
+        return Ok(ExportOutcome::Cancelled);
+    };
+    let destination = chosen.into_path().map_err(|err| {
+        eprintln!("[synapse] the chosen cards export path was unusable: {err}");
+        CommandError::invalid("That save location can't be used.")
+    })?;
+    // As in `export_data`: never write over Synapse's own database.
+    if database.is_database_file(&app, &destination) {
+        return Err(CommandError::invalid(
+            "That's Synapse's own data file. Choose another name.",
+        ));
+    }
+
+    let file_name = destination
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "your file".to_string());
+    let csv = cards_csv::write_csv(&cards);
+    // Written beside the destination first and then moved into place, so a
+    // failed write never leaves half a file where the user's file was.
+    let partial = destination.with_file_name(format!(".{file_name}.synapse-partial"));
+    tauri::async_runtime::spawn_blocking(move || {
+        let written =
+            std::fs::write(&partial, csv).and_then(|()| std::fs::rename(&partial, &destination));
+        if written.is_err() {
+            let _ = std::fs::remove_file(&partial);
+        }
+        written
+    })
+    .await
+    .map_err(|err| {
+        eprintln!("[synapse] writing a cards export stopped: {err}");
+        CommandError::failed("Synapse couldn't save the file there. Try another folder.")
+    })?
+    .map_err(|err| {
+        eprintln!("[synapse] writing a cards export failed: {err}");
+        CommandError::failed("Synapse couldn't save the file there. Try another folder.")
+    })?;
+    Ok(ExportOutcome::Saved { file_name })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1957,6 +2264,101 @@ mod tests {
             .as_str()
             .unwrap()
             .contains(&format!("At most {CARD_BATCH_MAX} cards")));
+    }
+
+    #[test]
+    fn cards_files_serialize_to_the_shape_react_expects() {
+        let file = CardsFile::Read {
+            file_name: "biology.csv".to_string(),
+            delimiter: Delimiter::Semicolon,
+            header: true,
+            rows: vec![
+                CardsFileRow {
+                    line: 2,
+                    front: "What is DNA?".to_string(),
+                    back: "A molecule.".to_string(),
+                    problem: None,
+                    duplicate: Some(Duplicate::InFile { line: 1 }),
+                },
+                CardsFileRow {
+                    line: 3,
+                    front: "Alone".to_string(),
+                    back: String::new(),
+                    problem: Some(RowProblemMessage::of(RowProblem::NoBack)),
+                    duplicate: Some(Duplicate::InDeck),
+                },
+                CardsFileRow {
+                    line: 4,
+                    front: String::new(),
+                    back: "b".to_string(),
+                    problem: Some(RowProblemMessage::of(RowProblem::Card(
+                        InvalidInput::FrontBlank,
+                    ))),
+                    duplicate: None,
+                },
+            ],
+            rows_with_extra_columns: 0,
+        };
+        assert_eq!(
+            serde_json::to_value(file).unwrap(),
+            json!({
+                "status": "read",
+                "fileName": "biology.csv",
+                "delimiter": "semicolon",
+                "header": true,
+                "rows": [
+                    {
+                        "line": 2, "front": "What is DNA?", "back": "A molecule.",
+                        "problem": null, "duplicate": { "kind": "inFile", "line": 1 }
+                    },
+                    {
+                        "line": 3, "front": "Alone", "back": "",
+                        "problem": {
+                            "field": "back",
+                            "message": "This row has no back: put the back in a second column."
+                        },
+                        "duplicate": { "kind": "inDeck" }
+                    },
+                    {
+                        "line": 4, "front": "", "back": "b",
+                        "problem": { "field": "front", "message": "Enter the front of the card." },
+                        "duplicate": null
+                    }
+                ],
+                "rowsWithExtraColumns": 0
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(CardsFile::Cancelled).unwrap(),
+            json!({ "status": "cancelled" })
+        );
+        assert_eq!(
+            serde_json::to_value(CardsImported {
+                added: 2,
+                skipped: 1,
+                card_count: 5
+            })
+            .unwrap(),
+            json!({ "added": 2, "skipped": 1, "cardCount": 5 })
+        );
+    }
+
+    #[test]
+    fn cards_file_errors_state_the_real_limits() {
+        use crate::cards_csv::{CSV_FILE_MAX_BYTES, CSV_ROWS_MAX};
+        let message = |err| csv_error(err, "test", "failed").message;
+        assert!(message(CsvError::TooLarge)
+            .contains(&format!("{} MB", CSV_FILE_MAX_BYTES / 1024 / 1024)));
+        assert!(message(CsvError::TooManyRows).contains("5,000"));
+        assert_eq!(CSV_ROWS_MAX, 5_000);
+        // Nothing new to add: the deck changed, so React says so and reloads.
+        let only = serde_json::to_value(csv_error(CsvError::OnlyDuplicates, "test", "failed"));
+        assert_eq!(only.unwrap()["kind"], "stale");
+        // A deck refusal is the same as when adding typed cards.
+        assert_eq!(
+            message(CsvError::Authoring(AuthoringError::DeckArchived)),
+            DECK_ARCHIVED
+        );
     }
 
     #[test]

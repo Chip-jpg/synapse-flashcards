@@ -282,12 +282,13 @@ fn validate_deck(name: &str, description: Option<&str>) -> Result<NewDeck, Inval
 
 /// A card's text after validation.
 #[derive(Debug, PartialEq)]
-struct NewCard {
-    front: String,
-    back: String,
+pub(crate) struct NewCard {
+    pub(crate) front: String,
+    pub(crate) back: String,
 }
 
-fn validate_card(front: &str, back: &str) -> Result<NewCard, InvalidInput> {
+/// Shared with `cards_csv.rs`, which checks each row of a file as a typed card.
+pub(crate) fn validate_card(front: &str, back: &str) -> Result<NewCard, InvalidInput> {
     let front = required_text(
         front,
         CARD_TEXT_MAX_CHARS,
@@ -394,7 +395,7 @@ struct DeckRow {
 /// deck and archived decks are refused. Deleted cards are left out of every
 /// count and out of `cards`; they are listed separately in `deleted_cards`,
 /// which is the only place they appear and the list *Restore card* works from.
-async fn load_deck_detail(
+pub(crate) async fn load_deck_detail(
     conn: &mut SqliteConnection,
     deck_id: i64,
     now: &str,
@@ -535,7 +536,7 @@ pub async fn create_flashcards(
 
 /// Writes one checked card into `deck_id` as a brand-new FSRS card (see
 /// [`create_flashcard`]). The caller has already checked the deck.
-async fn insert_new_card(
+pub(crate) async fn insert_new_card(
     conn: &mut SqliteConnection,
     deck_id: i64,
     card: &NewCard,

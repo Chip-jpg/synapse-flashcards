@@ -39,6 +39,8 @@ migrations, validation, scheduling, and every business rule; React only calls ty
 - **Notes** — type up your own plain-text study notes, or import them from a file, keep them in a
   local library, open and edit them, and delete ones you're done with. A deleted note leaves the library but is kept under
   *Deleted notes*, where *Restore note* brings it back unchanged.
+- **Cards from a spreadsheet** — add front/back cards to a deck from a CSV or TSV file, after
+  checking every row, and save a deck's cards as a CSV file.
 - **Import files as notes** — make a note from the text of a PDF, text (`.txt`), Markdown (`.md`),
   Word (`.docx`), or PowerPoint (`.pptx`) file. You check and edit the text before it's saved; the
   file itself isn't kept.
@@ -184,6 +186,19 @@ Desk then reloads from the backup. A backup from an older version of Synapse is 
 restored; one from a newer version is refused. While a backup is being checked, waits for your
 answer, or is being restored — and while an export is being saved — the sidebar can't be used, so
 nothing else can start in the meantime.
+
+**Import cards from a spreadsheet.** *Backup & restore* → *Cards in a spreadsheet* → choose a deck
+→ *Choose a CSV file*. The front goes in the first column and the back in the second; other columns
+are ignored. Commas, semicolons, and tabs all work, as do quoted cells with line breaks, a header
+row such as *Front, Back*, and files saved as UTF-8 or by older versions of Excel. Synapse shows
+every row before adding anything: rows that break a card's rules (a blank side, more than 2,000
+characters) are named and left out, and so, unless you untick the box, are cards whose front is
+already in the deck or on an earlier row. *Add* saves the rest all together, as new cards due
+straight away. Up to 5,000 cards and 10 MB per file.
+
+**Export cards to a spreadsheet.** In the same place, choose a deck → *Export as CSV*. You get a
+standard CSV file with a *front* and a *back* column, which spreadsheets open and Synapse can import
+again. Only the cards' text is saved, not their schedules or reviews, so it isn't a backup.
 
 **Write notes.** *Notes* (in the sidebar, or *Open notes* on the Study Desk) → *New note*. A note
 has a title (up to 200 characters) and a plain-text body (up to 100,000 characters); both are

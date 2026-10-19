@@ -1,4 +1,5 @@
 mod authoring;
+mod cards_csv;
 mod commands;
 mod db;
 mod export;
@@ -78,7 +79,10 @@ pub fn run() {
             commands::optimize_parameters,
             commands::stop_optimizing,
             commands::apply_parameters,
-            commands::reset_parameters
+            commands::reset_parameters,
+            commands::read_cards_csv,
+            commands::import_cards_csv,
+            commands::export_cards_csv
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

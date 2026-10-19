@@ -252,7 +252,8 @@ fn tidy(text: &str) -> String {
 
 /// A text file's characters: UTF-8 or UTF-16 if its byte order mark says so,
 /// UTF-8 if it is valid UTF-8, and otherwise Windows-1252.
-fn decode_text(bytes: &[u8]) -> String {
+/// Shared with `cards_csv.rs`, which reads CSV files the same way.
+pub(crate) fn decode_text(bytes: &[u8]) -> String {
     if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
         return String::from_utf8_lossy(rest).into_owned();
     }

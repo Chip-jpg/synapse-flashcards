@@ -2196,3 +2196,93 @@ textarea.field-input {
   font-size: 0.75rem;
   color: var(--text-muted);
 }
+
+/* Cards in a spreadsheet (Backup & restore): the rows read from a file. */
+.check-field {
+  display: flex;
+  gap: 0.625rem;
+  align-items: flex-start;
+  font-size: 0.9375rem;
+}
+
+.check-field input {
+  flex: none;
+  width: 1.125rem;
+  height: 1.125rem;
+  margin: 0.1875rem 0 0;
+  accent-color: var(--primary);
+}
+
+.check-field input:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* Tall files scroll inside this box, so the buttons stay in reach. */
+.csv-table-wrap {
+  max-height: 24rem;
+  overflow: auto;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.csv-table-wrap:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.csv-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.csv-table th {
+  position: sticky;
+  top: 0;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-align: left;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+  background-color: var(--surface-low);
+  border-bottom: 1px solid var(--border);
+}
+
+.csv-table td {
+  padding: 0.5rem 0.75rem;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.csv-table td:first-child {
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+.csv-table tr:last-child td {
+  border-bottom: none;
+}
+
+/* Card text keeps its line breaks, as on the deck screen. */
+.csv-cell {
+  white-space: pre-wrap;
+}
+
+.csv-status {
+  color: var(--sage-ink);
+}
+
+.csv-row-left-out td {
+  color: var(--text-muted);
+  background-color: var(--surface-low);
+}
+
+.csv-table .csv-status-problem {
+  font-weight: 500;
+  color: var(--danger);
+}

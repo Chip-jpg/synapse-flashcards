@@ -693,6 +693,7 @@ Current README identifies these main files:
 | `ArchivedDecks.tsx` | Archived-deck recovery |
 | `Backup.tsx` | Export and restore |
 | `Settings.tsx` | Settings: personal FSRS parameters (optimize, compare, apply, reset) |
+| `CardsCsv.tsx` | Importing cards from a CSV/TSV file into a deck and exporting a deck's cards, on the Backup & restore screen |
 | `App.css` | Shared visual tokens and presentation |
 | `forms.tsx` | Shared form fields and saving (one save at a time, field errors) |
 | `unsaved.tsx` | Tracks unsaved forms and asks before discarding them |
@@ -718,6 +719,7 @@ For example, hiding a Restore button is useful UX, but the Rust command must sti
 | `notes.rs` | Note lifecycle and note search |
 | `suggest.rs` | Asking Ollama for suggested cards, and checking them against the note |
 | `extract.rs` | Reading a file's text for import; the PDF helper process |
+| `cards_csv.rs` | Reading and checking CSV/TSV files of cards, saving them all together, and writing a deck as CSV |
 | `export.rs` | Backup creation |
 | `import.rs` | Backup checking and replacement |
 
