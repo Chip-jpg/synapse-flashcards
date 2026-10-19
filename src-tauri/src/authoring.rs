@@ -42,6 +42,17 @@
 //! its `deleted_at`, and the deck is refused exactly as a single restore
 //! refuses a card's deck.
 //!
+//! Several of a deck's cards can be changed at once, as the user selected
+//! them on the deck's screen: [`delete_flashcards`] soft-deletes them exactly
+//! as [`delete_flashcard`] deletes one, and [`move_flashcards`] moves them to
+//! another active normal deck. A move changes only the card's deck (and
+//! `updated_at`): it keeps its id, text, FSRS state, `due` date, `reps`,
+//! `lapses`, `last_review`, and review logs, so its schedule carries on in the
+//! new deck exactly where it was. Both take the ids the user confirmed and
+//! work in one transaction: if any of them is no longer an active card of the
+//! deck the screen showed, nothing is written and the screen is stale. The
+//! sample deck and archived decks are refused on either side of a move.
+//!
 //! Renaming a deck changes only its name (same rules as creating one; its own
 //! current name doesn't count as taken). Archiving a deck puts it away: the
 //! row gets an `archived_at` time and the deck leaves the dashboard, due
@@ -76,6 +87,11 @@ pub const CARD_TEXT_MAX_CHARS: usize = 2_000;
 /// The most cards [`create_flashcards`] adds in one go: far more than one
 /// suggestion offers, but a bound on what the frontend can ask for.
 pub const CARD_BATCH_MAX: usize = 100;
+
+/// The most cards one bulk delete or move takes ([`delete_flashcards`],
+/// [`move_flashcards`]): more than any deck is likely to hold, but a bound on
+/// what the frontend can send.
+pub const CARD_SELECTION_MAX: usize = 10_000;
 
 /// A normal deck as shown on its own screen:
 /// `{ id, name, description, cardCount, dueCount, cards, deletedCards }`.
@@ -184,6 +200,21 @@ pub enum AuthoringError {
     /// Restoring all of a deck's deleted cards was asked for, but the deck
     /// has none, or not the number the user confirmed.
     DeletedCardsChanged,
+    /// No cards were selected to delete or move.
+    NoneSelected,
+    /// More than [`CARD_SELECTION_MAX`] cards were selected at once.
+    TooManySelected,
+    /// The same card was selected twice, which the deck screen never sends.
+    DuplicateSelected,
+    /// A selected card is no longer an active card of the deck it was shown
+    /// in (it was deleted, moved, or never there), so the screen is out of
+    /// date. Nothing was written.
+    SelectionChanged,
+    /// Cards were to be moved into the deck they are already in.
+    SameDeck,
+    /// The deck cards were to be moved into is missing, archived, or the
+    /// sample deck, so it can't take them. Nothing was written.
+    MoveTargetUnavailable,
     /// Anything else (a database failure). Detail is for logs only.
     Internal(DbError),
 }
@@ -790,6 +821,181 @@ pub async fn restore_deleted_cards(
     tx.commit().await?;
     Ok(RestoredCards {
         restored: deleted,
+        deck,
+    })
+}
+
+/// What a bulk delete or move did: `{ changed, deck }`, the number of cards
+/// deleted or moved, and the deck they were selected in, now without them.
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub struct ChangedCards {
+    pub changed: usize,
+    pub deck: DeckDetail,
+}
+
+/// Checks a selection before any transaction starts: at least one card, at
+/// most [`CARD_SELECTION_MAX`], and no card twice.
+fn check_selection(card_ids: &[i64]) -> Result<(), AuthoringError> {
+    if card_ids.is_empty() {
+        return Err(AuthoringError::NoneSelected);
+    }
+    if card_ids.len() > CARD_SELECTION_MAX {
+        return Err(AuthoringError::TooManySelected);
+    }
+    let mut seen = std::collections::HashSet::with_capacity(card_ids.len());
+    if !card_ids.iter().all(|id| seen.insert(*id)) {
+        return Err(AuthoringError::DuplicateSelected);
+    }
+    Ok(())
+}
+
+/// Checks that every selected card is still an active card of `deck`, as
+/// loaded inside the transaction that is about to change them. Anything else
+/// (deleted, moved, or never in this deck) means the screen is out of date.
+fn check_selected_in(deck: &DeckDetail, card_ids: &[i64]) -> Result<(), AuthoringError> {
+    let active: std::collections::HashSet<i64> = deck.cards.iter().map(|card| card.id).collect();
+    if card_ids.iter().all(|id| active.contains(id)) {
+        Ok(())
+    } else {
+        Err(AuthoringError::SelectionChanged)
+    }
+}
+
+/// Soft-deletes several cards of one active normal deck at once, and returns
+/// how many with the deck, now listing them under its deleted cards.
+///
+/// Each card is deleted exactly as [`delete_flashcard`] deletes one: the row
+/// stays, with every column as it was plus `deleted_at`, and so do its review
+/// logs; each can be restored later. All of them are deleted in one
+/// transaction, or none are.
+///
+/// `card_ids` are the cards the user selected and confirmed. The deck is
+/// refused if it is missing, the sample deck, or archived; and if any of the
+/// cards is no longer an active card of this deck,
+/// [`AuthoringError::SelectionChanged`] is returned with nothing written, so
+/// the user never deletes a card they didn't see. If no due card is left and
+/// the deck has an unfinished review session, it is finished, as deleting
+/// one card would.
+pub async fn delete_flashcards(
+    pool: &SqlitePool,
+    deck_id: i64,
+    card_ids: &[i64],
+    now: DateTime<Utc>,
+) -> Result<ChangedCards, AuthoringError> {
+    check_selection(card_ids)?;
+    let now = to_db_time(now);
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+
+    // Stops here, before writing anything, if the deck can't change or the
+    // selection is out of date. Returning early drops `tx`, which rolls it
+    // back.
+    let deck = load_deck_detail(&mut tx, deck_id, &now).await?;
+    check_selected_in(&deck, card_ids)?;
+
+    for &card_id in card_ids {
+        // The same statement as `delete_flashcard`, also pinned to the deck.
+        let deleted = sqlx::query(
+            "UPDATE flashcards SET deleted_at = ?1, updated_at = ?1
+             WHERE id = ?2 AND deck_id = ?3 AND deleted_at IS NULL",
+        )
+        .bind(&now)
+        .bind(card_id)
+        .bind(deck_id)
+        .execute(&mut *tx)
+        .await?;
+        // Checked above inside this same transaction, so never report a
+        // deletion that didn't happen.
+        if deleted.rows_affected() != 1 {
+            return Err(AuthoringError::SelectionChanged);
+        }
+    }
+    study::finish_session_if_nothing_due(&mut tx, deck_id, &now).await?;
+
+    let deck = load_deck_detail(&mut tx, deck_id, &now).await?;
+    tx.commit().await?;
+    Ok(ChangedCards {
+        changed: card_ids.len(),
+        deck,
+    })
+}
+
+/// Moves several cards of one active normal deck into another, and returns
+/// how many with the deck they came from, now without them.
+///
+/// Only the card's deck changes (and `updated_at`, as for any edit): each
+/// card keeps its id, text, FSRS state, stability and difficulty, `due` date,
+/// `last_review`, `reps`, `lapses`, and every `review_logs` row, so it is due
+/// in its new deck exactly when it would have been in the old one. Past
+/// sessions keep counting the reviews they recorded. All of the cards move in
+/// one transaction, or none do.
+///
+/// Both decks must be active normal decks, and different. The deck the cards
+/// come from is refused as [`delete_flashcards`] refuses it; the deck they go
+/// to is refused with [`AuthoringError::MoveTargetUnavailable`] if it is
+/// missing, archived, or the sample deck. `card_ids` are the cards the user
+/// selected and confirmed; if any is no longer an active card of `from_deck`,
+/// [`AuthoringError::SelectionChanged`] is returned with nothing written.
+///
+/// If no due card is left in `from_deck` and it has an unfinished review
+/// session, that session is finished, as deleting its last due card would. An
+/// unfinished session in `to_deck` carries on, and the moved cards that are
+/// due simply join it, as newly added cards would.
+pub async fn move_flashcards(
+    pool: &SqlitePool,
+    from_deck: i64,
+    card_ids: &[i64],
+    to_deck: i64,
+    now: DateTime<Utc>,
+) -> Result<ChangedCards, AuthoringError> {
+    check_selection(card_ids)?;
+    if from_deck == to_deck {
+        return Err(AuthoringError::SameDeck);
+    }
+    let now = to_db_time(now);
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+
+    // Stops here, before writing anything, if either deck can't change or the
+    // selection is out of date. Returning early drops `tx`, which rolls it
+    // back.
+    let deck = load_deck_detail(&mut tx, from_deck, &now).await?;
+    check_selected_in(&deck, card_ids)?;
+    match load_deck_detail(&mut tx, to_deck, &now).await {
+        Ok(_) => {}
+        Err(
+            AuthoringError::DeckNotFound
+            | AuthoringError::SampleDeck
+            | AuthoringError::DeckArchived,
+        ) => return Err(AuthoringError::MoveTargetUnavailable),
+        Err(other) => return Err(other),
+    }
+
+    for &card_id in card_ids {
+        // Only `deck_id` and `updated_at` are written. Migration 0006 refuses
+        // a move out of or into an archived deck and 0010 a move of a deleted
+        // card, so the statement can't do either even if the checks above
+        // were wrong.
+        let moved = sqlx::query(
+            "UPDATE flashcards SET deck_id = ?1, updated_at = ?2
+             WHERE id = ?3 AND deck_id = ?4 AND deleted_at IS NULL",
+        )
+        .bind(to_deck)
+        .bind(&now)
+        .bind(card_id)
+        .bind(from_deck)
+        .execute(&mut *tx)
+        .await?;
+        // Checked above inside this same transaction, so never report a move
+        // that didn't happen.
+        if moved.rows_affected() != 1 {
+            return Err(AuthoringError::SelectionChanged);
+        }
+    }
+    study::finish_session_if_nothing_due(&mut tx, from_deck, &now).await?;
+
+    let deck = load_deck_detail(&mut tx, from_deck, &now).await?;
+    tx.commit().await?;
+    Ok(ChangedCards {
+        changed: card_ids.len(),
         deck,
     })
 }
@@ -4038,6 +4244,283 @@ mod tests {
             ));
             assert_eq!(all_card_rows(&pool).await, before);
             assert_eq!(deleted_card_ids(&pool, deck, now).await.len(), 2);
+        });
+    }
+
+    // Bulk delete and move
+
+    /// The ids of a deck's active cards, as its screen lists them.
+    async fn active_card_ids(pool: &SqlitePool, deck: i64, now: DateTime<Utc>) -> Vec<i64> {
+        deck_detail(pool, deck, now)
+            .await
+            .unwrap()
+            .cards
+            .into_iter()
+            .map(|card| card.id)
+            .collect()
+    }
+
+    #[test]
+    fn deleting_several_cards_deletes_each_as_one_delete_would() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let now = at(NOW);
+            let (deck, cards) =
+                deck_with_cards(&pool, "Biology", &[("A", "a"), ("B", "b"), ("C", "c")]).await;
+            let session = start(&pool, deck, now).await;
+            study::record_review(&pool, session, cards[0], 0, Rating::Good, now)
+                .await
+                .unwrap();
+            let before = [
+                stored_card(&pool, cards[0]).await,
+                stored_card(&pool, cards[2]).await,
+            ];
+            let logs = review_logs(&pool).await;
+
+            let later = now + TimeDelta::minutes(5);
+            let outcome = delete_flashcards(&pool, deck, &[cards[2], cards[0]], later)
+                .await
+                .unwrap();
+            assert_eq!(outcome.changed, 2);
+            assert_eq!(active_card_ids(&pool, deck, later).await, vec![cards[1]]);
+            assert_eq!(outcome.deck, deck_detail(&pool, deck, later).await.unwrap());
+            let mut deleted = deleted_card_ids(&pool, deck, later).await;
+            deleted.sort();
+            assert_eq!(deleted, vec![cards[0], cards[2]]);
+
+            // Each row is kept, with only `deleted_at` and `updated_at` moved,
+            // and its review logs stay.
+            for (card, before) in [cards[0], cards[2]].iter().zip(&before) {
+                let mut expected = before.clone();
+                expected.11 = to_db_time(later);
+                assert_eq!(stored_card(&pool, *card).await, expected);
+                assert_eq!(deleted_at(&pool, *card).await, Some(to_db_time(later)));
+            }
+            assert_eq!(review_logs(&pool).await, logs);
+            // B is still due, so the session carries on.
+            assert_eq!(session_row(&pool, session).await.1, None);
+
+            // Deleting the last due card finishes the session.
+            delete_flashcards(&pool, deck, &[cards[1]], later)
+                .await
+                .unwrap();
+            assert_eq!(session_row(&pool, session).await.1, Some(to_db_time(later)));
+            // And the cards can be restored like any other.
+            restore_deleted_cards(&pool, deck, 3, later).await.unwrap();
+            assert_eq!(active_card_ids(&pool, deck, later).await, cards);
+        });
+    }
+
+    #[test]
+    fn moving_cards_keeps_their_schedule_and_history() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let now = at(NOW);
+            let (biology, cards) =
+                deck_with_cards(&pool, "Biology", &[("A", "a"), ("B", "b"), ("C", "c")]).await;
+            let (chemistry, theirs) =
+                deck_with_cards(&pool, "Chemistry", &[("Na", "Sodium")]).await;
+
+            // A gets real FSRS state and a log row; the session stays open.
+            let session = start(&pool, biology, now).await;
+            study::record_review(&pool, session, cards[0], 0, Rating::Good, now)
+                .await
+                .unwrap();
+            delete_flashcard(&pool, cards[2], now).await.unwrap();
+            let before = stored_card(&pool, cards[0]).await;
+            let logs = review_logs(&pool).await;
+            let sessions = all_sessions(&pool).await;
+
+            let later = now + TimeDelta::minutes(5);
+            let outcome = move_flashcards(&pool, biology, &[cards[0]], chemistry, later)
+                .await
+                .unwrap();
+            assert_eq!(outcome.changed, 1);
+            assert_eq!(
+                outcome.deck,
+                deck_detail(&pool, biology, later).await.unwrap()
+            );
+            assert_eq!(active_card_ids(&pool, biology, later).await, vec![cards[1]]);
+            // Listed by id, so the older card comes first.
+            assert_eq!(
+                active_card_ids(&pool, chemistry, later).await,
+                vec![cards[0], theirs[0]]
+            );
+
+            // Same id; only the deck and `updated_at` changed. Its FSRS state,
+            // due date, reps, lapses, last review, and logs are untouched.
+            let mut expected = before.clone();
+            expected.0 = Some(chemistry);
+            expected.11 = to_db_time(later);
+            assert_eq!(stored_card(&pool, cards[0]).await, expected);
+            assert_eq!(deleted_at(&pool, cards[0]).await, None);
+            assert_eq!(review_logs(&pool).await, logs);
+            // B is still due in Biology, so its session carries on unchanged.
+            assert_eq!(all_sessions(&pool).await, sessions);
+            // A is scheduled ahead: Chemistry has its own card due, not A.
+            let chem = deck_detail(&pool, chemistry, later).await.unwrap();
+            assert_eq!((chem.card_count, chem.due_count), (2, 1));
+            // The deleted card stayed where it was.
+            assert_eq!(
+                deleted_card_ids(&pool, biology, later).await,
+                vec![cards[2]]
+            );
+
+            // Moving Biology's last due card away finishes its session.
+            move_flashcards(&pool, biology, &[cards[1]], chemistry, later)
+                .await
+                .unwrap();
+            assert_eq!(session_row(&pool, session).await.1, Some(to_db_time(later)));
+        });
+    }
+
+    #[test]
+    fn moving_refuses_sample_and_archived_decks_on_either_side_and_writes_nothing() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let now = at(NOW);
+            let (biology, cards) = deck_with_cards(&pool, "Biology", &[("A", "a")]).await;
+            let (physics, physics_cards) = deck_with_cards(&pool, "Physics", &[("F", "ma")]).await;
+            let (archived, archived_cards) = deck_with_cards(&pool, "Old", &[("O", "o")]).await;
+            archive_deck(&pool, archived, now).await.unwrap();
+            let sample = sample_deck_id(&pool).await;
+            let seed_card = card_ids(&pool, sample).await[0];
+            let before = all_card_rows(&pool).await;
+
+            // Into the sample deck, an archived deck, or no deck at all.
+            for target in [sample, archived, 999] {
+                assert!(
+                    matches!(
+                        move_flashcards(&pool, biology, &cards, target, now).await,
+                        Err(AuthoringError::MoveTargetUnavailable)
+                    ),
+                    "move into {target}"
+                );
+            }
+            // Out of the sample deck or an archived deck.
+            assert!(matches!(
+                move_flashcards(&pool, sample, &[seed_card], biology, now).await,
+                Err(AuthoringError::SampleDeck)
+            ));
+            assert!(matches!(
+                move_flashcards(&pool, archived, &archived_cards, biology, now).await,
+                Err(AuthoringError::DeckArchived)
+            ));
+            assert!(matches!(
+                move_flashcards(&pool, 999, &cards, biology, now).await,
+                Err(AuthoringError::DeckNotFound)
+            ));
+            // Into the deck they're already in.
+            assert!(matches!(
+                move_flashcards(&pool, biology, &cards, biology, now).await,
+                Err(AuthoringError::SameDeck)
+            ));
+            // Deleting is refused in the same decks.
+            assert!(matches!(
+                delete_flashcards(&pool, sample, &[seed_card], now).await,
+                Err(AuthoringError::SampleDeck)
+            ));
+            assert!(matches!(
+                delete_flashcards(&pool, archived, &archived_cards, now).await,
+                Err(AuthoringError::DeckArchived)
+            ));
+            assert_eq!(all_card_rows(&pool).await, before);
+
+            // A card of another deck can't be moved as if it were this one's.
+            assert!(matches!(
+                move_flashcards(&pool, biology, &physics_cards, physics, now).await,
+                Err(AuthoringError::SelectionChanged)
+            ));
+            assert_eq!(all_card_rows(&pool).await, before);
+        });
+    }
+
+    #[test]
+    fn a_selection_that_is_out_of_date_or_malformed_is_refused_and_writes_nothing() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let now = at(NOW);
+            let (biology, cards) =
+                deck_with_cards(&pool, "Biology", &[("A", "a"), ("B", "b"), ("C", "c")]).await;
+            let (chemistry, _) = deck_with_cards(&pool, "Chemistry", &[("Na", "Sodium")]).await;
+            delete_flashcard(&pool, cards[2], now).await.unwrap();
+            let before = all_card_rows(&pool).await;
+
+            // A deleted card, an unknown card, or one moved away meanwhile.
+            for selection in [vec![cards[0], cards[2]], vec![cards[0], 999]] {
+                assert!(matches!(
+                    delete_flashcards(&pool, biology, &selection, now).await,
+                    Err(AuthoringError::SelectionChanged)
+                ));
+                assert!(matches!(
+                    move_flashcards(&pool, biology, &selection, chemistry, now).await,
+                    Err(AuthoringError::SelectionChanged)
+                ));
+                assert_eq!(all_card_rows(&pool).await, before);
+            }
+            move_flashcards(&pool, biology, &[cards[1]], chemistry, now)
+                .await
+                .unwrap();
+            let moved = all_card_rows(&pool).await;
+            assert!(matches!(
+                delete_flashcards(&pool, biology, &[cards[0], cards[1]], now).await,
+                Err(AuthoringError::SelectionChanged)
+            ));
+            // Pressing Move again finds the card already gone.
+            assert!(matches!(
+                move_flashcards(&pool, biology, &[cards[1]], chemistry, now).await,
+                Err(AuthoringError::SelectionChanged)
+            ));
+            assert_eq!(all_card_rows(&pool).await, moved);
+
+            // Nothing selected, the same card twice, or far too many.
+            assert!(matches!(
+                delete_flashcards(&pool, biology, &[], now).await,
+                Err(AuthoringError::NoneSelected)
+            ));
+            assert!(matches!(
+                move_flashcards(&pool, biology, &[cards[0], cards[0]], chemistry, now).await,
+                Err(AuthoringError::DuplicateSelected)
+            ));
+            let too_many: Vec<i64> = (1..=CARD_SELECTION_MAX as i64 + 1).collect();
+            assert!(matches!(
+                delete_flashcards(&pool, biology, &too_many, now).await,
+                Err(AuthoringError::TooManySelected)
+            ));
+            assert_eq!(all_card_rows(&pool).await, moved);
+        });
+    }
+
+    #[test]
+    fn a_failed_bulk_change_changes_no_card() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let now = at(NOW);
+            let (biology, cards) =
+                deck_with_cards(&pool, "Biology", &[("A", "a"), ("B", "b")]).await;
+            let (chemistry, _) = deck_with_cards(&pool, "Chemistry", &[("Na", "Sodium")]).await;
+            let before = all_card_rows(&pool).await;
+
+            // Fails on card B only, after card A may already be written.
+            sqlx::query(
+                "CREATE TRIGGER fail_bulk BEFORE UPDATE ON flashcards
+                 WHEN OLD.front = 'B'
+                 BEGIN SELECT RAISE(ABORT, 'simulated failure'); END",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            assert!(matches!(
+                move_flashcards(&pool, biology, &cards, chemistry, now).await,
+                Err(AuthoringError::Internal(_))
+            ));
+            assert_eq!(all_card_rows(&pool).await, before);
+            assert!(matches!(
+                delete_flashcards(&pool, biology, &cards, now).await,
+                Err(AuthoringError::Internal(_))
+            ));
+            assert_eq!(all_card_rows(&pool).await, before);
         });
     }
 }
