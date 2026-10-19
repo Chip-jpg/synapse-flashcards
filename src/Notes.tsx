@@ -32,6 +32,7 @@ import {
   UploadIcon,
 } from "./icons";
 import { SuggestCards } from "./SuggestCards";
+import { SUGGESTION_NOTE_MAX_CHARS } from "./noteParts";
 import { formatDateTime, Message, useFocusOnMount } from "./ui";
 import { useUnsavedChanges } from "./unsaved";
 
@@ -1007,8 +1008,8 @@ function listed(numbers: number[]): string {
 /**
  * What was read from an imported file, said before the user checks its text:
  * where it came from, any pages with no text, and whether the text (now
- * `length` characters, as edited) is too long for a note. Focus goes to it,
- * so it's read out first.
+ * `length` characters, as edited) is too long for a note, or to suggest
+ * cards from whole. Focus goes to it, so it's read out first.
  */
 function ImportSummary({ imported, length }: { imported: ImportedFile; length: number }) {
   const summaryRef = useFocusOnMount<HTMLParagraphElement>(true);
@@ -1035,6 +1036,11 @@ function ImportSummary({ imported, length }: { imported: ImportedFile; length: n
       {length > NOTE_BODY_MAX_CHARS && (
         <p className="import-warning">
           {`This text is ${length.toLocaleString("en-US")} characters long, but a note can hold 100,000. Shorten it before you save it, for example by keeping one chapter.`}
+        </p>
+      )}
+      {length > SUGGESTION_NOTE_MAX_CHARS && length <= NOTE_BODY_MAX_CHARS && (
+        <p className="field-hint">
+          {`At ${length.toLocaleString("en-US")} characters, this is more than a model reads at once, so Suggest cards will offer the note in parts of up to 12,000 characters.`}
         </p>
       )}
     </>

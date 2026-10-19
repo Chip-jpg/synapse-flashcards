@@ -190,7 +190,8 @@ What's taken from each kind of file:
 Files up to 50 MB can be imported; a note holds up to 100,000 characters, so a longer text has to
 be shortened before it's saved (Synapse says so). Older `.doc` and `.ppt` files need saving in the
 newer format first. A PDF is read by a second, short-lived run of Synapse, so a damaged file can't
-crash the app: it's just reported as a file that couldn't be read.
+crash the app: it's just reported as a file that couldn't be read. Text over 12,000 characters can
+still be saved as one note; *Suggest cards* then offers it in parts (Synapse says so).
 
 **Delete or restore a note.** Open a note → *Delete note* asks for confirmation, then takes the note
 out of your library: it can't be opened, edited, or used to write a card. Nothing is lost — the note
@@ -226,8 +227,12 @@ Synapse remembers which model you used last.
 
 Only Ollama at its usual address on this computer (`127.0.0.1:11434`) is ever asked, and only
 when you press *Suggest cards*. Ollama's cloud models, which run on Ollama's servers, are never
-listed or used, so the note stays on your computer. Notes longer than 12,000 characters can't be
-used for suggestions yet; split a long note to use part of it.
+listed or used, so the note stays on your computer.
+
+A model reads up to 12,000 characters at a time, so a longer note, such as an imported document,
+is offered in parts of up to 12,000 characters, each ending where a paragraph does. Choose one under
+*Part of the note*; the screen shows that part, the model reads only that part, and its cards are
+checked against it. Come back to *Suggest cards* for the other parts.
 
 The Sample deck is read-only: you can study it, but not rename, archive, edit it, or add cards to it.
 
@@ -246,20 +251,19 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
 - **Notes are plain text.** No formatting, attachments, audio, web clips, search, tags, or folders.
   Importing a file takes only its text: the file isn't kept, layout and images are lost, and there's
   no OCR for scanned pages. A card doesn't remember the note it was written or suggested from — so
-  deleting a note leaves its cards exactly where they are.
-- **Long imports and suggestions don't mix yet.** Suggestions work on notes of up to 12,000
-  characters, and an imported document is often longer; to suggest cards from part of one, put that
-  part in a note of its own. A deleted note is
-  listed by title and dates only; there's no way to read its text again without restoring it.
+  deleting a note leaves its cards exactly where they are. A deleted note is listed by title and
+  dates only; there's no way to read its text again without restoring it.
 - **No sync, accounts, cloud, or collaboration.** By design.
 - **Default FSRS parameters only.** The optimizer that re-fits weights to your own history is
   future work and isn't built.
 - **One card type.** Front/back text only: no images, audio, cloze, or tags.
 - **No search, bulk actions, folders, or statistics.**
-- **Suggestions are a first step.** They come only from Ollama on this computer, from one typed
-  note of up to 12,000 characters at a time, as front/back cards. There's no cloud option, no
-  choice of how many cards, and no PDFs or other files to suggest from. Suggested cards aren't
-  linked to the note, and suggestions aren't kept: once you leave without saving, they're gone.
+- **Suggestions are a first step.** They come only from Ollama on this computer, from one note
+  at a time, and from one part of up to 12,000 characters of a longer note, as front/back cards.
+  A file is suggested from once it's imported as a note. There's no cloud option, no choice of how
+  many cards, and no way to choose the parts yourself or to suggest from several at once. Synapse
+  doesn't remember which parts you've used. Suggested cards aren't linked to the note, and
+  suggestions aren't kept: once you leave without saving, they're gone.
   How good they are depends on the model: small ones often copy the passage as the answer. The
   check that a card comes from your note compares words, so it's loosest for languages written
   without spaces, such as Chinese or Japanese.
@@ -276,7 +280,8 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   commands (and the window, to hold it open while something is unsaved). `Shell.tsx` is the
   sidebar and the bar above each screen. The screens are `Dashboard.tsx` (the Study Desk),
   `DeckDetail.tsx`, `ReviewSession.tsx`, `Notes.tsx`, `ArchivedDecks.tsx`, and `Backup.tsx`;
-  `SuggestCards.tsx` is the note screen's *Suggest cards*.
+  `SuggestCards.tsx` is the note screen's *Suggest cards*, and `noteParts.ts` splits a note too
+  long to suggest from whole into parts.
   `unsaved.tsx` tracks which form holds unsaved text and asks before it's discarded. Tests sit
   beside the code they cover (`*.test.tsx`), with shared helpers in `src/test/`.
 - **`src-tauri/src/`** — the Rust core:

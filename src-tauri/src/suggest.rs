@@ -29,7 +29,9 @@
 //!   before anything is saved.
 //! - A suggestion never quietly covers only part of a note: a note longer than
 //!   [`SUGGESTION_NOTE_MAX_CHARS`] is refused rather than cut, and so is one
-//!   that turns out to fill the model's working space.
+//!   that turns out to fill the model's working space. For a longer note, such
+//!   as an imported document, the user chooses one part of it on screen
+//!   ([`NotePart`]), and that part is what's sent and checked against.
 //!
 //! Nothing here logs the note's text or the model's answer.
 
@@ -421,6 +423,32 @@ fn read_answer(answer: &str, note: &[String]) -> Result<Suggestions, SuggestErro
 /// The first part of Ollama's error message, for the log.
 fn short(reason: &str) -> String {
     reason.chars().take(300).collect()
+}
+
+/// Part of a note to suggest cards from, by character position: from
+/// `start` up to, but not including, `end`. Chosen on screen when a note is
+/// longer than [`SUGGESTION_NOTE_MAX_CHARS`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+pub struct NotePart {
+    pub start: usize,
+    pub end: usize,
+}
+
+/// The text of `part` of a note's `body`, without blank space at either end;
+/// `None` if the part runs past the end of the note or holds no text.
+pub fn part_of(body: &str, part: NotePart) -> Option<&str> {
+    if part.start >= part.end {
+        return None;
+    }
+    // Where each character starts, then where the text ends.
+    let mut positions = body
+        .char_indices()
+        .map(|(at, _)| at)
+        .chain(std::iter::once(body.len()));
+    let start = positions.nth(part.start)?;
+    let end = positions.nth(part.end - part.start - 1)?;
+    let text = body[start..end].trim();
+    (!text.is_empty()).then_some(text)
 }
 
 /// Ollama on this computer.
@@ -1138,6 +1166,23 @@ mod tests {
                 Err(SuggestError::Unreachable(_))
             ));
         });
+    }
+
+    #[test]
+    fn a_part_of_a_note_is_cut_by_character_and_trimmed() {
+        let part = |start, end| NotePart { start, end };
+        let body = "Mitose é\n\nDivisão celular.";
+        assert_eq!(part_of(body, part(0, 8)), Some("Mitose é"));
+        assert_eq!(part_of(body, part(7, 10)), Some("é"));
+        assert_eq!(part_of(body, part(10, 26)), Some("Divisão celular."));
+        assert_eq!(part_of(body, part(0, 26)), Some(body));
+        // Past the end, empty, back to front, or only blank space.
+        assert_eq!(part_of(body, part(10, 27)), None);
+        assert_eq!(part_of(body, part(26, 27)), None);
+        assert_eq!(part_of(body, part(3, 3)), None);
+        assert_eq!(part_of(body, part(5, 3)), None);
+        assert_eq!(part_of(body, part(8, 10)), None);
+        assert_eq!(part_of("", part(0, 1)), None);
     }
 
     #[test]

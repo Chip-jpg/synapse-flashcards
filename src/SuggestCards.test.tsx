@@ -152,6 +152,41 @@ describe("suggesting cards from a note", () => {
     expect(await screen.findByLabelText("Model")).toBeTruthy();
   });
 
+  it("offers a note too long to use whole in parts, and suggests from the one chosen", async () => {
+    const page = (n: number) => `Page ${n}\n${"Cells divide and grow. ".repeat(250).trim()}`;
+    const body = [1, 2, 3].map(page).join("\n\n");
+    const { user, argsOf } = await openSuggestions({
+      get_note: () => ({
+        id: 5,
+        title: "Cell biology",
+        body,
+        createdAt: "2026-10-01T09:00:00Z",
+        updatedAt: "2026-10-01T09:00:00Z",
+      }),
+    });
+
+    const partList = (await screen.findByLabelText("Part of the note")) as HTMLSelectElement;
+    expect(document.activeElement).toBe(partList);
+    expect(screen.getByText(/split into 2 parts where paragraphs end/)).toBeTruthy();
+    const options = within(partList)
+      .getAllByRole("option")
+      .map((option) => option.textContent);
+    expect(options).toEqual(["Choose a part", "Part 1 of 2: Page 1", "Part 2 of 2: Page 3"]);
+    expect(partList.value).toBe("0");
+    expect(screen.getByText("Your note, part 1 of 2")).toBeTruthy();
+
+    await user.selectOptions(partList, "1");
+    expect(screen.getByText("Your note, part 2 of 2")).toBeTruthy();
+    expect(document.querySelector(".note-context .note-body")?.textContent).toBe(page(3));
+    await user.click(screen.getByRole("button", { name: "Suggest cards" }));
+    await screen.findByText(/^llama3\.2:3b suggested 1 card\./);
+
+    const start = Array.from(body).length - Array.from(page(3)).length;
+    expect(argsOf("suggest_cards")).toEqual([
+      { noteId: 5, model: "llama3.2:3b", part: { start, end: Array.from(body).length } },
+    ]);
+  });
+
   it("goes back to the note on Cancel, with focus on Suggest cards", async () => {
     const { user } = await openSuggestions();
     await user.click(await screen.findByRole("button", { name: "Cancel" }));

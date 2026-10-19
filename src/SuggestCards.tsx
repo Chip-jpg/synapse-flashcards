@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   createFlashcards,
   getModels,
@@ -14,6 +14,7 @@ import {
 import { loadDeckChoices } from "./deckChoices";
 import { FormActions, SelectField, TextField, useFormSave } from "./forms";
 import { SparkleIcon, TrashIcon } from "./icons";
+import { noteParts, SUGGESTION_NOTE_MAX_CHARS, type NotePart } from "./noteParts";
 import { Message, useFocusOnMount } from "./ui";
 import { useUnsavedChanges } from "./unsaved";
 
@@ -174,7 +175,7 @@ export function SuggestCards({
 type Draft = SuggestedCard & { key: number };
 
 /** What takes focus when choosing a model appears. */
-type ChooseFocus = "model" | "suggest" | "notice";
+type ChooseFocus = "part" | "model" | "suggest" | "notice";
 
 type ChooseStage = {
   step: "choose";
@@ -185,6 +186,14 @@ type ChooseStage = {
   /** Any other reason nothing was suggested. */
   error: string | null;
 };
+
+/** How a part of a long note is offered: where it is, and how it begins. */
+function partLabel(part: NotePart, index: number, count: number): string {
+  const firstLine = part.text.split("\n", 1)[0].replace(/\s+/gu, " ").trim();
+  const begins = Array.from(firstLine);
+  const opening = begins.length > 60 ? `${begins.slice(0, 60).join("").trimEnd()}…` : firstLine;
+  return `Part ${index + 1} of ${count}: ${opening}`;
+}
 
 /** Choosing a model, waiting for its suggestions, or checking them. */
 type Stage =
@@ -223,9 +232,14 @@ function Suggester({
   onNoDecks: () => void;
   onNoModels: () => void;
 }) {
+  // A note too long to use whole is offered in parts, one used at a time.
+  const parts = useMemo(() => noteParts(note.body), [note.body]);
+  const split = parts.length > 1;
+  const [partIndex, setPartIndex] = useState(0);
+  const part = split ? parts[partIndex] : null;
   const [models, setModels] = useState(initialModels);
   const [model, setModel] = useState(() => preferredModel(initialModels));
-  const [stage, setStage] = useState<Stage>(() => choose("model"));
+  const [stage, setStage] = useState<Stage>(() => choose(split ? "part" : "model"));
   // Bumped with every stage, so each one remounts and takes focus.
   const [round, setRound] = useState(0);
   // Blocks a second suggestion immediately, before the re-render lands, and
@@ -282,7 +296,7 @@ function Suggester({
 
     let next: Stage;
     try {
-      const outcome = await suggestCards(note.id, model);
+      const outcome = await suggestCards(note.id, model, part ?? undefined);
       if (outcome.status === "stopped") {
         next = choose("notice", { notice: "Stopped. No cards were suggested." });
       } else {
@@ -317,9 +331,9 @@ function Suggester({
       {/* Focusable so keyboard users can scroll a long note. */}
       <section className="note-context" tabIndex={0} aria-labelledby="suggest-context-label">
         <p id="suggest-context-label" className="side-label">
-          Your note
+          {part ? `Your note, part ${partIndex + 1} of ${parts.length}` : "Your note"}
         </p>
-        <p className="note-body">{note.body}</p>
+        <p className="note-body">{part ? part.text : note.body}</p>
       </section>
       <p id="suggest-hint" className="field-hint">
         A model in Ollama, on this computer, reads the note and suggests up to 10 cards, each with
@@ -332,6 +346,16 @@ function Suggester({
       {stage.step === "choose" && (
         <ChooseModel
           key={round}
+          parts={
+            split
+              ? {
+                  labels: parts.map((each, index) => partLabel(each, index, parts.length)),
+                  index: partIndex,
+                  noteLength: Array.from(note.body).length,
+                  onChoose: setPartIndex,
+                }
+              : null
+          }
           models={models}
           model={model}
           stage={stage}
@@ -346,7 +370,12 @@ function Suggester({
         />
       )}
       {stage.step === "suggesting" && (
-        <Waiting key={round} model={stage.model} onStop={() => stopSuggesting().catch(() => {})} />
+        <Waiting
+          key={round}
+          model={stage.model}
+          part={part ? `part ${partIndex + 1} of your note` : null}
+          onStop={() => stopSuggesting().catch(() => {})}
+        />
       )}
       {stage.step === "review" && (
         <ReviewSuggestions
@@ -373,7 +402,17 @@ function Suggester({
   );
 }
 
+/** The parts of a long note, offered while choosing a model. */
+type PartChoice = {
+  labels: string[];
+  index: number;
+  /** In characters, as the user is told. */
+  noteLength: number;
+  onChoose: (index: number) => void;
+};
+
 function ChooseModel({
+  parts,
   models,
   model,
   stage,
@@ -381,6 +420,7 @@ function ChooseModel({
   onSuggest,
   onCancel,
 }: {
+  parts: PartChoice | null;
   models: string[];
   model: string;
   stage: ChooseStage;
@@ -399,6 +439,21 @@ function ChooseModel({
         <p ref={noticeRef} className="notice" role="status" tabIndex={-1}>
           {stage.notice}
         </p>
+      )}
+      {parts && (
+        <SelectField
+          id="suggest-part"
+          label="Part of the note"
+          hint={`This note is ${parts.noteLength.toLocaleString("en-US")} characters long, more than the ${SUGGESTION_NOTE_MAX_CHARS.toLocaleString("en-US")} a model reads at once, so it's split into ${parts.labels.length} parts where paragraphs end. Cards are suggested from one part at a time; come back for the others.`}
+          value={String(parts.index)}
+          options={parts.labels.map((label, index) => ({ value: String(index), label }))}
+          placeholder="Choose a part"
+          required
+          autoFocus={stage.focus === "part"}
+          onChange={(value) => {
+            if (value !== "") parts.onChoose(Number(value));
+          }}
+        />
       )}
       <SelectField
         id="suggest-model"
@@ -432,7 +487,16 @@ function ChooseModel({
 }
 
 /** While the model works. Focus goes to the status, so a held Enter can't stop it. */
-function Waiting({ model, onStop }: { model: string; onStop: () => void }) {
+function Waiting({
+  model,
+  part,
+  onStop,
+}: {
+  model: string;
+  /** Which part of the note, if only part of it is read. */
+  part: string | null;
+  onStop: () => void;
+}) {
   const statusRef = useFocusOnMount<HTMLParagraphElement>(true);
   const [stopping, setStopping] = useState(false);
 
@@ -441,7 +505,7 @@ function Waiting({ model, onStop }: { model: string; onStop: () => void }) {
       <p ref={statusRef} className="confirm-question" role="status" tabIndex={-1}>
         {stopping
           ? "Stopping…"
-          : `Suggesting cards with ${model}… This can take a minute or more, depending on the model and this computer.`}
+          : `Suggesting cards${part ? ` from ${part}` : ""} with ${model}… This can take a minute or more, depending on the model and this computer.`}
       </p>
       <div className="deck-actions">
         <button
