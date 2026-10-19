@@ -2,8 +2,11 @@ import { cleanup } from "@testing-library/react";
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach } from "vitest";
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
+  // Unmounting releases Tauri listeners whose registration may still be on
+  // its way; let it land, so they're removed before the mocks they need go.
+  await new Promise((resolve) => setTimeout(resolve, 0));
   clearMocks();
 });
 
