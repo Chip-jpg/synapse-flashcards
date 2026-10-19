@@ -1,0 +1,6 @@
+# Pins the Rust toolchain for local builds and the Release workflow, so a new
+# stable release (and its new lints) can't fail a release run. Bump it on purpose.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["clippy", "rustfmt"]
