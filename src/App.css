@@ -2318,3 +2318,71 @@ textarea.field-input {
   margin-top: 0.25rem;
   accent-color: var(--primary);
 }
+
+/* Cloze cards: the kind choice when adding a card, the live count under a
+   cloze text, the tag on a cloze card, and its gaps and answers in review. */
+.kind-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.kind-choice-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.kind-choice-option input {
+  margin-top: 0.25rem;
+  accent-color: var(--primary);
+}
+
+.cloze-preview {
+  min-height: 1.3125rem;
+  margin: -0.5rem 0 0;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--primary-ink);
+}
+
+.cloze-preview-problem {
+  color: var(--amber-ink);
+}
+
+.card-kind-tag {
+  justify-self: start;
+  width: fit-content;
+  margin: 0 0 0.5rem;
+  padding: 0.0625rem 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--primary-ink);
+  background-color: var(--primary-soft);
+  border: 1px solid var(--primary-line);
+  border-radius: var(--radius-full);
+}
+
+.cloze-gap {
+  padding: 0 0.25em;
+  color: var(--primary-ink);
+  background-color: var(--primary-soft);
+  border-radius: var(--radius-sm);
+}
+
+.cloze-answer {
+  padding: 0 0.25em;
+  color: var(--sage-ink);
+  background-color: var(--sage-soft);
+  border-radius: var(--radius-sm);
+}
+
+
+.card-sides .card-kind-tag {
+  grid-column: 1 / -1;
+}

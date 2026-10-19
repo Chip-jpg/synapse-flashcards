@@ -1,6 +1,7 @@
 mod aid;
 mod authoring;
 mod cards_csv;
+mod cloze;
 mod commands;
 mod db;
 mod export;
@@ -54,6 +55,9 @@ pub fn run() {
             commands::create_flashcard,
             commands::create_flashcards,
             commands::update_flashcard,
+            commands::create_cloze,
+            commands::update_cloze,
+            commands::preview_cloze,
             commands::delete_flashcard,
             commands::restore_flashcard,
             commands::restore_deleted_cards,

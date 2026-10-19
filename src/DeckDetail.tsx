@@ -1,14 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import {
   archiveDeck,
+  createCloze,
   createFlashcard,
   deleteFlashcard,
   getDeckDetail,
+  previewCloze,
   renameDeck,
   restoreDeletedCards,
   restoreFlashcard,
   toCommandError,
+  updateCloze,
   updateFlashcard,
+  type ClozeChanges,
   type DeckCard,
   type DeckDetail as Deck,
   type DeletedCard,
@@ -156,7 +160,7 @@ export function DeckDetail({
       <CardForm
         deck={state.deck}
         onCancel={() => showView(null, { to: "addCard" })}
-        onSaved={(deck) => showSaved(deck, "Card added.")}
+        onSaved={showSaved}
       />
     );
   }
@@ -169,7 +173,7 @@ export function DeckDetail({
         deck={state.deck}
         card={card}
         onCancel={() => showView(null, { to: "editCard", cardId: card.id })}
-        onSaved={(deck) => showSaved(deck, "Card updated.")}
+        onSaved={showSaved}
       />
     );
   }
@@ -304,10 +308,22 @@ function DeckView({
   const shownSelected = shown.filter((card) => selected.has(card.id)).length;
   const allShownSelected = shown.length > 0 && shownSelected === shown.length;
 
-  function toggle(cardId: number) {
+  /**
+   * The cards that are selected together with `card`: the cards made from
+   * the same cloze text, which move only together, or the card alone.
+   */
+  function withSiblings(card: DeckCard): number[] {
+    const cloze = card.cloze;
+    if (!cloze) return [card.id];
+    return deck.cards.filter((each) => each.cloze?.textId === cloze.textId).map((each) => each.id);
+  }
+
+  function toggle(card: DeckCard) {
     setSelected((previous) => {
       const next = new Set(previous);
-      if (!next.delete(cardId)) next.add(cardId);
+      const ids = withSiblings(card);
+      if (previous.has(card.id)) for (const id of ids) next.delete(id);
+      else for (const id of ids) next.add(id);
       return next;
     });
   }
@@ -317,8 +333,10 @@ function DeckView({
     setSelected((previous) => {
       const next = new Set(previous);
       for (const card of shown) {
-        if (allShownSelected) next.delete(card.id);
-        else next.add(card.id);
+        for (const id of withSiblings(card)) {
+          if (allShownSelected) next.delete(id);
+          else next.add(id);
+        }
       }
       return next;
     });
@@ -422,7 +440,7 @@ function DeckView({
                 <CardItem
                   card={card}
                   selected={selected.has(card.id)}
-                  onToggle={() => toggle(card.id)}
+                  onToggle={() => toggle(card)}
                   focusEdit={card.id === editFocusId}
                   onEdit={() => onEdit(card)}
                   onDeleted={onDeleted}
@@ -644,9 +662,21 @@ function RenameDeckForm({
  * A card's full front and back, each beside its label. `frontId` lets the
  * card's buttons name it.
  */
-function CardText({ frontId, front, back }: { frontId: string; front: string; back: string }) {
+function CardText({
+  frontId,
+  front,
+  back,
+  clozeNumber,
+}: {
+  frontId: string;
+  front: string;
+  back: string;
+  /** A cloze card's number, shown as a tag: the card hides that `{{cN::…}}`. */
+  clozeNumber?: number;
+}) {
   return (
     <div className="card-sides">
+      {clozeNumber !== undefined && <p className="card-kind-tag">{`Cloze ${clozeNumber}`}</p>}
       <p className="side-label">Front</p>
       <p id={frontId} className="card-item-text card-item-front">
         {front}
@@ -745,13 +775,20 @@ function CardItem({
 
   return (
     <div className="card-item card-row">
-      <CardText frontId={frontId} front={card.front} back={card.back} />
+      <CardText
+        frontId={frontId}
+        front={card.front}
+        back={card.back}
+        clozeNumber={card.cloze?.number}
+      />
 
       {confirming ? (
         <div className="confirm">
           <p ref={questionRef} className="confirm-question" tabIndex={-1}>
             Delete this card? It will leave this deck and won't appear in reviews. Its schedule and
             review history are kept, and you can restore it from Deleted cards below.
+            {card.cloze &&
+              ` The other cards of its cloze text stay, and this one stays deleted while {{c${card.cloze.number}::…}} is in the text.`}
           </p>
           <div className="deck-actions">
             <button
@@ -842,6 +879,8 @@ function DeletedCardList({
   onRestoredAll: (deck: Deck, restored: number) => void;
   onRestoreAllStale: () => void;
 }) {
+  // A cloze card whose number has left its text can't come back yet.
+  const restorable = cards.filter((card) => !card.cloze?.blocked).length;
   return (
     <section className="cards section-quiet" aria-labelledby="deleted-cards-heading">
       <div className="section-heading">
@@ -857,10 +896,11 @@ function DeletedCardList({
         it brings it back with its text, schedule, and review history unchanged — it becomes due
         again only on the date it already had.
       </p>
-      {cards.length >= 2 && (
+      {restorable >= 2 && (
         <RestoreAll
           deckId={deckId}
-          count={cards.length}
+          count={restorable}
+          all={restorable === cards.length}
           onRestored={onRestoredAll}
           onStale={onRestoreAllStale}
         />
@@ -876,15 +916,20 @@ function DeletedCardList({
   );
 }
 
-/** *Restore all*: a two-step restore of every deleted card in the deck. */
+/**
+ * *Restore all*: a two-step restore of every deleted card in the deck that
+ * can be restored (`count` of them; `all` when that is every one).
+ */
 function RestoreAll({
   deckId,
   count,
+  all,
   onRestored,
   onStale,
 }: {
   deckId: number;
   count: number;
+  all: boolean;
   onRestored: (deck: Deck, restored: number) => void;
   onStale: () => void;
 }) {
@@ -939,7 +984,7 @@ function RestoreAll({
       {confirming ? (
         <div className="confirm confirm-calm">
           <p ref={questionRef} className="confirm-question" tabIndex={-1}>
-            {`Restore all ${count} deleted cards? They go back into this deck with the same schedules and review history they had, and each becomes due again only on the date it already had.`}
+            {`${all ? `Restore all ${count} deleted cards?` : `Restore the ${count} deleted cards that can be restored?`} They go back into this deck with the same schedules and review history they had, and each becomes due again only on the date it already had.`}
           </p>
           <div className="deck-actions">
             <button
@@ -974,7 +1019,7 @@ function RestoreAll({
             onClick={() => setConfirming(true)}
           >
             <RestoreIcon />
-            Restore all
+            {all ? "Restore all" : `Restore ${count} cards`}
           </button>
         </div>
       )}
@@ -1047,10 +1092,21 @@ function DeletedCardItem({
 
   return (
     <div className="card-item card-item-recovery">
-      <CardText frontId={frontId} front={card.front} back={card.back} />
+      <CardText
+        frontId={frontId}
+        front={card.front}
+        back={card.back}
+        clozeNumber={card.cloze?.number}
+      />
       <p className="item-meta">{`Deleted ${formatDateTime(card.deletedAt)}`}</p>
 
-      {confirming ? (
+      {card.cloze?.blocked ? (
+        <p className="item-meta">
+          {card.cloze.blocked === "numberGone"
+            ? `It can't be restored while {{c${card.cloze.number}::…}} isn't in its cloze text. Put it back in the text, and this card returns with its schedule.`
+            : "It can't be restored here: the other cards of its cloze text are in another deck now."}
+        </p>
+      ) : confirming ? (
         <div className="confirm confirm-calm">
           <p ref={questionRef} className="confirm-question" tabIndex={-1}>
             Restore this card? It goes back into this deck with the same schedule and review
@@ -1105,7 +1161,47 @@ function DeletedCardItem({
   );
 }
 
-/** Adding a card to `deck`, or editing `card` when one is given. */
+type CardKind = "basic" | "cloze";
+
+/** "a, b and c". */
+function listed(items: string[]): string {
+  return items.length <= 1
+    ? (items[0] ?? "")
+    : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
+/**
+ * What saving a cloze text does (`saved` false: will do, for the live
+ * count) or did, in words.
+ */
+function describeChanges(changes: ClozeChanges, editing: boolean, saved: boolean): string {
+  if (!editing) {
+    return saved
+      ? `Cloze text added: it made ${cardCount(changes.added)}.`
+      : `This text makes ${cardCount(changes.cards)}.`;
+  }
+  const parts = [
+    changes.kept > 0 && `${saved ? "kept" : "keeps"} ${cardCount(changes.kept)}`,
+    changes.restored > 0 &&
+      `${saved ? "brought back" : "brings back"} ${cardCount(changes.restored)} from Deleted cards`,
+    changes.added > 0 && `${saved ? "added" : "adds"} ${changes.added} new`,
+    changes.deleted > 0 &&
+      `${saved ? "deleted" : "deletes"} ${cardCount(changes.deleted)} whose number left the text`,
+  ].filter((part): part is string => typeof part === "string");
+  return saved ? `Cloze text saved: it ${listed(parts)}.` : `Saving ${listed(parts)}.`;
+}
+
+/** The live count under a cloze text, or why the text can't be saved yet. */
+type Preview =
+  | { status: "none" }
+  | { status: "ready"; changes: ClozeChanges }
+  | { status: "problem"; message: string };
+
+/**
+ * Adding a card to `deck`, or editing `card` when one is given. A new card is
+ * Basic (a front and a back) or Cloze (a text with hidden parts, one card per
+ * number); a card is edited as the kind it is.
+ */
 function CardForm({
   deck,
   card,
@@ -1115,54 +1211,187 @@ function CardForm({
   deck: Deck;
   card?: DeckCard;
   onCancel: () => void;
-  onSaved: (deck: Deck) => void;
+  /** Saved: the deck Rust returned, and what to tell the user. */
+  onSaved: (deck: Deck, notice: string) => void;
 }) {
-  const [front, setFront] = useState(card?.front ?? "");
-  const [back, setBack] = useState(card?.back ?? "");
-  useUnsavedChanges(front !== (card?.front ?? "") || back !== (card?.back ?? ""));
+  const cloze = card?.cloze ?? null;
+  const [kind, setKind] = useState<CardKind>(cloze ? "cloze" : "basic");
+  const initialFront = card && !cloze ? card.front : "";
+  const initialBack = card && !cloze ? card.back : "";
+  const initialText = cloze?.text ?? "";
+  const [front, setFront] = useState(initialFront);
+  const [back, setBack] = useState(initialBack);
+  const [text, setText] = useState(initialText);
+  const [preview, setPreview] = useState<Preview>({ status: "none" });
+  // Once a kind has been chosen, focus stays on the choice rather than
+  // jumping to the field that appears.
+  const [chosen, setChosen] = useState(false);
+  useUnsavedChanges(front !== initialFront || back !== initialBack || text !== initialText);
   const { saving, submit, fieldError, formError, edited } = useFormSave(
-    () => (card ? updateFlashcard(card.id, front, back) : createFlashcard(deck.id, front, back)),
-    onSaved,
-    { front: "card-front", back: "card-back" },
+    async (): Promise<{ deck: Deck; notice: string }> => {
+      if (kind === "cloze") {
+        if (card) {
+          const saved = await updateCloze(card.id, text);
+          return { deck: saved.deck, notice: describeChanges(saved.changes, true, true) };
+        }
+        const saved = await createCloze(deck.id, text);
+        const added = saved.cardCount - deck.cardCount;
+        return {
+          deck: saved,
+          notice: describeChanges(
+            { cards: added, kept: 0, restored: 0, added, deleted: 0 },
+            false,
+            true,
+          ),
+        };
+      }
+      const saved = card
+        ? await updateFlashcard(card.id, front, back)
+        : await createFlashcard(deck.id, front, back);
+      return { deck: saved, notice: card ? "Card updated." : "Card added." };
+    },
+    (saved) => onSaved(saved.deck, saved.notice),
+    { front: "card-front", back: "card-back", text: "card-text" },
   );
+
+  // The live count: Rust reads the text a moment after typing stops, so the
+  // count always follows the same rules as saving.
+  const cardId = card?.id ?? null;
+  useEffect(() => {
+    if (kind !== "cloze" || text.trim() === "") {
+      setPreview({ status: "none" });
+      return;
+    }
+    let current = true;
+    const timer = setTimeout(() => {
+      previewCloze(text, cardId).then(
+        (changes) => {
+          if (current) setPreview({ status: "ready", changes });
+        },
+        (err) => {
+          if (current) setPreview({ status: "problem", message: toCommandError(err).message });
+        },
+      );
+    }, 200);
+    return () => {
+      current = false;
+      clearTimeout(timer);
+    };
+  }, [kind, text, cardId]);
 
   return (
     <form className="card" aria-labelledby="card-form-heading" noValidate onSubmit={submit}>
       <h2 id="card-form-heading" className="form-title">
-        {card ? "Edit a card in " : "Add a card to "}
+        {card ? (cloze ? "Edit a cloze text in " : "Edit a card in ") : "Add a card to "}
         {deck.name}
       </h2>
 
-      <TextField
-        id="card-front"
-        label="Front"
-        hint="The question. Required. Up to 2,000 characters."
-        value={front}
-        error={fieldError("front")}
-        required
-        multiline
-        autoFocus
-        onChange={(value) => {
-          setFront(value);
-          edited("front");
-        }}
-      />
-      <TextField
-        id="card-back"
-        label="Back"
-        hint="The answer. Required. Up to 2,000 characters."
-        value={back}
-        error={fieldError("back")}
-        required
-        multiline
-        onChange={(value) => {
-          setBack(value);
-          edited("back");
-        }}
-      />
+      {!card && (
+        <fieldset className="field kind-choice">
+          <legend className="field-label">Kind of card</legend>
+          <label className="kind-choice-option">
+            <input
+              type="radio"
+              name="card-kind"
+              value="basic"
+              checked={kind === "basic"}
+              onChange={() => {
+                setKind("basic");
+                setChosen(true);
+              }}
+            />
+            <span>
+              <strong>Basic</strong>: a front and a back.
+            </span>
+          </label>
+          <label className="kind-choice-option">
+            <input
+              type="radio"
+              name="card-kind"
+              value="cloze"
+              checked={kind === "cloze"}
+              onChange={() => {
+                setKind("cloze");
+                setChosen(true);
+              }}
+            />
+            <span>
+              <strong>Cloze</strong>: a text with parts hidden, one card for each part.
+            </span>
+          </label>
+        </fieldset>
+      )}
+
+      {kind === "cloze" ? (
+        <>
+          <TextField
+            id="card-text"
+            label="Text"
+            hint={
+              "Hide a part as {{c1::answer}}, or {{c1::answer::hint}} to show a hint in its place. " +
+              "Each number is its own card; give parts the same number to hide them together. " +
+              (cloze
+                ? "Numbers you keep keep their schedules; a number you take out deletes its card. "
+                : "") +
+              "Up to 2,000 characters."
+            }
+            value={text}
+            error={fieldError("text")}
+            required
+            multiline
+            autoFocus={!chosen}
+            onChange={(value) => {
+              setText(value);
+              edited("text");
+            }}
+          />
+          <p
+            className={
+              preview.status === "problem" ? "cloze-preview cloze-preview-problem" : "cloze-preview"
+            }
+            role="status"
+          >
+            {preview.status === "ready"
+              ? describeChanges(preview.changes, cloze !== null, false)
+              : preview.status === "problem"
+                ? preview.message
+                : ""}
+          </p>
+        </>
+      ) : (
+        <>
+          <TextField
+            id="card-front"
+            label="Front"
+            hint="The question. Required. Up to 2,000 characters."
+            value={front}
+            error={fieldError("front")}
+            required
+            multiline
+            autoFocus={!chosen}
+            onChange={(value) => {
+              setFront(value);
+              edited("front");
+            }}
+          />
+          <TextField
+            id="card-back"
+            label="Back"
+            hint="The answer. Required. Up to 2,000 characters."
+            value={back}
+            error={fieldError("back")}
+            required
+            multiline
+            onChange={(value) => {
+              setBack(value);
+              edited("back");
+            }}
+          />
+        </>
+      )}
 
       <FormActions
-        saveLabel={card ? "Save changes" : "Save card"}
+        saveLabel={card ? "Save changes" : kind === "cloze" ? "Save cards" : "Save card"}
         saving={saving}
         error={formError}
         onCancel={onCancel}

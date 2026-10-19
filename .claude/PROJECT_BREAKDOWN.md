@@ -497,6 +497,20 @@ Added on branch `claude/nightly-2026-10-19-memory-aids-i9x6j9` (not yet released
 - **Drafts only.** Nothing is stored unless the user picks *Add as a note*, which uses `create_note`. No table, no migration, backups unchanged.
 - **Never in the way.** Rating doesn't wait for help; rating replaces the panel and stops a request still running. Without Ollama, review is unchanged.
 
+## 4.9 Cloze cards
+
+Added on branch `claude/nightly-2026-10-19-cloze-cards-ddsgr2` (not yet released). A second card type, the first item of section 14.2's "Cloze questions".
+
+- **Writing one.** *Add card* → *Cloze*. Deletions are `{{c1::answer}}` or `{{c1::answer::hint}}`, numbers 1–999. Each distinct number is one card; a number used twice hides both parts on one card. The text is checked as a card is (required, 2,000 characters after trimming), must hold a deletion, each closed with `}}` before the next starts, with a non-blank answer (and hint). Anything else that looks like braces is plain text. The form shows a live count from Rust (`preview_cloze`), never parsed in React.
+- **Schema (migration 0012).** `cloze_texts (id, text, created_at, updated_at)` holds each text once; its rows are never removed. Each card is an ordinary `flashcards` row with `kind = 'cloze'`, `cloze_text_id`, and `cloze_number` (basic cards: `'basic'`, NULL, NULL). Triggers: kind, text id and number are complete on insert and never change; a text is never deleted or blank; at most one *active* card per (text, number) (partial unique index). 0010's `flashcards_deleted_are_read_only` is recreated with the three new columns.
+- **Fronts and backs are stored.** Rust writes a cloze card's `front` (its own deletions as `[...]`/`[hint]`, others filled in) and `back` (its answers, joined by "; ") whenever the text is saved. So lists, search, counts, statistics, help with a card and exports keep working unchanged. Review gets the text as pieces (`SessionCard.cloze`) to show the gap and the highlighted answer.
+- **Editing** (`update_cloze`): a number still in the text keeps its card and schedule (front/back rewritten); a number that left the text soft-deletes its card; a number new to the text restores its deleted card from the same deck, if it has one, or adds a new card. A card the user deleted alone stays deleted while its number stays. A cloze card can't be edited as front/back, or the other way round (`WrongKind`).
+- **Restoring.** A deleted cloze card is restorable only if its number is in the text now and the text's active cards are in its deck (`cloze::restore_block`: `numberGone`, `elsewhere`). It comes back with its front/back rewritten from the current text (a second statement after clearing `deleted_at`, as 0010 requires). *Restore all* counts and restores only restorable cards.
+- **Moving.** The cards of one text stay in one deck: `move_flashcards` refuses a selection with only some of a text's active cards (`ClozeSplit`), and ticking one selects its siblings.
+- **CSV.** Export writes each text once, as `front` with an empty `back`. Import treats a row with an empty back and a deletion in the front as a cloze text (checked the same way, one card per number); duplicates are judged against the deck's texts.
+- **Backups.** A v0.7.0 backup (schema 11) restores with every card `basic`. A backup made after 0012 is refused by v0.7.0 and older as from a newer version ("newer schema"), as any newer backup is.
+- **Not done:** siblings aren't buried (two cards of one text can come up in the same session, one after the other); no conversion between kinds; no cloze suggestions from Ollama; no image occlusion. Not yet checked on Windows.
+
 ______________________________________________________________________
 
 ## 5. FSRS and personalization
@@ -726,6 +740,7 @@ For example, hiding a Restore button is useful UX, but the Rust command must sti
 | `stats.rs` | Read-only statistics: 30 days of reviews, true retention, cards by state, 14-day due forecast |
 | `authoring.rs` | Deck/card creation and lifecycle |
 | `notes.rs` | Note lifecycle and note search |
+| `cloze.rs` | Cloze texts: parsing, writing their cards' fronts and backs, editing and restoring by number |
 | `suggest.rs` | Asking Ollama for suggested cards, and checking them against the note |
 | `extract.rs` | Reading a file's text for import; the PDF helper process |
 | `cards_csv.rs` | Reading and checking CSV/TSV files of cards, saving them all together, and writing a deck as CSV |
@@ -873,6 +888,7 @@ The project history gives this high-level progression:
 | `0009` | Deck unarchive |
 | `0010` | Card restore |
 | `0011` | FSRS parameters fitted to the user's history (append-only) |
+| `0012` | Cloze cards: `cloze_texts`, and `kind`/`cloze_text_id`/`cloze_number` on `flashcards` |
 
 The first seven are described in the original specification. The final three are established by your later feature reports and repository history.
 
@@ -1285,7 +1301,7 @@ Planned outputs:
 - Summaries at different depths.
 - Multiple-choice questions.
 - Short-answer questions.
-- Cloze questions.
+- Cloze questions (first form, typed cloze cards, on the 2026-10-19 branch; section 4.9).
 - Applied questions.
 - Memory aids.
 

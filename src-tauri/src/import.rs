@@ -1911,11 +1911,19 @@ mod tests {
 
             // The backup's history is all there, and its ratings are
             // scheduled with FSRS's defaults, not the replaced database's.
+            // Its cards gained only their kind (migration 0012).
             let imported = dump(&restored).await;
             for (name, rows) in &source_rows {
                 if name != "sqlite_master" && name != "_sqlx_migrations" {
                     let found = imported.iter().find(|(table, _)| table == name).unwrap();
-                    assert_eq!(&found.1, rows, "{name}");
+                    let rows: Vec<String> = if name == "flashcards" {
+                        rows.iter()
+                            .map(|row| format!("{row} | 'basic' | NULL | NULL"))
+                            .collect()
+                    } else {
+                        rows.clone()
+                    };
+                    assert_eq!(found.1, rows, "{name}");
                 }
             }
             let settings = optimizer::settings(&restored).await.unwrap();
@@ -1948,6 +1956,125 @@ mod tests {
             assert_eq!(kept.parameters, proposal.proposed);
             copy.close().await;
             discard_staged(&workspace);
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    #[test]
+    fn a_v0_7_0_backup_restores_as_basic_cards_and_cloze_cards_survive_the_next_backup() {
+        tauri::async_runtime::block_on(async {
+            let dir = scratch("import-pre-0012");
+            // A backup from v0.7.0 (schema 11), before cloze cards: a deck
+            // with a reviewed card and a deleted one.
+            let source_path = dir.join("source").join("synapse.sqlite");
+            std::fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+            let source =
+                sqlx::SqlitePool::connect(&format!("sqlite:{}?mode=rwc", source_path.display()))
+                    .await
+                    .unwrap();
+            migrations_up_to(11).run(&source).await.unwrap();
+            for sql in [
+                "INSERT INTO seed_markers (name) VALUES ('sample_card')",
+                "INSERT INTO decks (name, created_at) VALUES ('Biology', '2026-09-15T12:00:00.000Z')",
+                "INSERT INTO flashcards (deck_id, front, back, fsrs_state, fsrs_stability,
+                                         fsrs_difficulty, due, last_review, reps, lapses,
+                                         created_at, updated_at)
+                 VALUES (2, 'X', 'x', 'Review', 2.5, 5.0, '2026-09-20T12:00:00.000Z',
+                         '2026-09-15T12:01:00.000Z', 1, 0, '2026-09-15T12:00:30.000Z',
+                         '2026-09-15T12:01:00.000Z'),
+                        (2, 'Y', 'y', 'New', NULL, NULL, NULL, NULL, 0, 0,
+                         '2026-09-15T12:00:30.000Z', '2026-09-15T12:00:30.000Z')",
+                "UPDATE flashcards SET deleted_at = '2026-09-15T12:03:00.000Z',
+                                       updated_at = '2026-09-15T12:03:00.000Z'
+                 WHERE front = 'Y'",
+                "INSERT INTO review_logs (card_id, rating, state_before, scheduled_days,
+                                          elapsed_days, stability_after, difficulty_after, reviewed_at)
+                 VALUES (1, 3, 'New', 2.5, 0, 2.5, 5.0, '2026-09-15T12:01:00.000Z')",
+            ] {
+                sqlx::query(sql).execute(&source).await.unwrap();
+            }
+            let archive = dir.join("backup.zip");
+            write_package(&source, &archive, at(NOW), "0.7.0")
+                .await
+                .unwrap();
+            let source_rows = dump(&source).await;
+            source.close().await;
+
+            let target_path = dir.join("target").join("synapse.sqlite");
+            let database = Database::default();
+            *database.slot().lock().await = Some(target_database(&target_path).await);
+            let workspace = dir.join("target").join("import-workspace");
+            let staged = stage_package(&archive, &workspace).await.unwrap();
+            assert_eq!(staged.manifest.schema_version, 11);
+            replace_database(&database, &target_path, &staged.database, &workspace)
+                .await
+                .unwrap();
+            discard_staged(&workspace);
+            let restored = installed(&database).await;
+
+            // Every card is a basic card, with everything else the backup's.
+            let imported = dump(&restored).await;
+            for (name, rows) in &source_rows {
+                if name == "sqlite_master" || name == "_sqlx_migrations" {
+                    continue;
+                }
+                let found = imported.iter().find(|(table, _)| table == name).unwrap();
+                let rows: Vec<String> = if name == "flashcards" {
+                    rows.iter()
+                        .map(|row| format!("{row} | 'basic' | NULL | NULL"))
+                        .collect()
+                } else {
+                    rows.clone()
+                };
+                assert_eq!(found.1, rows, "{name}");
+            }
+            let deck = crate::authoring::restore_flashcard(&restored, 2, at(NOW))
+                .await
+                .unwrap();
+            assert_eq!(deck.card_count, 2);
+
+            // Cloze cards made now, one reviewed and one deleted, pass every
+            // check of the next backup and come back exactly.
+            let deck = crate::cloze::create_cloze(&restored, 2, "{{c1::A}} {{c2::B}}", at(NOW))
+                .await
+                .unwrap();
+            let session = start(&restored, 2, NOW).await;
+            let cloze = deck.cards[2].id;
+            study::record_review(&restored, session, cloze, 0, Rating::Good, at(NOW))
+                .await
+                .unwrap();
+            delete_flashcard(&restored, deck.cards[3].id, at(NOW))
+                .await
+                .unwrap();
+            let next = dir.join("next.zip");
+            write_package(&restored, &next, at(LATER), "0.8.0")
+                .await
+                .unwrap();
+            let before = dump(&restored).await;
+
+            let other_path = dir.join("other").join("synapse.sqlite");
+            let other = Database::default();
+            *other.slot().lock().await = Some(target_database(&other_path).await);
+            let workspace = dir.join("other").join("import-workspace");
+            let staged = stage_package(&next, &workspace).await.unwrap();
+            assert_eq!(staged.manifest.schema_version, db::latest_schema_version());
+            replace_database(&other, &other_path, &staged.database, &workspace)
+                .await
+                .unwrap();
+            discard_staged(&workspace);
+            let copy = installed(&other).await;
+            let after = dump(&copy).await;
+            for (name, rows) in &before {
+                if name != "_sqlx_migrations" {
+                    let found = after.iter().find(|(table, _)| table == name).unwrap();
+                    assert_eq!(&found.1, rows, "{name}");
+                }
+            }
+            let detail = crate::authoring::deck_detail(&copy, 2, at(NOW))
+                .await
+                .unwrap();
+            assert_eq!(detail.card_count, 3);
+            assert_eq!(detail.deleted_cards[0].cloze.as_ref().unwrap().number, 2);
             let _ = std::fs::remove_dir_all(&dir);
         });
     }
@@ -2032,15 +2159,15 @@ mod tests {
                     .unwrap()
             }
             let imported = dump(&restored).await;
-            for name in [
-                "decks",
-                "flashcards",
-                "review_logs",
-                "sessions",
-                "seed_markers",
-            ] {
+            for name in ["decks", "review_logs", "sessions", "seed_markers"] {
                 assert_eq!(table(&imported, name), table(&source_rows, name), "{name}");
             }
+            // Its cards gained only their kind (migration 0012).
+            let cards: Vec<String> = table(&source_rows, "flashcards")
+                .into_iter()
+                .map(|row| format!("{row} | 'basic' | NULL | NULL"))
+                .collect();
+            assert_eq!(table(&imported, "flashcards"), cards);
             let notes: Vec<String> = table(&source_rows, "notes")
                 .into_iter()
                 .map(|row| format!("{row} | NULL"))
@@ -2063,18 +2190,23 @@ mod tests {
             crate::notes::restore_note(&restored, 1).await.unwrap();
 
             // Each wrote only its state column, which is the last column of
-            // decks and cards: set aside, every row is still the backup's.
-            // Nothing else moved, and no session was opened.
-            fn without_state(rows: Vec<String>) -> Vec<String> {
+            // decks and, before the three cloze columns of 0012, of cards:
+            // set aside, every row is still the backup's. Nothing else
+            // moved, and no session was opened.
+            fn without_state(rows: Vec<String>, from_end: usize) -> Vec<String> {
                 rows.into_iter()
-                    .map(|row| row.rsplit_once(" | ").unwrap().0.to_string())
+                    .map(|row| {
+                        let mut columns: Vec<&str> = row.split(" | ").collect();
+                        columns.remove(columns.len() - 1 - from_end);
+                        columns.join(" | ")
+                    })
                     .collect()
             }
             let after = dump(&restored).await;
-            for name in ["decks", "flashcards"] {
+            for (name, from_end) in [("decks", 0), ("flashcards", 3)] {
                 assert_eq!(
-                    without_state(table(&after, name)),
-                    without_state(table(&imported, name)),
+                    without_state(table(&after, name), from_end),
+                    without_state(table(&imported, name), from_end),
                     "{name}"
                 );
             }

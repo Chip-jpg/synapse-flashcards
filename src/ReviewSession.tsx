@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import {
   getSessionCard,
   reviewCard,
   toCommandError,
+  type ClozePart,
   type Flashcard,
   type Rating,
   type SessionProgress,
@@ -19,6 +20,7 @@ type SessionState =
       progress: SessionProgress;
       againStreak: number;
       offerHelp: boolean;
+      cloze?: ClozePart[] | null;
     }
   | { status: "completed"; cardsReviewed: number };
 
@@ -121,6 +123,7 @@ export function ReviewSession({
             card={state.card}
             againStreak={state.againStreak ?? 0}
             offerHelp={state.offerHelp === true}
+            cloze={state.cloze ?? null}
             onReviewed={reload}
           />
         </>
@@ -181,12 +184,15 @@ function Card({
   card,
   againStreak,
   offerHelp,
+  cloze,
   onReviewed,
 }: {
   sessionId: number;
   card: Flashcard;
   againStreak: number;
   offerHelp: boolean;
+  /** A cloze card as pieces of its text, or null for a front/back card. */
+  cloze: ClozePart[] | null;
   onReviewed: () => void;
 }) {
   const [revealed, setRevealed] = useState(false);
@@ -282,7 +288,9 @@ function Card({
           <h3 id="card-front-label" className="side-label">
             Question
           </h3>
-          <p className="card-text">{card.front}</p>
+          <p className="card-text">
+            {cloze ? <ClozeText parts={cloze} revealed={false} /> : card.front}
+          </p>
         </section>
 
         {revealed && (
@@ -295,7 +303,9 @@ function Card({
             <h3 id="card-back-label" className="side-label">
               Answer
             </h3>
-            <p className="card-text">{card.back}</p>
+            <p className="card-text">
+              {cloze ? <ClozeText parts={cloze} revealed /> : card.back}
+            </p>
           </section>
         )}
       </div>
@@ -360,5 +370,27 @@ function Card({
       {/* After the answer, since the help repeats it. Rating never waits on it. */}
       {revealed && <CardHelp card={card} offered={offerHelp} againStreak={againStreak} />}
     </article>
+  );
+}
+
+/**
+ * A cloze card's text: its gaps as `[...]` (or `[hint]`) in the question, and
+ * filled in and highlighted in the answer.
+ */
+function ClozeText({ parts, revealed }: { parts: ClozePart[]; revealed: boolean }) {
+  return (
+    <>
+      {parts.map((part, index) =>
+        part.type === "text" ? (
+          <Fragment key={index}>{part.text}</Fragment>
+        ) : revealed ? (
+          <mark key={index} className="cloze-answer">
+            {part.answer}
+          </mark>
+        ) : (
+          <span key={index} className="cloze-gap">{`[${part.hint ?? "..."}]`}</span>
+        ),
+      )}
+    </>
   );
 }

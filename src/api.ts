@@ -50,6 +50,45 @@ export type DeckCard = {
   id: number;
   front: string;
   back: string;
+  /** For a cloze card, the text it was made from; `null` (or absent) for a front/back card. */
+  cloze?: CardCloze | null;
+};
+
+/**
+ * Mirrors `CardCloze` in `src-tauri/src/authoring.rs`: the cloze text a card
+ * was made from (every card of one text carries the same `textId` and
+ * `text`), and its own deletion number.
+ */
+export type CardCloze = { textId: number; number: number; text: string };
+
+/**
+ * Mirrors `DeletedCloze` in `src-tauri/src/authoring.rs`: a deleted cloze
+ * card's number, and why it can't be restored now, if it can't.
+ * "numberGone": its number is no longer in its text. "elsewhere": its text's
+ * cards are in another deck now.
+ */
+export type DeletedCloze = { number: number; blocked: "numberGone" | "elsewhere" | null };
+
+/**
+ * Mirrors `ClozePart` in `src-tauri/src/cloze.rs`: a piece of a cloze card
+ * in review. A "gap" is the card's own deletion, hidden until revealed.
+ */
+export type ClozePart =
+  | { type: "text"; text: string }
+  | { type: "gap"; answer: string; hint: string | null };
+
+/**
+ * Mirrors `ClozeChanges` in `src-tauri/src/cloze.rs`: what saving a cloze
+ * text does. `cards` is how many active cards the text has afterwards: those
+ * `kept`, `restored` from Deleted cards, and newly `added`. `deleted` counts
+ * cards whose number left the text.
+ */
+export type ClozeChanges = {
+  cards: number;
+  kept: number;
+  restored: number;
+  added: number;
+  deleted: number;
 };
 
 /**
@@ -64,6 +103,8 @@ export type DeletedCard = {
   back: string;
   /** When it was deleted (ISO-8601 UTC). */
   deletedAt: string;
+  /** For a cloze card; `null` (or absent) for a front/back card. */
+  cloze?: DeletedCloze | null;
 };
 
 /** Mirrors `Flashcard` in `src-tauri/src/study.rs`. */
@@ -102,6 +143,8 @@ export type SessionCard =
       againStreak: number;
       /** Rust's call: offer help with the card once its answer is shown. */
       offerHelp: boolean;
+      /** A cloze card as pieces of its text; `null` (or absent) for a front/back card. */
+      cloze?: ClozePart[] | null;
     }
   | { status: "completed"; cardsReviewed: number };
 
@@ -162,7 +205,7 @@ export type Note = {
  * plus "deck", used only by the frontend's own check that a deck was chosen
  * before asking Rust to add a card to it.
  */
-export type Field = "name" | "description" | "front" | "back" | "title" | "body" | "deck";
+export type Field = "name" | "description" | "front" | "back" | "title" | "body" | "text" | "deck";
 
 /** Mirrors `CommandError` in `src-tauri/src/commands.rs`. */
 export type CommandError = {
@@ -302,6 +345,36 @@ export function createFlashcard(deckId: number, front: string, back: string): Pr
  */
 export function createFlashcards(deckId: number, cards: CardText[]): Promise<DeckDetail> {
   return invoke<DeckDetail>("create_flashcards", { deckId, cards });
+}
+
+/**
+ * Adds a cloze text to a normal deck: one new, immediately due card per
+ * distinct `{{cN::…}}` number. Resolves with the updated deck. A refused text
+ * rejects with kind "invalid" and field "text".
+ */
+export function createCloze(deckId: number, text: string): Promise<DeckDetail> {
+  return invoke<DeckDetail>("create_cloze", { deckId, text });
+}
+
+/** Mirrors `ClozeSaved` in `src-tauri/src/commands.rs`. */
+export type ClozeSaved = { changes: ClozeChanges; deck: DeckDetail };
+
+/**
+ * Replaces the text of a cloze card's cloze. Numbers still in it keep their
+ * cards and schedules; a number that left it has its card deleted; a new
+ * number gets a card (its deleted one back, if it had one in this deck).
+ */
+export function updateCloze(cardId: number, text: string): Promise<ClozeSaved> {
+  return invoke<ClozeSaved>("update_cloze", { cardId, text });
+}
+
+/**
+ * What saving `text` would do, without saving it: as a new text when
+ * `cardId` is null, or as the new text of that card's cloze. Rejects as
+ * saving it would, with kind "invalid" and field "text".
+ */
+export function previewCloze(text: string, cardId: number | null): Promise<ClozeChanges> {
+  return invoke<ClozeChanges>("preview_cloze", { text, cardId });
 }
 
 /** Replaces a card's text, keeping its schedule and history; resolves with its deck. */
@@ -485,6 +558,11 @@ export type CardsFileRow = {
   back: string;
   problem: { field: Field; message: string } | null;
   duplicate: { kind: "inDeck" } | { kind: "inFile"; line: number } | null;
+  /**
+   * For a cloze row (a cloze text in the front, nothing in the back): how
+   * many cards it makes. `null` (or absent) for a front/back row.
+   */
+  clozeCards?: number | null;
 };
 
 /**
@@ -510,7 +588,7 @@ export type ReadCardsFile = CardsFile & { status: "read" };
 /** Mirrors `CardsImported` in `src-tauri/src/cards_csv.rs`. */
 export type CardsImported = {
   added: number;
-  /** Cards left out because their front was already in the deck. */
+  /** Rows left out because their front (or cloze text) was already in the deck. */
   skipped: number;
   /** The deck's active cards afterwards. */
   cardCount: number;

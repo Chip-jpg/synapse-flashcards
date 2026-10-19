@@ -305,7 +305,9 @@ function ImportCards({
 /** What will happen to a row, as its last column says. */
 function rowStatus(row: CardsFileRow, skipDuplicates: boolean): string {
   if (row.problem) return row.problem.message;
-  if (!row.duplicate) return "Ready";
+  if (!row.duplicate) {
+    return row.clozeCards ? `Ready: a cloze text making ${cardCount(row.clozeCards)}` : "Ready";
+  }
   const why =
     row.duplicate.kind === "inDeck"
       ? "Already in this deck"
@@ -334,7 +336,11 @@ function CardsPreview({
   const { deck, file, skipDuplicates, saving } = preview;
   const problems = file.rows.filter((row) => row.problem).length;
   const duplicates = file.rows.filter((row) => !row.problem && row.duplicate).length;
-  const toAdd = rowsToAdd(file.rows, skipDuplicates).length;
+  // A cloze row makes one card per number.
+  const toAdd = rowsToAdd(file.rows, skipDuplicates).reduce(
+    (sum, row) => sum + (row.clozeCards ?? 1),
+    0,
+  );
 
   const read = `Read ${rowCount(file.rows.length)} from ${file.fileName}, separated by ${DELIMITER_NAMES[file.delimiter]}${file.header ? ", after a header row" : ""}.`;
   const counts = [
@@ -394,7 +400,7 @@ function CardsPreview({
                 <tr key={row.line} className={left ? "csv-row-left-out" : undefined}>
                   <td>{row.line}</td>
                   <td className="csv-cell">{row.front}</td>
-                  <td className="csv-cell">{row.back}</td>
+                  <td className="csv-cell">{row.clozeCards ? "(cloze text)" : row.back}</td>
                   <td className={row.problem ? "csv-status csv-status-problem" : "csv-status"}>
                     {rowStatus(row, skipDuplicates)}
                   </td>

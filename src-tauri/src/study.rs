@@ -22,6 +22,7 @@ use fsrs::MemoryState;
 use sqlx::{SqliteConnection, SqlitePool};
 
 use crate::aid;
+use crate::cloze::{self, ClozePart};
 use crate::db::{to_db_time, DbError};
 use crate::optimizer;
 use crate::scheduler::{self, CardState, Rating, Schedule};
@@ -106,6 +107,9 @@ pub enum SessionCard {
         /// Whether to offer help with the card once its answer is shown: it
         /// has been rated Again `aid::HELP_AFTER_AGAINS` times in a row.
         offer_help: bool,
+        /// A cloze card as pieces of its text, its own deletions as gaps
+        /// (`cloze::session_parts`); `null` for a front/back card.
+        cloze: Option<Vec<ClozePart>>,
     },
     Completed {
         cards_reviewed: i64,
@@ -322,6 +326,7 @@ pub async fn session_card(
         if let Some(card) = next_due_card(&mut tx, deck_id, &now).await? {
             let remaining = count_due_cards(&mut tx, deck_id, &now).await?;
             let again_streak = aid::again_streak(&mut tx, card.id).await?;
+            let cloze = cloze::session_parts(&mut tx, card.id).await?;
             tx.commit().await?;
             return Ok(SessionCard::Due {
                 card,
@@ -331,6 +336,7 @@ pub async fn session_card(
                 },
                 again_streak,
                 offer_help: again_streak >= aid::HELP_AFTER_AGAINS,
+                cloze,
             });
         }
         finish_session(&mut tx, session_id, &now).await?;
