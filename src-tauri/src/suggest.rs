@@ -272,8 +272,9 @@ pub(crate) fn words(text: &str) -> Vec<String> {
 /// Only the words count, so "the cell's equator (the metaphase plate)"
 /// matches "The cell's equator - the metaphase plate". A quote may leave out
 /// part of the note with "..." or "…", as long as its pieces come in order.
-/// A quote of fewer than [`MIN_SOURCE_CHARS`] letters doesn't count.
-fn quoted_from(note: &[String], quote: &str) -> bool {
+/// A quote of fewer than [`MIN_SOURCE_CHARS`] letters doesn't count. Also
+/// used to check quiz questions (`quiz.rs`).
+pub(crate) fn quoted_from(note: &[String], quote: &str) -> bool {
     let pieces: Vec<Vec<String>> = quote
         .split("...")
         .flat_map(|part| part.split('…'))
@@ -328,8 +329,9 @@ fn same_word(a: &str, b: &str) -> bool {
 
 /// Whether an answer (its [`words`]) is drawn from its quote: at least half
 /// of its significant words are words of the quote. An answer with fewer than
-/// two significant words passes, since there's too little to tell.
-fn drawn_from(back: &[String], source: &[String]) -> bool {
+/// two significant words passes, since there's too little to tell. Also used
+/// to check quiz questions (`quiz.rs`).
+pub(crate) fn drawn_from(back: &[String], source: &[String]) -> bool {
     let checked: Vec<&String> = back.iter().filter(|word| significant(word)).collect();
     if checked.len() < 2 {
         return true;
