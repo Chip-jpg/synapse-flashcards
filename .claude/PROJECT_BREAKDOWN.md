@@ -493,7 +493,7 @@ Added in v0.5.0. *Notes* → *Import file* reads a PDF, TXT, MD, DOCX or PPTX an
 Added on branch `claude/nightly-2026-10-19-anki-import-t3vnsu` (not yet released). *Backup & restore* → *Decks from Anki* reads an `.apkg` or `.colpkg` and adds its front/back notes as new decks of new cards (`anki.rs`, `AnkiImport.tsx`). No migration; backups unchanged.
 
 - **Reading.** Only the collection entry is unpacked, into a temporary folder removed afterwards: `collection.anki21b` (zstd, via the pure-Rust `ruzstd`) first, then `collection.anki21`, then `collection.anki2` (newer packages add a "please update Anki" stub as `.anki2`). Limits: 2 GB file, 512 MB unpacked collection. A WAL-marked copy is switched to a rollback journal, then opened read-only and immutable on its own connection, never attached to Synapse's database. Schema 11 (JSON in `col`) and 18 (tables, protobuf settings) are both read.
-- **Which notes.** Decided by templates, not names: the first template shows one field on the question and adds one on the answer; other templates repeat or reverse it. Reversible only when Anki made the reversed card. Image occlusion (by its template, or `image-occlusion:` in the text), other types, empty sides and sides over 2,000 characters are left out and counted.
+- **Which notes.** Decided by templates, not names: the first template shows one field on the question and adds one on the answer; other templates repeat or reverse it. Reversible only when Anki made the reversed card. Image occlusion notes become picture cards since branch `claude/sources-image-occlusion-8pmk5r` (section 4.14); other types, empty sides and sides over 2,000 characters are left out and counted.
 - **Cloze notes** (branch `claude/nightly-2026-10-20-anki-cloze-01y1nm`, not yet released). A note type of Anki's cloze kind whose one template asks with exactly one `{{cloze:Field}}` and nothing else becomes a cloze text (section 4.11): HTML to text, then `cloze::validate_cloze`, one card per number, saved by `cloze::insert_cloze` in the same transaction. Anki's syntax is Synapse's. Other answer fields (Back Extra) are dropped; notes where they had text are counted (`extraRemoved`). Texts Synapse refuses (nested deletions, empty answer or hint, number over 999) are counted as `badCloze`; blank and too long as `empty`/`tooLong`. A normal note type using `{{cloze:}}` is "other type" (Anki doesn't number it). Fixtures add two cloze notes (one with a hint, a repeated number, HTML and Back Extra), a nested one, and an image occlusion note. HTML becomes plain text (`html_to_text`); pictures and sounds are dropped and counted.
 - **Saving.** Preview first; Rust holds the package under a token (`AnkiImports`). Saving creates one deck per Anki deck with cards (`Parent::Child` names, made unique against every existing deck including archived, within 100 characters, description "Imported from Anki."), forward cards then reversed ones, in one `BEGIN IMMEDIATE` transaction. All cards start New; Anki scheduling, history, tags and media are not imported. Up to 50,000 cards and 1,000 decks.
 - **Tested against real Anki output.** `src-tauri/testdata/anki/` holds packages exported by Anki 25.09 (PyPI `anki`) in all three formats, and `make_fixtures.py` that made them.
@@ -543,7 +543,7 @@ Added on branch `claude/nightly-2026-10-19-cloze-cards-ddsgr2` (not yet released
 - **CSV.** Export writes each text once, as `front` with an empty `back`. Import treats a row with an empty back and a deletion in the front as a cloze text (checked the same way, one card per number); duplicates are judged against the deck's texts.
 - **Backups.** A v0.7.0 backup (schema 11) restores with every card `basic`. A backup made after 0012 is refused by v0.7.0 and older as from a newer version ("newer schema"), as any newer backup is.
 - **Siblings kept apart** (branch `claude/nightly-2026-10-20-cloze-siblings-k8it5x`, not yet released). Once a cloze card is rated, the other cards of its text aren't due until the next local day (`study::buried_cards!`, from today's `review_logs` since `bury_since`, i.e. `day_bounds` on the computer's zone; UTC in tests). The rated card itself isn't held back, so an Again comes back when due; two siblings both rated today don't hold each other back. Nothing is stored and no schedule changes; no migration. The session, its progress, `record_review` (a held-back card is stale), the Study Desk and deck-screen due counts all use the same rule. The statistics forecast and the retention estimate are about schedules and still count them.
-- **Not done:** no conversion between kinds; no cloze suggestions from Ollama; no image occlusion. Not yet checked on Windows. Anki cloze notes import as cloze texts since the 2026-10-20 branch (section 4.7b).
+- **Not done:** no conversion between kinds; no cloze suggestions from Ollama. Image occlusion is its own kind (section 4.14). Not yet checked on Windows. Anki cloze notes import as cloze texts since the 2026-10-20 branch (section 4.7b).
 
 ## 4.12 Markdown in notes
 
@@ -565,6 +565,20 @@ Added on branch `claude/sources-foundation-yugkjq` (not yet released): phase 1 o
 - **Sources** (`sources.rs`). An imported document kept: its file (`asset_id`), `kind` (as `extract::FileKind`), title, file name, and `source_pages` (the text of each PDF page or slide; one page for other kinds), written together. Only the title changes (rename); delete and restore are soft, as notes. `source_notes` records, once and for good, which source a note was saved from.
 - **Backups** (format 2, section 10.1). Export packs every listed file, checking size and hash as it reads. Restore checks the entries against the backup's own `assets` rows (name, size, hash, type; nothing missing or extra), stages them, adds them to the store before swapping the database, checks every listed file is present after opening, and takes back the files it added if anything fails.
 - **Not done.** No screen yet. Files are never removed, and a restore leaves files only the replaced data used (no clean-up). Not checked on Windows; the `synapse:` scheme was checked in the real app on Linux (a picture stored, shown 1×1, served as `image/png`, missing hash a 404).
+
+## 4.14 Image occlusion cards
+
+Added on branch `claude/sources-image-occlusion-8pmk5r` (not yet released; stacked on the foundation branch, PR into it): phase 2 of "Sources and pictures", for v0.8.0. A third card type, modelled on cloze (section 4.11).
+
+- **Writing one.** *Add card* → *Picture* → choose or paste a picture (kept through `assets.rs`: `choose_picture`/`store_picture`). Boxes are drawn, moved and resized with the mouse, or with arrow keys (Shift resizes, Delete removes). Each box has a card number (boxes sharing one are hidden together) and an optional label; an optional header (≤500) shows above the picture. Mode *Hide all* (`hideAll`) or *Hide one* (`hideOne`). `Occlusion.tsx`.
+- **Schema (migration 0018).** `occlusions (id, asset_id, header, mode, boxes JSON, created_at, updated_at)`: never deleted; `asset_id` must be a kept picture and never changes. Boxes are 0–1 fractions of the picture, 1–200 of them, numbers 1–999, labels ≤200; Rust checks them (`occlusion::validate_occlusion`) and rounds to 4 decimals. Cards are `flashcards` rows with `occlusion_id`/`occlusion_number` set and `kind = 'basic'` (0012's CHECK only allows basic/cloze; widening it means rebuilding `flashcards`), so Rust tells them apart by `occlusion_id`. Triggers: both columns set or neither, fixed once written, one active card per (occlusion, number); 0010/0012's `flashcards_deleted_are_read_only` recreated with the two columns.
+- **Fronts and backs stored** as for cloze: front `header\n[picture: box N]`, back the labels joined by "; " (or `[box N]`). Lists, search, counts and statistics work unchanged.
+- **Editing** (`update_occlusion`) follows cloze's rules by number (keep / soft-delete / restore from the same deck / add). The picture can't change. `update_flashcard` refuses picture cards (`WrongKind`).
+- **Restore, move, bury.** `occlusion::restore_block` (`numberGone`, `elsewhere`), `check_whole_occlusions` (`OcclusionSplit`), and `study::buried_cards!` keeps siblings apart for the day, all as cloze.
+- **Review.** `SessionCard.occlusion` sends the picture, header, mode, number and boxes; the asked box shows `?`, revealed shows its label. Help with a card isn't offered (`offerHelp` false).
+- **CSV export leaves picture cards out** (a spreadsheet can't carry the picture).
+- **Anki** (`anki.rs`). A note type whose template has `image-occlusion` becomes picture cards: `{{cN::image-occlusion:rect:left=…:top=…:width=…:height=…:oi=1}}`; ellipses and polygons become their bounding box, angles are dropped, text shapes skipped (counted as `occlusionApproximated`); `oi=1` → hideAll. Shapes in pixels, or a picture missing from the package, leave the note out (`skipped.imageOcclusion`). The picture is read from the media map (legacy JSON, or the newer zstd protobuf `MediaEntries`, files zstd-compressed) and kept with `assets::put`, once per package picture. Fixtures `occlusion.apkg` and `occlusion-legacy.apkg` (made by `make_fixtures.py` with Anki 25.09).
+- **Not done.** Rectangles only (no freehand or polygons); no picture swap; not checked on Windows or in the real app window.
 
 ______________________________________________________________________
 
@@ -779,6 +793,7 @@ Current README identifies these main files:
 | `markdown.ts`, `NoteMarkdown.tsx` | Reading a note's Markdown and showing it formatted, never as HTML (section 4.12) |
 | `SuggestCards.tsx` | Suggesting cards from a note and checking them before saving |
 | `Quiz.tsx` | A multiple-choice quiz on a note, and adding missed questions as cards |
+| `Occlusion.tsx` | Picture cards (image occlusion): the form to draw boxes, and the picture shown in review |
 | `deckChoices.ts` | The decks a card can be added to, for both card-from-note screens |
 | `Search.tsx` | Search: every card and note at once, with snippets and filters |
 | `Statistics.tsx` | Statistics: reviews per day, true retention, cards by state, due forecast (plain SVG charts) |
@@ -814,11 +829,12 @@ For example, hiding a Restore button is useful UX, but the Rust command must sti
 | `authoring.rs` | Deck/card creation and lifecycle |
 | `notes.rs` | Note lifecycle and note search |
 | `cloze.rs` | Cloze texts: parsing, writing their cards' fronts and backs, editing and restoring by number |
+| `occlusion.rs` | Picture cards (image occlusion): checking boxes, fronts and backs, editing and restoring by number |
 | `suggest.rs` | Asking Ollama for suggested cards, and checking them against the note |
 | `quiz.rs` | Asking Ollama for a multiple-choice quiz on a note, and checking its questions against the note |
 | `extract.rs` | Reading a file's text for import; the PDF helper process |
 | `cards_csv.rs` | Reading and checking CSV/TSV files of cards, saving them all together, and writing a deck as CSV (formula cells protected) |
-| `anki.rs` | Reading an Anki package's collection read-only and adding its front/back notes as new decks |
+| `anki.rs` | Reading an Anki package's collection read-only and adding its front/back, cloze and image occlusion notes (with pictures) as new decks |
 | `assets.rs` | Files kept by hash in `assets/` beside the database, and the `synapse:` scheme that shows them |
 | `sources.rs` | Imported documents kept as sources, with each page's text, and the note saved from each |
 | `export.rs` | Backup creation (format 2: the database and every kept file) |
@@ -970,6 +986,7 @@ The project history gives this high-level progression:
 | `0014` | Desired retention, global and per deck (append-only) |
 | `0015` | Indexes on `review_logs` by card and by time (speed only; no rule or row changes) |
 | `0016` | Kept files (`assets`), sources with their pages, and the note saved from each (branch `claude/sources-foundation-yugkjq`; section 4.13) |
+| `0018` | Image occlusion: `occlusions`, and `occlusion_id`/`occlusion_number` on `flashcards` (branch `claude/sources-image-occlusion-8pmk5r`; section 4.14) |
 
 The first seven are described in the original specification. The final three are established by your later feature reports and repository history.
 
