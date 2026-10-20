@@ -16,6 +16,7 @@ import { SelectField, useFormSave } from "./forms";
 import { CheckIcon, SparkleIcon } from "./icons";
 import { noteParts, SUGGESTION_NOTE_MAX_CHARS } from "./noteParts";
 import { partLabel, preferredModel, rememberModel } from "./SuggestCards";
+import { QuotePageLink, QuotesFromSource } from "./SourcePages";
 import { Message, useFocusOnMount } from "./ui";
 import { useUnsavedChanges } from "./unsaved";
 
@@ -359,43 +360,53 @@ function Quizzer({
         />
       )}
       {stage.step === "taking" && (
-        <TakeQuestion
-          // A fresh question, and with it fresh focus and a fresh key listener.
-          key={`${round}-${stage.current}`}
-          intro={
-            stage.current === 0
-              ? introText(stage.model, stage.questions.length, stage.leftOut, stage.unsupported)
-              : null
-          }
-          question={stage.questions[stage.current]}
-          position={stage.current}
-          count={stage.questions.length}
-          chosen={stage.picked[stage.current] ?? null}
-          onPick={(option) =>
-            setStage((current) =>
-              current.step === "taking" && current.picked.length === current.current
-                ? { ...current, picked: [...current.picked, option] }
-                : current
-            )
-          }
-          onNext={() => {
-            if (stage.current + 1 >= stage.questions.length) {
-              show({ step: "summary", questions: stage.questions, picked: stage.picked });
-            } else {
-              setStage({ ...stage, current: stage.current + 1 });
+        <QuotesFromSource
+          noteId={note.id}
+          quotes={stage.questions.map((question) => question.source)}
+        >
+          <TakeQuestion
+            // A fresh question, and with it fresh focus and a fresh key listener.
+            key={`${round}-${stage.current}`}
+            intro={
+              stage.current === 0
+                ? introText(stage.model, stage.questions.length, stage.leftOut, stage.unsupported)
+                : null
             }
-          }}
-        />
+            question={stage.questions[stage.current]}
+            position={stage.current}
+            count={stage.questions.length}
+            chosen={stage.picked[stage.current] ?? null}
+            onPick={(option) =>
+              setStage((current) =>
+                current.step === "taking" && current.picked.length === current.current
+                  ? { ...current, picked: [...current.picked, option] }
+                  : current
+              )
+            }
+            onNext={() => {
+              if (stage.current + 1 >= stage.questions.length) {
+                show({ step: "summary", questions: stage.questions, picked: stage.picked });
+              } else {
+                setStage({ ...stage, current: stage.current + 1 });
+              }
+            }}
+          />
+        </QuotesFromSource>
       )}
       {stage.step === "summary" && (
-        <Summary
-          key={round}
-          questions={stage.questions}
-          picked={stage.picked}
-          onSaved={onSaved}
-          onAgain={() => show(choose("start"))}
-          onDone={onCancel}
-        />
+        <QuotesFromSource
+          noteId={note.id}
+          quotes={stage.questions.map((question) => question.source)}
+        >
+          <Summary
+            key={round}
+            questions={stage.questions}
+            picked={stage.picked}
+            onSaved={onSaved}
+            onAgain={() => show(choose("start"))}
+            onDone={onCancel}
+          />
+        </QuotesFromSource>
       )}
     </section>
   );
@@ -581,6 +592,8 @@ function TakeQuestion({
     function onKeyDown(event: KeyboardEvent) {
       if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return;
       if (event.repeat || isTypingTarget(event.target)) return;
+      // A source's page open over the question has its own keys.
+      if (event.target instanceof Element && event.target.closest("dialog")) return;
       if (!answered) {
         const option = OPTION_KEYS.indexOf(event.key);
         if (option === -1 || option >= question.options.length) return;
@@ -696,6 +709,7 @@ function TakeQuestion({
           <figure className="draft-source">
             <figcaption className="side-label">From your note</figcaption>
             <blockquote className="draft-quote">{question.source}</blockquote>
+            <QuotePageLink quote={question.source} />
             {question.unfamiliar.length > 0 && (
               <p className="draft-check">
                 {`Not in your note: ${question.unfamiliar.join(", ")}. The answer may say more than your note does.`}
@@ -872,6 +886,7 @@ function AddMissed({
                 <figure className="draft-source">
                   <figcaption className="side-label">From your note</figcaption>
                   <blockquote className="draft-quote">{question.source}</blockquote>
+                  <QuotePageLink quote={question.source} />
                 </figure>
                 <label className="check-field">
                   <input

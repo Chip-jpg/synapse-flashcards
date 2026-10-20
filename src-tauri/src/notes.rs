@@ -268,6 +268,18 @@ pub async fn create_note(
     body: &str,
     now: DateTime<Utc>,
 ) -> Result<Note, NoteError> {
+    let mut conn = pool.acquire().await?;
+    insert_note(&mut conn, title, body, now).await
+}
+
+/// [`create_note`] on the caller's connection, so a note can be saved inside
+/// a larger transaction (as with its source, `sources::create_note`).
+pub(crate) async fn insert_note(
+    conn: &mut SqliteConnection,
+    title: &str,
+    body: &str,
+    now: DateTime<Utc>,
+) -> Result<Note, NoteError> {
     let text = validate_note(title, body)?;
     let note = sqlx::query_as::<_, Note>(
         "INSERT INTO notes (title, body, created_at, updated_at)
@@ -277,7 +289,7 @@ pub async fn create_note(
     .bind(text.title)
     .bind(text.body)
     .bind(to_db_time(now))
-    .fetch_one(pool)
+    .fetch_one(conn)
     .await?;
     Ok(note)
 }

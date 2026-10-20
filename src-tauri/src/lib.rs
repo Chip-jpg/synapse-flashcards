@@ -134,7 +134,13 @@ pub fn run() {
             commands::delete_source,
             commands::restore_source,
             commands::link_note_to_source,
-            commands::get_note_source
+            commands::get_note_source,
+            commands::create_note_from_source,
+            commands::get_source_notes,
+            commands::locate_quotes,
+            commands::get_quoted_page,
+            commands::save_source_copy,
+            commands::open_source_original
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

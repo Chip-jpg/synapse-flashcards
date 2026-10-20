@@ -9,6 +9,7 @@ import { ReviewSession } from "./ReviewSession";
 import { NEW_SEARCH, SearchScreen, type SearchCriteria } from "./Search";
 import { Settings } from "./Settings";
 import { Shell, type Place } from "./Shell";
+import { SourcesArea, type SourceNoteDraft } from "./Sources";
 import { StatisticsScreen } from "./Statistics";
 import { DiscardDialog, UnsavedChangesProvider, useUnsavedTracker } from "./unsaved";
 import "./App.css";
@@ -21,7 +22,16 @@ type View =
   | { screen: "deck"; deckId: number; justCreated: boolean; cardId?: number; search?: FromSearch }
   | { screen: "session"; sessionId: number; deckName: string }
   | { screen: "search"; criteria: SearchCriteria; returnTo: string | null }
-  | { screen: "notes"; noteId?: number; search?: FromSearch }
+  | {
+      screen: "notes";
+      noteId?: number;
+      search?: FromSearch;
+      /** The source the note was opened from, to go back to. */
+      fromSource?: number;
+      /** A new note being written from a source, to go back to if cancelled. */
+      draft?: SourceNoteDraft;
+    }
+  | { screen: "sources"; sourceId?: number; notice?: string | null }
   | { screen: "stats" }
   | { screen: "archived" }
   | { screen: "backup" }
@@ -34,6 +44,7 @@ const PLACE_VIEWS: Record<Place, View> = {
   desk: DECKS,
   search: { screen: "search", criteria: NEW_SEARCH, returnTo: null },
   notes: { screen: "notes" },
+  sources: { screen: "sources" },
   stats: { screen: "stats" },
   archived: { screen: "archived" },
   backup: { screen: "backup" },
@@ -56,7 +67,13 @@ function locate(view: View): { place: Place; atPlace: boolean; trail: string[] }
     case "notes":
       return view.search
         ? { place: "search", atPlace: false, trail: ["Search", "Note"] }
-        : { place: "notes", atPlace: true, trail: ["Synapse", "Notes"] };
+        : view.fromSource !== undefined || view.draft
+          ? { place: "sources", atPlace: false, trail: ["Sources", "Note"] }
+          : { place: "notes", atPlace: true, trail: ["Synapse", "Notes"] };
+    case "sources":
+      return view.sourceId === undefined
+        ? { place: "sources", atPlace: true, trail: ["Synapse", "Sources"] }
+        : { place: "sources", atPlace: false, trail: ["Sources", "Source"] };
     case "stats":
       return { place: "stats", atPlace: true, trail: ["Synapse", "Statistics"] };
     case "archived":
@@ -193,6 +210,7 @@ function App() {
             key={visits}
             onBack={() => show({ screen: "decks", notice: null, fromNotes: true })}
             onOpenDeck={(deckId) => show({ screen: "deck", deckId, justCreated: false })}
+            onOpenSource={(sourceId) => show({ screen: "sources", sourceId })}
             openNote={
               view.search && view.noteId !== undefined
                 ? {
@@ -200,8 +218,37 @@ function App() {
                     backLabel: "Back to search",
                     onBack: () => backToSearch(view.search!),
                   }
+                : view.fromSource !== undefined && view.noteId !== undefined
+                  ? {
+                      noteId: view.noteId,
+                      backLabel: "Back to source",
+                      onBack: () => show({ screen: "sources", sourceId: view.fromSource }),
+                    }
+                  : undefined
+            }
+            newFromSource={
+              view.draft
+                ? {
+                    draft: view.draft,
+                    onCancel: () => show({ screen: "sources", sourceId: view.draft!.sourceId }),
+                  }
                 : undefined
             }
+          />
+        )}
+        {view.screen === "sources" && (
+          <SourcesArea
+            key={`${restores}:${visits}:${view.sourceId ?? ""}`}
+            openSource={
+              view.sourceId === undefined
+                ? undefined
+                : { sourceId: view.sourceId, notice: view.notice ?? null }
+            }
+            onBack={() => show(DECKS)}
+            onOpenNote={(noteId, sourceId) =>
+              show({ screen: "notes", noteId, fromSource: sourceId })
+            }
+            onMakeNote={(draft) => show({ screen: "notes", draft })}
           />
         )}
         {view.screen === "stats" && <StatisticsScreen key={`${restores}:${visits}`} />}

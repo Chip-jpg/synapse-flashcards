@@ -17,7 +17,7 @@ const MEIOSIS: DeletedNote = {
 
 function openNotes(handlers: Record<string, Handler> = {}) {
   const backend = fakeBackend(handlers);
-  render(<NotesArea onBack={vi.fn()} onOpenDeck={vi.fn()} />);
+  render(<NotesArea onBack={vi.fn()} onOpenDeck={vi.fn()} onOpenSource={vi.fn()} />);
   return backend;
 }
 

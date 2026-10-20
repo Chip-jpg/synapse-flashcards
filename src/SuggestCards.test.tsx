@@ -37,7 +37,7 @@ function text({ front, back }: CardText): CardText {
 async function openSuggestions(handlers: Record<string, Handler> = {}) {
   const backend = fakeBackend(handlers);
   const user = userEvent.setup();
-  const view = render(<NotesArea onBack={vi.fn()} onOpenDeck={vi.fn()} />);
+  const view = render(<NotesArea onBack={vi.fn()} onOpenDeck={vi.fn()} onOpenSource={vi.fn()} />);
   await user.click(await screen.findByRole("button", { name: "Open note" }));
   await user.click(await screen.findByRole("button", { name: "Suggest cards" }));
   return { ...backend, ...view, user };
