@@ -1,4 +1,4 @@
-import { useRef, useState, type ClipboardEvent, type DragEvent } from "react";
+import { useRef, useState, type ClipboardEvent } from "react";
 import { choosePicture, keptFileUrl, storePicture, toCommandError, type Asset } from "./api";
 import { PictureIcon, TrashIcon } from "./icons";
 
@@ -83,10 +83,18 @@ export function PictureGallery({
   );
 }
 
-/** The picture files on a clipboard or in a drop, if any. */
+/** The picture files on a clipboard, if any. */
 function pictureFiles(data: DataTransfer | null): File[] {
   if (!data) return [];
-  return Array.from(data.files).filter((file) => file.type.startsWith("image/"));
+  const files = Array.from(data.files ?? []);
+  // Some webviews put a pasted picture only in `items`.
+  if (files.length === 0) {
+    for (const item of Array.from(data.items ?? [])) {
+      const file = item.kind === "file" ? item.getAsFile() : null;
+      if (file) files.push(file);
+    }
+  }
+  return files.filter((file) => file.type.startsWith("image/"));
 }
 
 async function bytesOf(file: File): Promise<Uint8Array> {
@@ -94,11 +102,17 @@ async function bytesOf(file: File): Promise<Uint8Array> {
 }
 
 /**
- * Adding pictures to a list: from a file chosen in the OS dialog, or from
- * pasted or dropped files. Each is kept by Rust first (which checks its bytes
- * and size) and then added to the list; the list itself is only saved with
- * the note or card. `onPaste` can also be put on the text fields beside the
- * list, so a picture pasted while typing lands in it.
+ * Adding pictures to a list: from a file chosen in the OS dialog, or pasted.
+ * Each is kept by Rust first (which checks its bytes and size) and then added
+ * to the list; the list itself is only saved with the note or card. `onPaste`
+ * can also be put on the text fields beside the list, so a picture pasted
+ * while typing lands in it.
+ *
+ * Dropping a file isn't offered: Tauri's window takes file drops itself, so
+ * the page never sees the file. Pasting relies on the webview handing the
+ * page the clipboard's picture, as Chromium (WebView2, on Windows) does for
+ * web pages; WebKitGTK (Linux) was seen to hand over nothing, so there only
+ * *Add picture* works.
  */
 export function usePictureAdder({
   pictures,
@@ -172,22 +186,14 @@ export function usePictureAdder({
     addFiles(files);
   }
 
-  function onDrop(event: DragEvent) {
-    const files = pictureFiles(event.dataTransfer);
-    if (files.length === 0) return;
-    event.preventDefault();
-    addFiles(files);
-  }
-
-  return { adding, error, choose, onPaste, onDrop, clearError: () => setError(null) };
+  return { adding, error, choose, onPaste, clearError: () => setError(null) };
 }
 
 export type PictureAdder = ReturnType<typeof usePictureAdder>;
 
 /**
  * A form's pictures: the ones chosen so far, each with *Move earlier* and
- * *Remove*, and *Add picture*. Pictures can also be pasted or dropped onto
- * it. `adder` comes from `usePictureAdder`, so the form can share its paste
+ * *Remove*, and *Add picture*. Pictures can also be pasted into it. `adder` comes from `usePictureAdder`, so the form can share its paste
  * handling with its text fields.
  */
 export function PictureField({
@@ -234,8 +240,6 @@ export function PictureField({
       role="group"
       aria-labelledby={`${id}-label`}
       onPaste={adder.onPaste}
-      onDragOver={(event) => event.preventDefault()}
-      onDrop={adder.onDrop}
     >
       <span id={`${id}-label`} className="field-label">
         {label}
@@ -293,7 +297,7 @@ export function PictureField({
           <PictureIcon />
           {adder.adding ? "Adding picture…" : "Add picture"}
         </button>
-        <span className="field-hint">or paste or drop one here</span>
+        <span className="field-hint">or paste one while writing</span>
       </div>
       {shownError && (
         <p id={errorId} className="field-error" role="alert">

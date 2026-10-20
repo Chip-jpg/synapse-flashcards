@@ -144,6 +144,18 @@ as a draft: if you discard, what you typed is gone.
 optional) → *Open deck* → *Add card* → fill in front and back. Names must be unique ignoring case;
 line breaks inside a card are kept as you typed them.
 
+**Pictures in notes and on cards.** A note can show up to 20 pictures under its text, and each side
+of a front/back card up to 4 under that side's text. In the note or card form, *Add picture* opens
+the system's file window (PNG, JPEG, GIF or WebP, up to 20 MB); a picture pasted while writing is
+added too, where the system lets the app read it (see *Current limitations*). Each picture has
+*Move earlier* and *Remove*, and the list is saved with the text, in that order, when you save;
+changing the pictures counts as an unsaved change. A note shows its pictures under the text; the
+deck's card list shows small ones under each side; in review the front's pictures come with the
+question and the back's with the answer. A picture is always shown from Synapse's own copy, never
+from a path or address in the text (Markdown's `![…](…)` is still only described). Removing a
+picture from a note or card doesn't delete the file Synapse keeps, so a deleted note or card, or a
+restored backup, still has its pictures. Cloze cards don't take pictures.
+
 **Cloze cards.** In *Add card*, choose *Cloze* and write a text with the parts to hide marked as
 `{{c1::answer}}`, or `{{c1::answer::hint}}` to show the hint in its place. Each distinct number is
 its own card with its own schedule and review history; the same number used twice hides both parts
@@ -250,9 +262,8 @@ each named by the SHA-256 of its bytes, so a file is stored once however often i
 is checked against its bytes, not its name: a picture must really be a PNG, JPEG, GIF or WebP (SVG
 is refused), a PDF must start as one, Word and PowerPoint files must be zip packages, and text must
 be none of those. A file is written before the database lists it and never changes afterwards; the
-app shows pictures and PDFs only through its own `synapse:` address, by hash. The screens that
-use them (sources, pictures in notes and on cards, image occlusion) are still to come; for now
-Synapse has the storage, the commands behind them, and backups that carry the files.
+app shows pictures and PDFs only through its own `synapse:` address, by hash. Pictures in notes
+and on cards (migration 0017) use them; the Sources screen and image occlusion are still to come.
 
 **Import cards from a spreadsheet.** *Backup & restore* → *Cards in a spreadsheet* → choose a deck
 → *Choose a CSV file*. The front goes in the first column and the back in the second; other columns
@@ -430,6 +441,11 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   restore leaves files only the replaced data used in the `assets` folder, unused (they take space,
   nothing else). Kept files are limited to 64 MiB each (20 MiB for a picture) and 2 GiB and 60,000
   files in all, so a backup stays a plain zip.
+- **Pictures can't be dropped in, and pasting one depends on the system.** Tauri's window takes
+  dropped files itself, so the forms offer *Add picture* and pasting only. Pasting a picture was
+  tried only on Linux (WebKitGTK), where the page is handed no picture at all, so there only *Add
+  picture* works; on Windows (WebView2) it is expected to work but hasn't been tried. Pictures
+  aren't exported to CSV or brought in from Anki.
 - **Restoring is per deck.** *Deleted cards* restores one card, or with *Restore all* every deleted
   card of that deck at once; there's no choosing several, no undo of a restore beyond deleting the
   cards again, and no way to move a card to a different deck on the way back.
@@ -510,6 +526,8 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   `CardHelp.tsx` is the review screen's *Get help with this card*,
   `SuggestCards.tsx` is the note screen's *Suggest cards*, `Quiz.tsx` its *Quiz me*, and
   `noteParts.ts` splits a note too long to suggest from whole into parts.
+  `pictures.tsx` shows kept pictures and is the forms' picture field (`KeptPicture`,
+  `PictureGallery`, `PictureField`, `usePictureAdder`).
   `CardsCsv.tsx` and `AnkiImport.tsx` are *Backup & restore*'s *Cards in a spreadsheet* and
   *Decks from Anki*.
   `unsaved.tsx` tracks which form holds unsaved text and asks before it's discarded. Tests sit
@@ -551,9 +569,11 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   - `assets.rs` — the files Synapse keeps, named by hash in `assets/` beside the database: telling
     what a file is from its bytes, adding one, and serving pictures and PDFs on the `synapse:`
     scheme.
+  - `pictures.rs` — the pictures a note, or a side of a card, shows: checking a list of them and
+    saving it with the note or card (`note_pictures`, `card_pictures`).
   - `sources.rs` — imported documents kept as sources, with the text of each page, and the note
     saved from each.
   - `export.rs` / `import.rs` — writing a `.zip` backup with every kept file, and checking and
     restoring one (kept files included).
-- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0016`), embedded in the
+- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0017`), embedded in the
   binary at compile time.
