@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   archiveDeck,
   createCloze,
@@ -319,7 +319,19 @@ function DeckView({
   // deck remounts it (see `ViewState`), which clears both.
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<ReadonlySet<number>>(new Set());
-  const shown = matchingCards(deck.cards, query);
+  // Kept between renders, so ticking a card doesn't search the deck again.
+  const shown = useMemo(() => matchingCards(deck.cards, query), [deck.cards, query]);
+  // Each cloze text's cards, in the deck's order, worked out once per deck.
+  const cardsOfText = useMemo(() => {
+    const byText = new Map<number, number[]>();
+    for (const card of deck.cards) {
+      if (!card.cloze) continue;
+      const ids = byText.get(card.cloze.textId);
+      if (ids) ids.push(card.id);
+      else byText.set(card.cloze.textId, [card.id]);
+    }
+    return byText;
+  }, [deck.cards]);
   // In the deck's order, which is the order they are sent in.
   const selectedIds = deck.cards.map((card) => card.id).filter((id) => selected.has(id));
   const shownSelected = shown.filter((card) => selected.has(card.id)).length;
@@ -330,9 +342,8 @@ function DeckView({
    * the same cloze text, which move only together, or the card alone.
    */
   function withSiblings(card: DeckCard): number[] {
-    const cloze = card.cloze;
-    if (!cloze) return [card.id];
-    return deck.cards.filter((each) => each.cloze?.textId === cloze.textId).map((each) => each.id);
+    if (!card.cloze) return [card.id];
+    return cardsOfText.get(card.cloze.textId) ?? [card.id];
   }
 
   function toggle(card: DeckCard) {

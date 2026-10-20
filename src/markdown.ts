@@ -134,11 +134,12 @@ function parseBlocks(lines: string[], depth: number): Block[] {
       endParagraph();
       const [, indent, marks, info] = fence;
       const closing = new RegExp(`^ {0,3}${marks[0]}{${marks.length},}[ \\t]*$`);
+      // Indentation up to the opening fence's is taken off each line.
+      const outdent = new RegExp(`^ {0,${indent.length}}`);
       const code: string[] = [];
       at++;
       while (at < lines.length && !closing.test(lines[at])) {
-        // Indentation up to the opening fence's is taken off each line.
-        code.push(lines[at].replace(new RegExp(`^ {0,${indent.length}}`), ""));
+        code.push(lines[at].replace(outdent, ""));
         at++;
       }
       at++; // The closing fence, or the end of the text.
