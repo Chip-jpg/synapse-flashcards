@@ -493,7 +493,8 @@ Added in v0.5.0. *Notes* → *Import file* reads a PDF, TXT, MD, DOCX or PPTX an
 Added on branch `claude/nightly-2026-10-19-anki-import-t3vnsu` (not yet released). *Backup & restore* → *Decks from Anki* reads an `.apkg` or `.colpkg` and adds its front/back notes as new decks of new cards (`anki.rs`, `AnkiImport.tsx`). No migration; backups unchanged.
 
 - **Reading.** Only the collection entry is unpacked, into a temporary folder removed afterwards: `collection.anki21b` (zstd, via the pure-Rust `ruzstd`) first, then `collection.anki21`, then `collection.anki2` (newer packages add a "please update Anki" stub as `.anki2`). Limits: 2 GB file, 512 MB unpacked collection. A WAL-marked copy is switched to a rollback journal, then opened read-only and immutable on its own connection, never attached to Synapse's database. Schema 11 (JSON in `col`) and 18 (tables, protobuf settings) are both read.
-- **Which notes.** Decided by templates, not names: the first template shows one field on the question and adds one on the answer; other templates repeat or reverse it. Reversible only when Anki made the reversed card. Cloze (incl. image occlusion), other types, empty sides and sides over 2,000 characters are left out and counted. HTML becomes plain text (`html_to_text`); pictures and sounds are dropped and counted.
+- **Which notes.** Decided by templates, not names: the first template shows one field on the question and adds one on the answer; other templates repeat or reverse it. Reversible only when Anki made the reversed card. Image occlusion (by its template, or `image-occlusion:` in the text), other types, empty sides and sides over 2,000 characters are left out and counted.
+- **Cloze notes** (branch `claude/nightly-2026-10-20-anki-cloze-01y1nm`, not yet released). A note type of Anki's cloze kind whose one template asks with exactly one `{{cloze:Field}}` and nothing else becomes a cloze text (section 4.11): HTML to text, then `cloze::validate_cloze`, one card per number, saved by `cloze::insert_cloze` in the same transaction. Anki's syntax is Synapse's. Other answer fields (Back Extra) are dropped; notes where they had text are counted (`extraRemoved`). Texts Synapse refuses (nested deletions, empty answer or hint, number over 999) are counted as `badCloze`; blank and too long as `empty`/`tooLong`. A normal note type using `{{cloze:}}` is "other type" (Anki doesn't number it). Fixtures add two cloze notes (one with a hint, a repeated number, HTML and Back Extra), a nested one, and an image occlusion note. HTML becomes plain text (`html_to_text`); pictures and sounds are dropped and counted.
 - **Saving.** Preview first; Rust holds the package under a token (`AnkiImports`). Saving creates one deck per Anki deck with cards (`Parent::Child` names, made unique against every existing deck including archived, within 100 characters, description "Imported from Anki."), forward cards then reversed ones, in one `BEGIN IMMEDIATE` transaction. All cards start New; Anki scheduling, history, tags and media are not imported. Up to 50,000 cards and 1,000 decks.
 - **Tested against real Anki output.** `src-tauri/testdata/anki/` holds packages exported by Anki 25.09 (PyPI `anki`) in all three formats, and `make_fixtures.py` that made them.
 - **CSV formulas (v0.7.0's known issue, fixed).** `cards_csv.rs` exports a cell starting with `=`, `+`, `-`, `@`, tab or CR with a `'` in front (`protect_formula`), and also one that starts with `'` then such a character. Import strips exactly one such `'` (`unprotect_formula`), so Synapse's own exports round-trip; any other cell is read as is.
@@ -541,7 +542,7 @@ Added on branch `claude/nightly-2026-10-19-cloze-cards-ddsgr2` (not yet released
 - **Moving.** The cards of one text stay in one deck: `move_flashcards` refuses a selection with only some of a text's active cards (`ClozeSplit`), and ticking one selects its siblings.
 - **CSV.** Export writes each text once, as `front` with an empty `back`. Import treats a row with an empty back and a deletion in the front as a cloze text (checked the same way, one card per number); duplicates are judged against the deck's texts.
 - **Backups.** A v0.7.0 backup (schema 11) restores with every card `basic`. A backup made after 0012 is refused by v0.7.0 and older as from a newer version ("newer schema"), as any newer backup is.
-- **Not done:** siblings aren't buried (two cards of one text can come up in the same session, one after the other); no conversion between kinds; no cloze suggestions from Ollama; no image occlusion. Not yet checked on Windows.
+- **Not done:** siblings aren't buried (two cards of one text can come up in the same session, one after the other); no conversion between kinds; no cloze suggestions from Ollama; no image occlusion. Not yet checked on Windows. Anki cloze notes import as cloze texts since the 2026-10-20 branch (section 4.7b).
 
 ______________________________________________________________________
 
@@ -1114,7 +1115,7 @@ The current README is explicit about these gaps.
 - Folders.
 - Bulk actions beyond deleting and moving a deck's selected cards (and *Restore all*).
 - Card movement between decks through restoration.
-- External deck formats beyond CSV/TSV and Anki packages (Anki: front/back text only, section 4.7b).
+- External deck formats beyond CSV/TSV and Anki packages (Anki: front/back and cloze text only, section 4.7b).
 
 
 ### Analytics and personalization

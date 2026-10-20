@@ -18,7 +18,7 @@ const cards = (number: number) => count(number, "card", "cards");
 const notes = (number: number) => count(number, "note", "notes");
 const decks = (number: number) => count(number, "new deck", "new decks");
 
-/** The cards adding would create: one per note, plus the reversed ones. */
+/** The cards adding would create, plus the reversed ones. */
 function cardTotal(file: ReadAnkiFile, bothDirections: boolean): number {
   return file.decks.reduce(
     (total, deck) => total + deck.cards + (bothDirections ? deck.reversible : 0),
@@ -29,9 +29,11 @@ function cardTotal(file: ReadAnkiFile, bothDirections: boolean): number {
 /** Why notes were left out, as one sentence, or null when none were. */
 function leftOut(skipped: AnkiSkipped): string | null {
   const reasons = [
-    skipped.cloze > 0 && `${notes(skipped.cloze)} with cloze deletions`,
+    skipped.imageOcclusion > 0 && `${notes(skipped.imageOcclusion)} of image occlusion`,
+    skipped.badCloze > 0 &&
+      `${notes(skipped.badCloze)} with cloze deletions Synapse can't read (nested, or with an empty answer)`,
     skipped.otherNoteType > 0 &&
-      `${notes(skipped.otherNoteType)} of a type that isn't one front and one back`,
+      `${notes(skipped.otherNoteType)} of a type that isn't one front and one back, or cloze`,
     skipped.empty > 0 && `${notes(skipped.empty)} with an empty side (perhaps only a picture)`,
     skipped.tooLong > 0 && `${notes(skipped.tooLong)} with a side over 2,000 characters`,
     skipped.noCard > 0 && `${notes(skipped.noCard)} with no card in Anki`,
@@ -46,8 +48,8 @@ type ImportState =
   | { kind: "preview"; file: ReadAnkiFile; bothDirections: boolean; saving: boolean };
 
 /**
- * Decks from Anki, on the Backup & restore screen: adding the front/back
- * notes of an Anki package as new decks of new cards. Rust opens the file
+ * Decks from Anki, on the Backup & restore screen: adding the front/back and
+ * cloze notes of an Anki package as new decks of new cards. Rust opens the file
  * window, reads the package and holds it; this shows what it found and asks
  * before anything is added. A preview on screen counts as unsaved changes.
  */
@@ -164,9 +166,9 @@ export function AnkiImport({
         </h3>
       </div>
       <p className="field-hint">
-        Add the cards of an Anki package (.apkg or .colpkg) as new decks. Only notes with one
-        front and one back come across, as text. Anki's schedule, review history, pictures and
-        sounds aren't imported, so every card starts as new.
+        Add the cards of an Anki package (.apkg or .colpkg) as new decks. Notes with one front
+        and one back, and cloze notes, come across as text. Anki's schedule, review history,
+        pictures and sounds aren't imported, so every card starts as new.
       </p>
 
       {state.kind === "preview" ? (
@@ -252,6 +254,11 @@ function AnkiPreview({
       {file.mediaRemoved > 0 && (
         <p className="field-hint">
           {`${count(file.mediaRemoved, "card has", "cards have")} a picture or sound, which is left out. Their text is kept.`}
+        </p>
+      )}
+      {file.extraRemoved > 0 && (
+        <p className="field-hint">
+          {`${count(file.extraRemoved, "cloze note has", "cloze notes have")} text in another field, such as Back Extra, which is left out.`}
         </p>
       )}
       {file.reviewed > 0 && (

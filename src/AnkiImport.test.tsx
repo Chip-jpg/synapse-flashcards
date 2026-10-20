@@ -30,8 +30,9 @@ const FILE: ReadAnkiFile = {
     },
   ],
   notes: 9,
-  skipped: { cloze: 2, otherNoteType: 1, empty: 1, tooLong: 0, noCard: 0 },
+  skipped: { imageOcclusion: 2, badCloze: 1, otherNoteType: 1, empty: 1, tooLong: 0, noCard: 0 },
   mediaRemoved: 1,
+  extraRemoved: 2,
   reviewed: 3,
 };
 
@@ -83,7 +84,12 @@ describe("importing decks from Anki", () => {
     );
     expect(
       screen.getByText(
-        "Left out: 2 notes with cloze deletions, 1 note of a type that isn't one front and one back, 1 note with an empty side (perhaps only a picture).",
+        "Left out: 2 notes of image occlusion, 1 note with cloze deletions Synapse can't read (nested, or with an empty answer), 1 note of a type that isn't one front and one back, or cloze, 1 note with an empty side (perhaps only a picture).",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        "2 cloze notes have text in another field, such as Back Extra, which is left out.",
       ),
     ).toBeTruthy();
     expect(
@@ -139,8 +145,9 @@ describe("importing decks from Anki", () => {
       read_anki_package: () => ({
         ...FILE,
         decks: [FILE.decks[0]],
-        skipped: { cloze: 0, otherNoteType: 0, empty: 0, tooLong: 0, noCard: 0 },
+        skipped: { imageOcclusion: 0, badCloze: 0, otherNoteType: 0, empty: 0, tooLong: 0, noCard: 0 },
         mediaRemoved: 0,
+        extraRemoved: 0,
         reviewed: 0,
       }),
     });
@@ -150,6 +157,7 @@ describe("importing decks from Anki", () => {
     expect(screen.queryByRole("checkbox")).toBeNull();
     expect(screen.queryByText(/^Left out/)).toBeNull();
     expect(screen.queryByText(/studied in Anki/)).toBeNull();
+    expect(screen.queryByText(/Back Extra/)).toBeNull();
   });
 
   it("sends one save however often Add is pressed, and the spreadsheet decks reload", async () => {

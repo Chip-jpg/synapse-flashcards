@@ -12,7 +12,9 @@ collection). Copy those three here. No media is included.
 
 What the collection holds, as `anki.rs`'s tests expect:
 - Biology: a Basic card with HTML, a Basic card with a 2,001-character back
-  (too long), and a cloze note.
+  (too long), a cloze note with one deletion, one with two numbers (one used
+  twice, one with a hint), HTML and a "Back Extra", one with nested
+  deletions (which Synapse doesn't accept), and an image occlusion note.
 - Biology::Cells: a Basic card with entities and divs, one with an image and a
   sound beside text, and one whose front is only an image (empty).
 - French: "Basic (and reversed card)", "Basic (optional reversed card)" with
@@ -53,6 +55,34 @@ add("Basic (optional reversed card)", french, "chien", "dog", "y")
 add("Basic (optional reversed card)", french, "oiseau", "bird", "")
 add("Basic (type in the answer)", french, "maison", "house")
 add("Cloze", biology, "{{c1::Mitosis}} divides cells", "")
+add(
+    "Cloze",
+    biology,
+    "{{c1::Ribosomes}} make {{c2::proteins::what?}}<br>in the <b>{{c1::cytoplasm}}</b>",
+    "Also on the <i>rough ER</i>",
+)
+add("Cloze", biology, "{{c1::Outer {{c2::inner}} text}}", "")
+
+# Image occlusion needs its picture: a 1x1 PNG, which isn't exported.
+picture = os.path.join(out, "work", "cell.png")
+with open(picture, "wb") as file:
+    file.write(
+        bytes.fromhex(
+            "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+            "1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082"
+        )
+    )
+occlusion = models.by_name("Image Occlusion")
+col.add_image_occlusion_note(
+    notetype_id=occlusion["id"],
+    image_path=picture,
+    occlusions="{{c1::image-occlusion:rect:left=.1:top=.1:width=.3:height=.3:oi=1}}",
+    header="Cell",
+    back_extra="",
+    tags=[],
+)
+io_note = col.get_note(col.find_notes('"note:Image Occlusion"')[0])
+col.set_deck([card.id for card in io_note.cards()], biology)
 
 vocab = models.new("Vocab")
 for name in ["Word", "Meaning", "Example"]:
