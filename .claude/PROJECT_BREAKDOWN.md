@@ -7,7 +7,7 @@ Those are two different levels of maturity, and keeping them separate is essenti
 - The current application is real, released, and usable without AI.
 - The broader study-companion vision is the roadmap, not a list of features already implemented.
 
-As of this update, the latest published release is v0.7.2, released from `main` by the Release workflow on October 20, 2026 (the `v0.7.2` tag names the commit). Since v0.5.0 (October 18, 2026), the 2026-10-19 and 2026-10-20 rounds shipped v0.5.1, v0.6.0, v0.7.0, v0.7.1 and v0.7.2 (section 13); their features are described in sections 4 and 5, some still marked with the branch they were written on. v0.5.0 added importing files as notes (section 4.7). v0.4.0 added the first AI feature: cards suggested from a note by a model in Ollama on the user's computer (section 4.6). v0.3.2 added unsaved-changes protection and the first frontend test suite (sections 4.5 and 12). The rest of this breakdown was first written against v0.3.1 and has been updated wherever those changes reach.
+As of this update, the latest published release is v0.7.3, released from `main` by the Release workflow on October 20, 2026 (the `v0.7.3` tag names the commit). Since v0.5.0 (October 18, 2026), the 2026-10-19 and 2026-10-20 rounds shipped v0.5.1, v0.6.0, v0.7.0, v0.7.1, v0.7.2 and v0.7.3 (section 13); their features are described in sections 4 and 5, some still marked with the branch they were written on. v0.5.0 added importing files as notes (section 4.7). v0.4.0 added the first AI feature: cards suggested from a note by a model in Ollama on the user's computer (section 4.6). v0.3.2 added unsaved-changes protection and the first frontend test suite (sections 4.5 and 12). The rest of this breakdown was first written against v0.3.1 and has been updated wherever those changes reach.
 
 This breakdown combines that current repository documentation, your implementation reports, and the original product/specification documents. The older specification is useful for architecture and intent, but parts of its feature-status descriptions are outdated—for example, it predates the restore/unarchive work.
 
@@ -88,14 +88,14 @@ ______________________________________________________________________
 | Repository | `Chip-jpg/synapse-flashcards` |
 | Visibility | Public, by your deliberate choice |
 | Development environments | Your local Windows setup, and Claude Code cloud sessions (Linux) |
-| Latest published release | v0.7.2 (October 20, 2026) |
-| Release commit | The commit the `v0.7.2` tag points at, on `main` |
-| Windows installer | `Synapse_0.7.2_x64-setup.exe` |
-| Windows MSI | `Synapse_0.7.2_x64_en-US.msi` |
+| Latest published release | v0.7.3 (October 20, 2026) |
+| Release commit | The commit the `v0.7.3` tag points at, on `main` |
+| Windows installer | `Synapse_0.7.3_x64-setup.exe` |
+| Windows MSI | `Synapse_0.7.3_x64_en-US.msi` |
 | Installer signing | Release notes say the installers are unsigned |
 | How releases are built | The manual **Release** GitHub Actions workflow on `windows-latest` (since v0.3.2; section 13) |
-| Database migrations documented in current README | `0001`–`0014` |
-| Frontend tests | Vitest + Testing Library: 230 tests at v0.7.2 (`npm test`; section 12.4) |
+| Database migrations documented in current README | `0001`–`0015` |
+| Frontend tests | Vitest + Testing Library: 230 tests at v0.7.3 (`npm test`; section 12.4) |
 | AI generation | Cards suggested from a note by a local model in Ollama, since v0.4.0 (section 4.6) |
 | File import | PDF, TXT, MD, DOCX, PPTX as text-only notes, since v0.5.0 (section 4.7) |
 
@@ -956,6 +956,7 @@ The project history gives this high-level progression:
 | `0012` | Cloze cards: `cloze_texts`, and `kind`/`cloze_text_id`/`cloze_number` on `flashcards` |
 | `0013` | Full-text search index (FTS5) of cards and notes, kept by triggers |
 | `0014` | Desired retention, global and per deck (append-only) |
+| `0015` | Indexes on `review_logs` by card and by time (speed only; no rule or row changes) |
 
 The first seven are described in the original specification. The final three are established by your later feature reports and repository history.
 
@@ -1278,6 +1279,7 @@ ______________________________________________________________________
 | v0.7.0 | Personal FSRS parameters (0011), statistics, bulk card actions, CSV cards, help with hard cards |
 | v0.7.1 | Cloze cards (0012), search everywhere (0013), desired retention (0014), note quiz, decks from Anki, CSV formula protection |
 | v0.7.2 | Cloze siblings kept apart for the day, Anki cloze notes imported, notes read as formatted Markdown |
+| v0.7.3 | Speed on long review histories: `review_logs` indexes (0015), next card without sorting the deck, lighter deck checks and Settings count |
 
 Not every feature was committed at the same time as its release bump. Session progress and keyboard ratings were committed September 22 and packaged later.
 
