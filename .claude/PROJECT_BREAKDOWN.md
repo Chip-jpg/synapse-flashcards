@@ -7,7 +7,7 @@ Those are two different levels of maturity, and keeping them separate is essenti
 - The current application is real, released, and usable without AI.
 - The broader study-companion vision is the roadmap, not a list of features already implemented.
 
-As of this update, the latest published release is v0.7.3, released from `main` by the Release workflow on October 20, 2026 (the `v0.7.3` tag names the commit). Since v0.5.0 (October 18, 2026), the 2026-10-19 and 2026-10-20 rounds shipped v0.5.1, v0.6.0, v0.7.0, v0.7.1, v0.7.2 and v0.7.3 (section 13); their features are described in sections 4 and 5, some still marked with the branch they were written on. v0.5.0 added importing files as notes (section 4.7). v0.4.0 added the first AI feature: cards suggested from a note by a model in Ollama on the user's computer (section 4.6). v0.3.2 added unsaved-changes protection and the first frontend test suite (sections 4.5 and 12). The rest of this breakdown was first written against v0.3.1 and has been updated wherever those changes reach.
+As of this update, the latest published release is v0.8.0, released from `main` by the Release workflow on October 20, 2026 (the `v0.8.0` tag names the commit). v0.8.0 is the first major feature, "Sources and pictures" (sections 4.13–4.16): kept originals, pictures, image occlusion, and backup format 2. Since v0.5.0 (October 18, 2026), the 2026-10-19 and 2026-10-20 rounds shipped v0.5.1, v0.6.0, v0.7.0, v0.7.1, v0.7.2, v0.7.3 and v0.8.0 (section 13); their features are described in sections 4 and 5, some still marked with the branch they were written on. v0.5.0 added importing files as notes (section 4.7). v0.4.0 added the first AI feature: cards suggested from a note by a model in Ollama on the user's computer (section 4.6). v0.3.2 added unsaved-changes protection and the first frontend test suite (sections 4.5 and 12). The rest of this breakdown was first written against v0.3.1 and has been updated wherever those changes reach.
 
 This breakdown combines that current repository documentation, your implementation reports, and the original product/specification documents. The older specification is useful for architecture and intent, but parts of its feature-status descriptions are outdated—for example, it predates the restore/unarchive work.
 
@@ -88,16 +88,16 @@ ______________________________________________________________________
 | Repository | `Chip-jpg/synapse-flashcards` |
 | Visibility | Public, by your deliberate choice |
 | Development environments | Your local Windows setup, and Claude Code cloud sessions (Linux) |
-| Latest published release | v0.7.3 (October 20, 2026) |
-| Release commit | The commit the `v0.7.3` tag points at, on `main` |
-| Windows installer | `Synapse_0.7.3_x64-setup.exe` |
-| Windows MSI | `Synapse_0.7.3_x64_en-US.msi` |
+| Latest published release | v0.8.0 (October 20, 2026) |
+| Release commit | The commit the `v0.8.0` tag points at, on `main` |
+| Windows installer | `Synapse_0.8.0_x64-setup.exe` |
+| Windows MSI | `Synapse_0.8.0_x64_en-US.msi` |
 | Installer signing | Release notes say the installers are unsigned |
 | How releases are built | The manual **Release** GitHub Actions workflow on `windows-latest` (since v0.3.2; section 13) |
-| Database migrations documented in current README | `0001`–`0015` |
-| Frontend tests | Vitest + Testing Library: 230 tests at v0.7.3 (`npm test`; section 12.4) |
+| Database migrations documented in current README | `0001`–`0018` |
+| Frontend tests | Vitest + Testing Library: 261 tests at v0.8.0 (`npm test`; section 12.4) |
 | AI generation | Cards suggested from a note by a local model in Ollama, since v0.4.0 (section 4.6) |
-| File import | PDF, TXT, MD, DOCX, PPTX as text-only notes, since v0.5.0 (section 4.7) |
+| File import | PDF, TXT, MD, DOCX, PPTX as notes, since v0.5.0 (section 4.7); originals kept as sources since v0.8.0 (sections 4.13, 4.16) |
 
 The v0.5.0 release assets are uploaded:
 
@@ -477,7 +477,7 @@ The flow: open a note → *Suggest cards* → choose a model → wait (with *Sto
 
 Added in v0.5.0. *Notes* → *Import file* reads a PDF, TXT, MD, DOCX or PPTX and opens its text in the new-note form to check, edit and save.
 
-- **The product decision: text only, originals not kept.** An import becomes an ordinary note. Synapse doesn't copy the file, link to it, or remember where it was, so the schema and backup format don't change. This is the "smaller import-as-text feature" of section 10.6. Keeping originals, which the original vision prefers, remains a separate, larger feature.
+- **The product decision (v0.5.0): text only, originals not kept.** Since v0.8.0 the original is kept as a source (sections 4.13 and 4.16); the rest of this section still describes how the text is read. An import becomes an ordinary note. Synapse doesn't copy the file, link to it, or remember where it was, so the schema and backup format don't change. This is the "smaller import-as-text feature" of section 10.6. Keeping originals, which the original vision prefers, remains a separate, larger feature.
 - **What's read** (`extract.rs`):
   - PDF: page text in order, with lines broken at the page edge rejoined. Pages without text are reported, and a PDF with no text at all is refused (no OCR).
   - TXT/MD: UTF-8, UTF-16 with a byte order mark, or else Windows-1252. Markdown stays as written, and its title comes from front matter or the first heading.
@@ -558,17 +558,17 @@ Added on branch `claude/nightly-2026-10-20-markdown-notes` (not yet released). F
 
 ## 4.13 Kept files and sources (foundation)
 
-Added on branch `claude/sources-foundation-yugkjq` (not yet released): phase 1 of "Sources and pictures", planned for v0.8.0. Storage, commands and backups only; no screen uses them yet. The contract for the phase 2 screens is in `/mnt/project-files/planning/sources-foundation-contract.md` (project files, not the repository).
+Released in v0.8.0 (written on branch `claude/sources-foundation-yugkjq`): phase 1 of "Sources and pictures": the storage, commands and backups that sections 4.14–4.16 build on. The contract the phase 2 screens were built to is in `/mnt/project-files/planning/sources-foundation-contract.md` (project files, not the repository).
 
 - **The store** (`assets.rs`). Files live in `<database folder>/assets/<sha256>`, lowercase hex of their bytes, so equal files are stored once. Migration 0016's `assets` table lists each (`sha256`, `media_type`, `size`); rows are never changed or removed. The type is checked against the bytes (`matches_type`): pictures and PDFs by their signature (a picture's type is read from it, `sniff`; SVG refused), Word/PowerPoint must be zip packages, text must be neither. A file is written whole (`.partial-…`, fsync, rename) before its row; a missing file is written again when the same bytes are added. Limits: 64 MiB a file (20 MiB a picture), 2 GiB and 60,000 files in all, so a backup stays under zip's 4 GiB / 65,535 entries without zip64.
 - **Showing a file.** `synapse://localhost/<sha256>` (Windows: `http://synapse.localhost/<sha256>`, through `keptFileUrl`) serves pictures and PDFs only, after checking the row and the file's size; anything else is a 404. Nothing is read by path.
 - **Sources** (`sources.rs`). An imported document kept: its file (`asset_id`), `kind` (as `extract::FileKind`), title, file name, and `source_pages` (the text of each PDF page or slide; one page for other kinds), written together. Only the title changes (rename); delete and restore are soft, as notes. `source_notes` records, once and for good, which source a note was saved from.
 - **Backups** (format 2, section 10.1). Export packs every listed file, checking size and hash as it reads. Restore checks the entries against the backup's own `assets` rows (name, size, hash, type; nothing missing or extra), stages them, adds them to the store before swapping the database, checks every listed file is present after opening, and takes back the files it added if anything fails.
-- **Not done.** No screen yet. Files are never removed, and a restore leaves files only the replaced data used (no clean-up). Not checked on Windows; the `synapse:` scheme was checked in the real app on Linux (a picture stored, shown 1×1, served as `image/png`, missing hash a 404).
+- **Not done.** Files are never removed, and a restore leaves files only the replaced data used (no clean-up). Not checked on Windows; the `synapse:` scheme was checked in the real app on Linux (a picture stored, shown 1×1, served as `image/png`, missing hash a 404).
 
 ## 4.14 Pictures in notes and on cards
 
-Added on branch `claude/sources-pictures-04zgws` (not yet released), on top of 4.13: phase 2 of "Sources and pictures".
+Released in v0.8.0 (written on branch `claude/sources-pictures-04zgws`), on top of 4.13: phase 2 of "Sources and pictures".
 
 - **What.** A note shows up to 20 kept pictures under its text (`NOTE_PICTURES_MAX`), each side of a front/back card up to 4 (`CARD_SIDE_PICTURES_MAX`), in order. Added with *Add picture* (`choose_picture`) or pasted (`store_picture`), ordered and removed in the form, saved with the text in one transaction (`create_note`/`update_note`/`create_flashcard`/`update_flashcard` take an optional `pictures`; left out keeps them). Shown in the note, small in the deck's card list, and in review (front with the question, back with the answer; `SessionCard.pictures`).
 - **Schema (migration 0017).** `note_pictures (note_id, position, asset_id)` and `card_pictures (card_id, side, position, asset_id)`, by asset id only. Saving replaces a list (delete + insert of link rows); the files and `assets` rows stay. Triggers: only image assets; link rows frozen while the note or card is deleted, or the card's deck archived; only active basic cards take pictures (cloze and later kinds don't). The Sample deck is refused in Rust. No column added to an existing table; backups unchanged (every `assets` row travels).
@@ -577,7 +577,7 @@ Added on branch `claude/sources-pictures-04zgws` (not yet released), on top of 4
 
 ## 4.15 Image occlusion cards
 
-Added on branch `claude/sources-image-occlusion-8pmk5r` (not yet released; stacked on the foundation branch, PR into it): phase 2 of "Sources and pictures", for v0.8.0. A third card type, modelled on cloze (section 4.11).
+Released in v0.8.0 (written on branch `claude/sources-image-occlusion-8pmk5r`): phase 2 of "Sources and pictures", for v0.8.0. A third card type, modelled on cloze (section 4.11).
 
 - **Writing one.** *Add card* → *Picture* → choose or paste a picture (kept through `assets.rs`: `choose_picture`/`store_picture`). Boxes are drawn, moved and resized with the mouse, or with arrow keys (Shift resizes, Delete removes). Each box has a card number (boxes sharing one are hidden together) and an optional label; an optional header (≤500) shows above the picture. Mode *Hide all* (`hideAll`) or *Hide one* (`hideOne`). `Occlusion.tsx`.
 - **Schema (migration 0018).** `occlusions (id, asset_id, header, mode, boxes JSON, created_at, updated_at)`: never deleted; `asset_id` must be a kept picture and never changes. Boxes are 0–1 fractions of the picture, 1–200 of them, numbers 1–999, labels ≤200; Rust checks them (`occlusion::validate_occlusion`) and rounds to 4 decimals. Cards are `flashcards` rows with `occlusion_id`/`occlusion_number` set and `kind = 'basic'` (0012's CHECK only allows basic/cloze; widening it means rebuilding `flashcards`), so Rust tells them apart by `occlusion_id`. Triggers: both columns set or neither, fixed once written, one active card per (occlusion, number); 0010/0012's `flashcards_deleted_are_read_only` recreated with the two columns.
@@ -588,6 +588,17 @@ Added on branch `claude/sources-image-occlusion-8pmk5r` (not yet released; stack
 - **CSV export leaves picture cards out** (a spreadsheet can't carry the picture).
 - **Anki** (`anki.rs`). A note type whose template has `image-occlusion` becomes picture cards: `{{cN::image-occlusion:rect:left=…:top=…:width=…:height=…:oi=1}}`; ellipses and polygons become their bounding box, angles are dropped, text shapes skipped (counted as `occlusionApproximated`); `oi=1` → hideAll. Shapes in pixels, or a picture missing from the package, leave the note out (`skipped.imageOcclusion`). The picture is read from the media map (legacy JSON, or the newer zstd protobuf `MediaEntries`, files zstd-compressed) and kept with `assets::put`, once per package picture. Fixtures `occlusion.apkg` and `occlusion-legacy.apkg` (made by `make_fixtures.py` with Anki 25.09).
 - **Not done.** Rectangles only (no freehand or polygons); no picture swap; not checked on Windows or in the real app window.
+
+
+## 4.16 The Sources screen and page links
+
+Released in v0.8.0 (written on branch `claude/sources-screen-9yz936`): phase 2 of "Sources and pictures". No migration (0019 left unused).
+
+- **Sources screen** (`Sources.tsx`). Lists kept documents (kind, pages, size, date) and deleted ones with *Restore*; *Add source*. A source shows its text page by page (previous/next, jump), the notes written from it, and *Make a note*, *Open original*, *Save a copy*, *Rename*, *Delete* (soft, asks first).
+- **Import file keeps the original.** *Notes* → *Import file* now calls `import_source`: the file is kept as a source as soon as it's chosen, and *Save note* calls `create_note_from_source`, which writes the note, its pictures (since the merge with 4.14) and its `source_notes` link in one transaction (`notes::insert_note` on the caller's connection). A note from a source links back to it, or says it was deleted.
+- **Page links.** `sources::locate_quotes` / `quoted_page` find a suggested card's or quiz question's quote on the source's pages with `suggest::quoted_from`'s word-for-word rule ("…" gaps allowed, across a page break). "From page 7 of …" opens `SourcePageDialog` with the quote marked (`SourcePages.tsx`). Cards still store no source: the link lives only while drafts or the quiz are open.
+- **Originals.** `open_source_original` copies the kept file to `<temp>/synapse-originals/<hash prefix>/<name>` and opens it with the opener plugin; `save_source_copy` writes a copy where the user chooses. Both check the file's hash first (`sources::original`); the kept file is never handed out.
+- **Not checked** in the real window, on Windows, or *Open original* on a real desktop.
 
 ______________________________________________________________________
 
@@ -1140,8 +1151,8 @@ The current README is explicit about these gaps.
 
 ### Content and ingestion
 
-- Keeping imported originals. Imports (section 4.7, since v0.5.0) keep only the text.
-- Image attachments.
+- Keeping originals of anything but imported documents (v0.8.0 keeps imported documents as sources, section 4.16, and pictures in notes and on cards, section 4.14).
+- Pictures in CSV, pictures from Anki notes other than image occlusion, and dropping files into the window.
 - OCR.
 - Handwritten-note recognition.
 - Audio transcription.
@@ -1321,6 +1332,7 @@ ______________________________________________________________________
 | v0.7.1 | Cloze cards (0012), search everywhere (0013), desired retention (0014), note quiz, decks from Anki, CSV formula protection |
 | v0.7.2 | Cloze siblings kept apart for the day, Anki cloze notes imported, notes read as formatted Markdown |
 | v0.7.3 | Speed on long review histories: `review_logs` indexes (0015), next card without sorting the deck, lighter deck checks and Settings count |
+| v0.8.0 | Sources and pictures: kept files and sources (0016), backup format 2, the Sources screen with page links, pictures in notes and on cards (0017), image occlusion cards and Anki image occlusion import (0018) |
 
 Not every feature was committed at the same time as its release bump. Session progress and keyboard ratings were committed September 22 and packaged later.
 

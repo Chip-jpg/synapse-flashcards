@@ -55,8 +55,13 @@ migrations, validation, scheduling, and every business rule; React only calls ty
   (`.apkg` or `.colpkg`) as new decks of new cards, after a preview of what comes across and what's
   left out.
 - **Import files as notes** — make a note from the text of a PDF, text (`.txt`), Markdown (`.md`),
-  Word (`.docx`), or PowerPoint (`.pptx`) file. You check and edit the text before it's saved; the
-  file itself isn't kept.
+  Word (`.docx`), or PowerPoint (`.pptx`) file. You check and edit the text before it's saved, and
+  the original is kept under *Sources*.
+- **Sources** — the documents you imported, kept as they were: read them page by page, open or save
+  the original, and see the notes written from each. Suggested cards and quiz questions from such a
+  note say which page they came from, and open it with the quote marked.
+- **Pictures in notes and on cards** — up to 20 pictures under a note, and up to 4 on each side of a
+  card, shown in review with the question or the answer.
 - **Cards from notes** — with a note on screen, write a card yourself and add it to one of your
   decks. The card is an ordinary card; it isn't linked to the note.
 - **Suggested cards (optional)** — have a model in Ollama, on your own computer, suggest up to ten
@@ -290,6 +295,19 @@ app shows pictures and PDFs only through its own `synapse:` address, by hash. Pi
 and on cards (migration 0017) and picture cards (image occlusion, migration 0018) keep their
 pictures here, and the Sources screen keeps imported documents.
 
+**Sources.** *Sources* in the sidebar lists the documents Synapse keeps (kind, pages or slides,
+size, and date), newest first, with deleted ones underneath and *Restore*. *Add source* keeps a file
+without writing a note. Opening one shows its text a page (or slide) at a time, with previous, next
+and a page to jump to, and the notes written from it. *Make a note* starts a note from its text;
+*Open original* opens a copy in your computer's own program for that kind of file (the kept file is
+never handed out, only a copy in a temporary folder); *Save a copy* saves it where you choose;
+*Rename* changes its title; *Delete* asks first, keeps the file and pages, and can be undone with
+*Restore*. A note written from a source says so under its title and links back to it, or says the
+source was deleted. Suggested cards and quiz questions from such a note show "From page 7 of …"
+(or the slide) under their quote: it opens that page over the screen with the quote marked, and
+you can move to the pages around it. Cards still don't remember where they came from once saved:
+the page link is there while you check the drafts or take the quiz.
+
 **Import cards from a spreadsheet.** *Backup & restore* → *Cards in a spreadsheet* → choose a deck
 → *Choose a CSV file*. The front goes in the first column and the back in the second; other columns
 are ignored. Commas, semicolons, and tabs all work, as do quoted cells with line breaks, a header
@@ -349,9 +367,10 @@ in it is shown as plain text, with no choice to make.
 **Import a file as a note.** *Notes* → *Import file* → pick a PDF, text (`.txt`), Markdown (`.md`),
 Word (`.docx`), or PowerPoint (`.pptx`) file. Synapse reads its text and opens it in the new-note form,
 titled after the document (its own title if it has one, else the file name), with a line saying
-what was read. Check the text, edit it as you like, and *Save note*; nothing is saved before that,
-and leaving or closing first asks whether to discard it. The note is an ordinary note: Synapse
-doesn't keep the file, link to it, or remember where it was.
+what was read. Check the text, edit it as you like, and *Save note*; leaving or closing first asks
+whether to discard it. Choosing the file keeps it as a *source* (see *Sources* below), whether or
+not you save the note; saving the note records, with it, that it was written from that source. The
+note itself is still an ordinary note you can change freely; the source keeps what the file said.
 
 What's taken from each kind of file:
 
@@ -483,8 +502,8 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   links can't be opened from a note. No attachments, audio, web clips, tags, or folders. Search
   is exact text only (no fuzzy matching, no search inside deleted notes) and has no index, so each
   search reads every note.
-  Importing a file takes only its text: the file isn't kept, layout and images are lost, and there's
-  no OCR for scanned pages. A card doesn't remember the note it was written or suggested from — so
+  Importing a file makes a note from its text only: layout and images are left out of the note (the
+  original is kept under *Sources*), and there's no OCR for scanned pages. A card doesn't remember the note it was written or suggested from — so
   deleting a note leaves its cards exactly where they are. A deleted note is listed by title and
   dates only; there's no way to read its text again without restoring it.
 - **No sync, accounts, cloud, or collaboration.** By design.
@@ -552,8 +571,9 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
 - **`src/`** — the React UI. `api.ts` is the only file that calls Rust, through typed Tauri
   commands (and the window, to hold it open while something is unsaved). `Shell.tsx` is the
   sidebar and the bar above each screen. The screens are `Dashboard.tsx` (the Study Desk),
-  `DeckDetail.tsx`, `ReviewSession.tsx`, `Notes.tsx`, `Search.tsx`, `Statistics.tsx`, `ArchivedDecks.tsx`,
-  `Backup.tsx`, and `Settings.tsx`;
+  `DeckDetail.tsx`, `ReviewSession.tsx`, `Notes.tsx`, `Sources.tsx`, `Search.tsx`, `Statistics.tsx`,
+  `ArchivedDecks.tsx`, `Backup.tsx`, and `Settings.tsx`;
+  `SourcePages.tsx` shows a source's page with a quote marked, and the "From page 7 of …" links;
   `Occlusion.tsx` draws a picture card's boxes, for the deck screen's form and for review;
   `CardHelp.tsx` is the review screen's *Get help with this card*,
   `SuggestCards.tsx` is the note screen's *Suggest cards*, `Quiz.tsx` its *Quiz me*, and
@@ -606,8 +626,9 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
     scheme.
   - `pictures.rs` — the pictures a note, or a side of a card, shows: checking a list of them and
     saving it with the note or card (`note_pictures`, `card_pictures`).
-  - `sources.rs` — imported documents kept as sources, with the text of each page, and the note
-    saved from each.
+  - `sources.rs` — imported documents kept as sources, with the text of each page; the notes
+    written from each (saved with their link in one transaction); finding a quote on its pages;
+    and copies of the original to open or save.
   - `export.rs` / `import.rs` — writing a `.zip` backup with every kept file, and checking and
     restoring one (kept files included).
 - **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0018`), embedded in the
