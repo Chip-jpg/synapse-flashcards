@@ -41,8 +41,8 @@ use chrono::{DateTime, Utc};
 use sqlx::{SqliteConnection, SqlitePool};
 
 use crate::authoring::{
-    changeable_card_deck, load_deck_detail, required_text, AuthoringError, DeckDetail,
-    InvalidInput, CARD_TEXT_MAX_CHARS,
+    active_normal_deck, changeable_card_deck, load_deck_detail, required_text, AuthoringError,
+    DeckDetail, InvalidInput, CARD_TEXT_MAX_CHARS,
 };
 use crate::db::{to_db_time, DbError};
 use crate::study;
@@ -381,7 +381,7 @@ pub async fn create_cloze(
     let cloze = validate_cloze(text)?;
     let now = to_db_time(now);
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-    load_deck_detail(&mut tx, deck_id, &now).await?;
+    active_normal_deck(&mut tx, deck_id).await?;
     insert_cloze(&mut tx, deck_id, &cloze, &now).await?;
     let deck = load_deck_detail(&mut tx, deck_id, &now).await?;
     tx.commit().await?;
