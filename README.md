@@ -166,6 +166,12 @@ where the text's other cards are; it comes back with the text as it is now. *Res
 the ones that can be. The cards of one text move together: ticking one selects all of them, and
 *Move selected* refuses a move that would split them. The Sample deck has no cloze cards.
 
+Cards of one text are kept apart when reviewing, as Anki buries siblings: once you rate one of
+them, the others wait until the next day (local midnight), so the same text doesn't come up twice
+in a row. The card you rated still comes back the same day if it falls due again. Their schedules
+aren't changed, and the due counts on the Study Desk and the deck screen leave them out, so they
+match what a review will show; if nothing else is due, the review ends.
+
 **Study.** Press *Start review* on any deck with cards due. Reveal the answer, then rate it. The
 session ends when nothing in that deck is due. Closing the app or leaving through the sidebar
 mid-session is safe — starting a review of that deck again resumes it.
@@ -407,8 +413,7 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   assuming you review everything due and add no new cards; same-day repeats after *Again* aren't
   counted. The sample deck and archived decks always follow the value for all decks.
 - **Two card types, both text.** Basic front/back and cloze: no images, audio, or tags, and a
-  card can't change type. Cards from the same cloze text aren't kept apart, so they can come up one
-  after another in a session. Anki's cloze notes aren't imported.
+  card can't change type. Anki's cloze notes aren't imported.
 - **Search matches words, not meanings.** *Search* finds words by their start (no fuzzy matching,
   no matching inside a word, no synonyms), never searches deleted cards or notes, and shows at most
   50 results. Words are split on anything that isn't a letter or digit, so text in scripts written

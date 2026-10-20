@@ -658,7 +658,7 @@ mod tests {
     use crate::db::migrate_and_seed;
     use crate::db::test_support::*;
     use crate::scheduler::Rating;
-    use crate::study::{self, SessionCard, StartedSession};
+    use crate::study::{self, SessionCard, StartedSession, StudyError};
     use chrono::TimeDelta;
 
     const NOW: &str = "2026-09-15T12:00:00Z";
@@ -724,7 +724,8 @@ mod tests {
             .unwrap()
     }
 
-    /// Starts a session in `deck` and rates every due card Good.
+    /// Starts a session in `deck` and rates every due card Good. Only one card
+    /// of each text is rated: the rest are buried as its siblings.
     async fn review_all(pool: &SqlitePool, deck: i64) {
         let StartedSession::Started { session_id } =
             study::start_session(pool, deck, at(NOW)).await.unwrap()
@@ -739,6 +740,164 @@ mod tests {
                 .await
                 .unwrap();
         }
+    }
+
+    async fn session_in(pool: &SqlitePool, deck: i64, now: DateTime<Utc>) -> i64 {
+        match study::start_session(pool, deck, now).await.unwrap() {
+            StartedSession::Started { session_id } => session_id,
+            StartedSession::NoneDue => panic!("expected a session"),
+        }
+    }
+
+    /// The session's next card id and its `remaining`, or `None` once it's
+    /// completed.
+    async fn next_in(pool: &SqlitePool, session: i64, now: DateTime<Utc>) -> Option<(i64, i64)> {
+        match study::session_card(pool, session, now).await.unwrap() {
+            SessionCard::Due { card, progress, .. } => Some((card.id, progress.remaining)),
+            SessionCard::Completed { .. } => None,
+        }
+    }
+
+    /// Due counts on the Study Desk and on the deck screen, which must agree.
+    async fn due_counts(pool: &SqlitePool, deck: i64, now: DateTime<Utc>) -> (i64, i64) {
+        let desk = study::decks(pool, now)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|summary| summary.id == deck)
+            .unwrap()
+            .due_count;
+        let detail = crate::authoring::deck_detail(pool, deck, now)
+            .await
+            .unwrap()
+            .due_count;
+        (desk, detail)
+    }
+
+    #[test]
+    fn rating_a_cloze_card_buries_its_siblings_until_the_next_day() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let biology = deck(&pool, "Biology").await;
+            let deck = create_cloze(&pool, biology, "{{c1::A}}, {{c2::B}}, {{c3::C}}", at(NOW))
+                .await
+                .unwrap();
+            let ids: Vec<i64> = (1..=3).map(|n| card_of(&deck.cards, n)).collect();
+            let basic = create_flashcard(&pool, biology, "Q", "A", at(NOW))
+                .await
+                .unwrap()
+                .cards
+                .iter()
+                .find(|card| card.cloze.is_none())
+                .unwrap()
+                .id;
+            assert_eq!(due_counts(&pool, biology, at(NOW)).await, (4, 4));
+
+            let session = session_in(&pool, biology, at(NOW)).await;
+            assert_eq!(next_in(&pool, session, at(NOW)).await, Some((ids[0], 4)));
+            study::record_review(&pool, session, ids[0], 0, Rating::Good, at(NOW))
+                .await
+                .unwrap();
+            let (two_before, three_before) =
+                (schedule(&pool, ids[1]).await, schedule(&pool, ids[2]).await);
+
+            // 2 and 3 are held back: the session goes on to the other card,
+            // and every count agrees with it.
+            assert_eq!(next_in(&pool, session, at(NOW)).await, Some((basic, 1)));
+            assert_eq!(due_counts(&pool, biology, at(NOW)).await, (1, 1));
+            // A held-back card can't be rated, as one that isn't due can't.
+            assert!(matches!(
+                study::record_review(&pool, session, ids[1], 0, Rating::Good, at(NOW)).await,
+                Err(StudyError::Stale)
+            ));
+            study::record_review(&pool, session, basic, 0, Rating::Good, at(NOW))
+                .await
+                .unwrap();
+
+            // Nothing else is due, so the session ends without them, and
+            // later the same day they're still held back.
+            assert_eq!(next_in(&pool, session, at(NOW)).await, None);
+            let evening = at(NOW) + TimeDelta::hours(11);
+            assert_eq!(due_counts(&pool, biology, evening).await, (0, 0));
+            assert_eq!(
+                study::start_session(&pool, biology, evening).await.unwrap(),
+                StartedSession::NoneDue
+            );
+
+            // Their schedules were never touched.
+            assert_eq!(schedule(&pool, ids[1]).await, two_before);
+            assert_eq!(schedule(&pool, ids[2]).await, three_before);
+            assert_eq!(
+                (logs(&pool, ids[1]).await, logs(&pool, ids[2]).await),
+                (0, 0)
+            );
+
+            // From midnight on they are due again; rating 2 holds 3 back.
+            let tomorrow = at("2026-09-16T00:00:00Z");
+            assert_eq!(due_counts(&pool, biology, tomorrow).await, (2, 2));
+            let session = session_in(&pool, biology, tomorrow).await;
+            assert_eq!(next_in(&pool, session, tomorrow).await, Some((ids[1], 2)));
+            study::record_review(&pool, session, ids[1], 0, Rating::Good, tomorrow)
+                .await
+                .unwrap();
+            assert_eq!(next_in(&pool, session, tomorrow).await, None);
+            assert_eq!(due_counts(&pool, biology, tomorrow).await, (0, 0));
+        });
+    }
+
+    #[test]
+    fn a_card_rated_again_comes_back_while_its_siblings_wait() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let biology = deck(&pool, "Biology").await;
+            let deck = create_cloze(&pool, biology, "{{c1::A}} and {{c2::B}}", at(NOW))
+                .await
+                .unwrap();
+            let (one, two) = (card_of(&deck.cards, 1), card_of(&deck.cards, 2));
+
+            let session = session_in(&pool, biology, at(NOW)).await;
+            assert_eq!(next_in(&pool, session, at(NOW)).await, Some((one, 2)));
+            study::record_review(&pool, session, one, 0, Rating::Again, at(NOW))
+                .await
+                .unwrap();
+
+            // Once 1 is due again it comes back, the same day; 2 doesn't.
+            let again = at(&schedule(&pool, one).await.3.unwrap());
+            assert!(again < at("2026-09-16T00:00:00Z"));
+            assert_eq!(next_in(&pool, session, at(NOW)).await, None);
+            let session = session_in(&pool, biology, again).await;
+            assert_eq!(next_in(&pool, session, again).await, Some((one, 1)));
+            assert_eq!(due_counts(&pool, biology, again).await, (1, 1));
+            assert_eq!(schedule(&pool, two).await.4, 0);
+        });
+    }
+
+    #[test]
+    fn siblings_rated_the_same_day_dont_hold_each_other_back() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let biology = deck(&pool, "Biology").await;
+            let deck = create_cloze(&pool, biology, "{{c1::A}} and {{c2::B}}", at(NOW))
+                .await
+                .unwrap();
+            let (one, two) = (card_of(&deck.cards, 1), card_of(&deck.cards, 2));
+            // Both rated today, as a session left open across midnight (or an
+            // older Synapse) could have done: neither is held back by the other.
+            for card in [one, two] {
+                sqlx::query(
+                    "INSERT INTO review_logs (card_id, rating, state_before, scheduled_days,
+                                              elapsed_days, stability_after, difficulty_after,
+                                              reviewed_at)
+                     VALUES (?1, 1, 'New', 0, 0, 1.0, 5.0, ?2)",
+                )
+                .bind(card)
+                .bind(NOW)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            assert_eq!(due_counts(&pool, biology, at(NOW)).await, (2, 2));
+        });
     }
 
     #[test]
@@ -890,10 +1049,11 @@ mod tests {
                     (3, "A, then [...]".into(), "C".into()),
                 ]
             );
-            // 3 is new and due; 2 is deleted, its schedule and history kept.
+            // 3 is new, but 1 was rated today, so 3 waits until tomorrow as
+            // its sibling. 2 is deleted, its schedule and history kept.
             let three = card_of(&deck.cards, 3);
             assert_eq!(schedule(&pool, three).await.0, "New");
-            assert_eq!(deck.due_count, 1);
+            assert_eq!(deck.due_count, 0);
             assert_eq!(deck.deleted_cards.len(), 1);
             let deleted = &deck.deleted_cards[0];
             assert_eq!(deleted.id, two);
@@ -905,7 +1065,7 @@ mod tests {
                 })
             );
             assert_eq!(schedule(&pool, two).await, two_before);
-            assert_eq!(logs(&pool, two).await, 1);
+            assert_eq!(logs(&pool, two).await, 0);
             // Every card of the text shows the new text.
             assert!(deck
                 .cards
