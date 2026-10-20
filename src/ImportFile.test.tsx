@@ -57,7 +57,11 @@ describe("importing a file as a note", () => {
 
     expect(await screen.findByText("Note saved.")).toBeTruthy();
     expect(argsOf("create_note")).toEqual([
-      { title: "Lecture 3", body: `${LECTURE.body}\nAnaphase: chromatids separate.` },
+      {
+        title: "Lecture 3",
+        body: `${LECTURE.body}\nAnaphase: chromatids separate.`,
+        pictures: [],
+      },
     ]);
   });
 

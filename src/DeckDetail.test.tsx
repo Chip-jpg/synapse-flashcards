@@ -290,7 +290,12 @@ describe("adding a card", () => {
 
     expect(screen.getByText("Saving…")).toBeTruthy();
     expect(deck.argsOf("create_flashcard")).toEqual([
-      { deckId: 1, front: "What is DNA?", back: "The molecule that carries genes." },
+      {
+        deckId: 1,
+        front: "What is DNA?",
+        back: "The molecule that carries genes.",
+        pictures: { front: [], back: [] },
+      },
     ]);
 
     await act(async () => saving.resolve(activeDeck()));

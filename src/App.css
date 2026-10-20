@@ -2746,3 +2746,86 @@ textarea.field-input {
 .card-sides .card-kind-tag {
   grid-column: 1 / -1;
 }
+
+/* Pictures in notes and on cards (`pictures.tsx`). */
+.picture-gallery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.picture-gallery li {
+  max-width: 100%;
+}
+
+.kept-picture {
+  display: block;
+  max-width: 100%;
+  max-height: 28rem;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: var(--surface-low);
+}
+
+.picture-gallery-compact {
+  gap: 0.375rem;
+  margin: 0.25rem 0 0.5rem;
+}
+
+.picture-gallery-compact .kept-picture,
+.picture-thumb {
+  display: block;
+  width: 4.5rem;
+  height: 4.5rem;
+  object-fit: cover;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface-low);
+}
+
+.picture-missing {
+  display: inline-block;
+  padding: 0.5rem 0.75rem;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+.picture-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.picture-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  align-items: flex-start;
+}
+
+.picture-choice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.picture-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.card-form-side {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}

@@ -30,6 +30,7 @@ use crate::aid;
 use crate::cloze::{self, ClozePart};
 use crate::db::{to_db_time, DbError};
 use crate::optimizer;
+use crate::pictures::{self, CardPictures};
 use crate::retention;
 use crate::scheduler::{self, CardState, Rating, Schedule};
 
@@ -116,6 +117,8 @@ pub enum SessionCard {
         /// A cloze card as pieces of its text, its own deletions as gaps
         /// (`cloze::session_parts`); `null` for a front/back card.
         cloze: Option<Vec<ClozePart>>,
+        /// The pictures on each side of a front/back card (`pictures.rs`).
+        pictures: CardPictures,
     },
     Completed {
         cards_reviewed: i64,
@@ -412,6 +415,7 @@ pub async fn session_card(
             let remaining = count_due_cards(&mut tx, deck_id, &now).await?;
             let again_streak = aid::again_streak(&mut tx, card.id).await?;
             let cloze = cloze::session_parts(&mut tx, card.id).await?;
+            let pictures = pictures::card_pictures(&mut tx, card.id).await?;
             tx.commit().await?;
             return Ok(SessionCard::Due {
                 card,
@@ -422,6 +426,7 @@ pub async fn session_card(
                 again_streak,
                 offer_help: again_streak >= aid::HELP_AFTER_AGAINS,
                 cloze,
+                pictures,
             });
         }
         finish_session(&mut tx, session_id, &now).await?;

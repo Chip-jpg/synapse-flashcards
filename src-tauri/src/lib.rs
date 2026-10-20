@@ -12,6 +12,7 @@ pub mod extract;
 mod import;
 mod notes;
 mod optimizer;
+mod pictures;
 mod quiz;
 mod retention;
 mod scheduler;

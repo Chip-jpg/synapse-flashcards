@@ -32,8 +32,10 @@
 use chrono::{DateTime, Utc};
 use sqlx::{SqliteConnection, SqlitePool};
 
+use crate::assets::Asset;
 use crate::authoring::required_text;
 use crate::db::{to_db_time, DbError};
+use crate::pictures::{self, PictureError, PictureProblem, NOTE_PICTURES_MAX};
 
 pub const NOTE_TITLE_MAX_CHARS: usize = 200;
 /// About 15,000 words: room for a long lecture's notes.
@@ -51,7 +53,7 @@ pub struct NoteSummary {
     pub updated_at: String,
 }
 
-/// A whole note: `{ id, title, body, createdAt, updatedAt }`.
+/// A whole note: `{ id, title, body, createdAt, updatedAt, pictures }`.
 #[derive(Debug, PartialEq, serde::Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct Note {
@@ -61,6 +63,9 @@ pub struct Note {
     pub body: String,
     pub created_at: String,
     pub updated_at: String,
+    /// The pictures shown under the text, in order (`pictures.rs`).
+    #[sqlx(skip)]
+    pub pictures: Vec<Asset>,
 }
 
 /// A deleted note, as listed in the library's history:
@@ -86,6 +91,8 @@ pub enum InvalidNote {
     TitleTooLong,
     BodyBlank,
     BodyTooLong,
+    /// The pictures: too many, one that isn't a kept picture, or one twice.
+    Pictures(PictureProblem),
 }
 
 /// Why a note operation didn't happen.
@@ -105,6 +112,15 @@ pub enum NoteError {
 impl From<InvalidNote> for NoteError {
     fn from(problem: InvalidNote) -> Self {
         NoteError::Invalid(problem)
+    }
+}
+
+impl From<PictureError> for NoteError {
+    fn from(err: PictureError) -> Self {
+        match err {
+            PictureError::Invalid(problem) => NoteError::Invalid(InvalidNote::Pictures(problem)),
+            PictureError::Internal(detail) => NoteError::Internal(detail),
+        }
     }
 }
 
@@ -239,13 +255,16 @@ async fn load_active_note(conn: &mut SqliteConnection, note_id: i64) -> Result<N
         "SELECT id, title, body, created_at, updated_at, deleted_at FROM notes WHERE id = ?1",
     )
     .bind(note_id)
-    .fetch_optional(conn)
+    .fetch_optional(&mut *conn)
     .await?
     .ok_or(NoteError::NotFound)?;
     if row.deleted_at.is_some() {
         return Err(NoteError::Deleted);
     }
     Ok(Note {
+        pictures: pictures::note_pictures(conn, note_id)
+            .await
+            .map_err(NoteError::Internal)?,
         id: row.id,
         title: row.title,
         body: row.body,
@@ -261,15 +280,32 @@ pub async fn note(pool: &SqlitePool, note_id: i64) -> Result<Note, NoteError> {
     load_active_note(&mut conn, note_id).await
 }
 
-/// Saves a new note and returns it.
+/// Saves a new note, with no pictures, and returns it.
+///
+/// Only the tests use it; the app saves through the `_with_pictures` version.
+#[cfg(test)]
 pub async fn create_note(
     pool: &SqlitePool,
     title: &str,
     body: &str,
     now: DateTime<Utc>,
 ) -> Result<Note, NoteError> {
+    create_note_with_pictures(pool, title, body, &[], now).await
+}
+
+/// Saves a new note showing the pictures `picture_ids`, in order, and returns
+/// it. The text and every picture are checked before anything is written.
+pub async fn create_note_with_pictures(
+    pool: &SqlitePool,
+    title: &str,
+    body: &str,
+    picture_ids: &[i64],
+    now: DateTime<Utc>,
+) -> Result<Note, NoteError> {
     let text = validate_note(title, body)?;
-    let note = sqlx::query_as::<_, Note>(
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let pictures = pictures::checked(&mut tx, picture_ids, NOTE_PICTURES_MAX).await?;
+    let mut note = sqlx::query_as::<_, Note>(
         "INSERT INTO notes (title, body, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?3)
          RETURNING id, title, body, created_at, updated_at",
@@ -277,19 +313,39 @@ pub async fn create_note(
     .bind(text.title)
     .bind(text.body)
     .bind(to_db_time(now))
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await?;
+    pictures::set_note_pictures(&mut tx, note.id, &pictures).await?;
+    tx.commit().await?;
+    note.pictures = pictures;
     Ok(note)
 }
 
-/// Replaces an active note's title and body and returns it. Its id and
-/// creation time are kept; `updated_at` becomes `now`. A deleted note is
-/// refused and nothing is written.
+/// Replaces an active note's title and body and returns it, keeping its
+/// pictures. See [`update_note_with_pictures`].
+///
+/// Only the tests use it; the app saves through the `_with_pictures` version.
+#[cfg(test)]
 pub async fn update_note(
     pool: &SqlitePool,
     note_id: i64,
     title: &str,
     body: &str,
+    now: DateTime<Utc>,
+) -> Result<Note, NoteError> {
+    update_note_with_pictures(pool, note_id, title, body, None, now).await
+}
+
+/// Replaces an active note's title and body, and its pictures when
+/// `picture_ids` is given (`None` keeps them), and returns it. Its id and
+/// creation time are kept; `updated_at` becomes `now`. A deleted note is
+/// refused and nothing is written.
+pub async fn update_note_with_pictures(
+    pool: &SqlitePool,
+    note_id: i64,
+    title: &str,
+    body: &str,
+    picture_ids: Option<&[i64]>,
     now: DateTime<Utc>,
 ) -> Result<Note, NoteError> {
     let text = validate_note(title, body)?;
@@ -302,7 +358,11 @@ pub async fn update_note(
     if deletion_state(&mut tx, note_id).await?.is_some() {
         return Err(NoteError::Deleted);
     }
-    let note = sqlx::query_as::<_, Note>(
+    let pictures = match picture_ids {
+        Some(ids) => Some(pictures::checked(&mut tx, ids, NOTE_PICTURES_MAX).await?),
+        None => None,
+    };
+    let mut note = sqlx::query_as::<_, Note>(
         "UPDATE notes SET title = ?1, body = ?2, updated_at = ?3
          WHERE id = ?4 AND deleted_at IS NULL
          RETURNING id, title, body, created_at, updated_at",
@@ -317,6 +377,15 @@ pub async fn update_note(
     // normally have gone. If it somehow did, say the screen is out of date
     // rather than claim a save that didn't happen.
     .ok_or(NoteError::Deleted)?;
+    note.pictures = match pictures {
+        Some(pictures) => {
+            pictures::set_note_pictures(&mut tx, note_id, &pictures).await?;
+            pictures
+        }
+        None => pictures::note_pictures(&mut tx, note_id)
+            .await
+            .map_err(NoteError::Internal)?,
+    };
 
     tx.commit().await?;
     Ok(note)
@@ -511,6 +580,7 @@ mod tests {
                     body: "First line\n\n    indented second line\r\nthird".to_string(),
                     created_at: "2026-09-16T12:00:00.000Z".to_string(),
                     updated_at: "2026-09-16T12:00:00.000Z".to_string(),
+                    pictures: Vec::new(),
                 }
             );
             assert_eq!(super::note(&pool, note.id).await.unwrap(), note);
@@ -583,6 +653,7 @@ mod tests {
                     body: "one\ntwo".to_string(),
                     created_at: note.created_at,
                     updated_at: "2026-09-16T13:00:00.000Z".to_string(),
+                    pictures: Vec::new(),
                 }
             );
             assert_eq!(super::note(&pool, note.id).await.unwrap(), edited);
