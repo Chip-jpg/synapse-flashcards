@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createFlashcard,
   createNote,
@@ -20,6 +20,8 @@ import {
   type NoteSummary,
 } from "./api";
 import { loadDeckChoices, type DeckChoices } from "./deckChoices";
+import { MarkdownView } from "./NoteMarkdown";
+import { hasFormatting, parseMarkdown } from "./markdown";
 import { FormActions, SelectField, TextField, useFormSave } from "./forms";
 import {
   ArrowLeftIcon,
@@ -1091,9 +1093,77 @@ function NoteView({
           </p>
         )}
 
-        <p className="note-body">{note.body}</p>
+        <NoteReading body={note.body} />
       </article>
     </section>
+  );
+}
+
+/** Where the way of showing notes last chosen is remembered, in this computer's web storage. */
+const NOTE_FORMAT_KEY = "synapse.noteFormat";
+
+// Remembering the choice is only a convenience: without storage, notes are
+// shown formatted.
+function rememberedFormatted(): boolean {
+  try {
+    return localStorage.getItem(NOTE_FORMAT_KEY) !== "plain";
+  } catch {
+    return true;
+  }
+}
+
+function rememberFormatted(formatted: boolean) {
+  try {
+    localStorage.setItem(NOTE_FORMAT_KEY, formatted ? "formatted" : "plain");
+  } catch {
+    // As above.
+  }
+}
+
+/**
+ * A note's text, formatted as Markdown or as the plain text it's stored as.
+ * The choice is only offered when formatting would change something; a note
+ * with no Markdown in it is shown as plain text, as it was typed.
+ */
+function NoteReading({ body }: { body: string }) {
+  const formattable = useMemo(() => hasFormatting(parseMarkdown(body)), [body]);
+  const [formatted, setFormatted] = useState(rememberedFormatted);
+
+  if (!formattable) {
+    return (
+      <div className="note-reading">
+        <p className="note-body">{body}</p>
+      </div>
+    );
+  }
+
+  function show(next: boolean) {
+    setFormatted(next);
+    rememberFormatted(next);
+  }
+
+  return (
+    <div className="note-reading">
+      <div className="note-view-switch" role="group" aria-label="Show the note">
+        <button
+          type="button"
+          className="button button-small"
+          aria-pressed={formatted}
+          onClick={() => show(true)}
+        >
+          Formatted
+        </button>
+        <button
+          type="button"
+          className="button button-small"
+          aria-pressed={!formatted}
+          onClick={() => show(false)}
+        >
+          Plain text
+        </button>
+      </div>
+      {formatted ? <MarkdownView text={body} /> : <p className="note-body">{body}</p>}
+    </div>
   );
 }
 
@@ -1147,7 +1217,7 @@ function NoteForm({
       <TextField
         id="note-body"
         label="Note"
-        hint="Plain text. Required. Up to 100,000 characters. Line breaks and indentation inside the note are kept; spaces and blank lines at the very start and end are removed."
+        hint="Plain text; Markdown, such as # headings, **bold** and - lists, is shown formatted when you read the note. Required. Up to 100,000 characters. Line breaks and indentation inside the note are kept; spaces and blank lines at the very start and end are removed."
         value={body}
         error={fieldError("body")}
         required
