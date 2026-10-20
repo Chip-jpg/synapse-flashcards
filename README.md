@@ -44,7 +44,9 @@ migrations, validation, scheduling, and every business rule; React only calls ty
   has checked the whole file and you've confirmed. It never merges.
 - **Notes** — type up your own plain-text study notes, or import them from a file, keep them in a
   local library, open and edit them, and delete ones you're done with. A deleted note leaves the library but is kept under
-  *Deleted notes*, where *Restore note* brings it back unchanged.
+  *Deleted notes*, where *Restore note* brings it back unchanged. A note written in Markdown is
+  shown formatted (headings, lists, emphasis, quotes, code, tables), or as its plain text if you
+  prefer; it's stored and edited as plain text either way.
 - **Cards from a spreadsheet** — add front/back cards to a deck from a CSV or TSV file, after
   checking every row, and save a deck's cards as a CSV file.
 - **Decks from Anki** — add the front/back notes of an Anki package (`.apkg` or `.colpkg`) as new
@@ -267,6 +269,16 @@ required. Line breaks and indentation are kept, and only blank space at the very
 trimmed. *Open note* shows it, *Edit note* changes it. The library lists the most recently edited
 note first.
 
+**Markdown in notes.** A note with Markdown in it (`# headings`, `**bold**`, `*italic*`, `~~struck~~`,
+`- lists`, `1. lists`, `- [ ] tasks`, `> quotes`, `` `code` `` and fenced code, `---` rules, and
+pipe tables) is shown formatted when you open it. *Formatted* and *Plain text* above the note switch
+between that and the text exactly as stored, and Synapse remembers your choice. Line breaks inside a
+paragraph are kept, and indented lines aren't treated as code, so notes typed as plain text look as
+they did. HTML in a note is shown as text, never run. Links aren't opened: their address is shown
+after their text. Pictures aren't loaded: their description is shown instead. Editing is always on
+the plain text, and the stored note never changes by being shown formatted. A note with no Markdown
+in it is shown as plain text, with no choice to make.
+
 **Import a file as a note.** *Notes* → *Import file* → pick a PDF, text (`.txt`), Markdown (`.md`),
 Word (`.docx`), or PowerPoint (`.pptx`) file. Synapse reads its text and opens it in the new-note form,
 titled after the document (its own title if it has one, else the file name), with a line saying
@@ -280,7 +292,8 @@ What's taken from each kind of file:
   page joined up again. Pages with no text (usually scanned images) are named, so you can check
   nothing's missing; a PDF with no text at all, such as a scan, is refused, since Synapse can't
   read pictures of text. Password-protected PDFs can't be read.
-- **Text and Markdown** — the whole file, as written (UTF-8, UTF-16, or older Windows text).
+- **Text and Markdown** — the whole file, as written (UTF-8, UTF-16, or older Windows text). Markdown
+  then shows formatted when you read the note.
 - **Word** — the document's paragraphs, list items as `- ` lines, and tables a row per line. Headers,
   footers, footnotes, comments, and images are left out.
 - **PowerPoint** — each slide's text in the order the slides are shown, under *Slide 1*, *Slide 2*,
@@ -389,7 +402,9 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
 - **Restoring is per deck.** *Deleted cards* restores one card, or with *Restore all* every deleted
   card of that deck at once; there's no choosing several, no undo of a restore beyond deleting the
   cards again, and no way to move a card to a different deck on the way back.
-- **Notes are plain text.** No formatting, attachments, audio, web clips, tags, or folders. Search
+- **Notes are plain text.** Markdown is shown formatted when you read a note, but there's no
+  formatting toolbar or live preview while editing, no reference-style links, footnotes or maths, and
+  links can't be opened from a note. No attachments, audio, web clips, tags, or folders. Search
   is exact text only (no fuzzy matching, no search inside deleted notes) and has no index, so each
   search reads every note.
   Importing a file takes only its text: the file isn't kept, layout and images are lost, and there's

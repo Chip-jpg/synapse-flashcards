@@ -543,6 +543,17 @@ Added on branch `claude/nightly-2026-10-19-cloze-cards-ddsgr2` (not yet released
 - **Backups.** A v0.7.0 backup (schema 11) restores with every card `basic`. A backup made after 0012 is refused by v0.7.0 and older as from a newer version ("newer schema"), as any newer backup is.
 - **Not done:** siblings aren't buried (two cards of one text can come up in the same session, one after the other); no conversion between kinds; no cloze suggestions from Ollama; no image occlusion. Not yet checked on Windows.
 
+## 4.12 Markdown in notes
+
+Added on branch `claude/nightly-2026-10-20-markdown-notes` (not yet released). Frontend only: no command, no migration, backups unchanged.
+
+- **Reading.** Opening a note parses its body with `src/markdown.ts` (`parseMarkdown`, no dependency) and draws it with `src/NoteMarkdown.tsx`, React elements only, so no part of a note is read as HTML. Headings (ATX and underlined; level n becomes `h(n+2)` below the title's h2), paragraphs, emphasis, strong, `~~strikethrough~~`, code spans, fenced code, quotes, bullet/numbered/task lists, rules, pipe tables, links, autolinks and pictures. Leading front matter is shown as a code block.
+- **Differences from CommonMark, on purpose.** Line breaks inside a paragraph are kept and indented lines are not code, so plain-text notes look as typed. No reference links, footnotes, HTML or entity decoding.
+- **Links and pictures** are described, never opened or loaded: a link shows its text then its address; a picture shows "Picture: alt (address)".
+- **Choice.** *Formatted* / *Plain text* above the body (`aria-pressed`), remembered in web storage (`synapse.noteFormat`, a per-computer convenience). Offered only when formatting changes something (`hasFormatting`); otherwise the body is shown as plain text as before.
+- **Unchanged.** Editing is on the plain text; the stored body, search, card-from-note context, suggestions and quizzes (which quote the plain text) are untouched.
+- **Bounded.** Parsing is linear-ish on the 100,000-character limit: brackets and backtick runs are matched in one pass, link addresses are looked for at most 1,024 characters on, and nesting stops at 32 levels.
+
 ______________________________________________________________________
 
 ## 5. FSRS and personalization
@@ -753,6 +764,7 @@ Current README identifies these main files:
 | `DeckDetail.tsx` | Deck content and management |
 | `ReviewSession.tsx` | Review interaction |
 | `Notes.tsx` | Notes library and note flows, including importing a file as a note and searching the library |
+| `markdown.ts`, `NoteMarkdown.tsx` | Reading a note's Markdown and showing it formatted, never as HTML (section 4.12) |
 | `SuggestCards.tsx` | Suggesting cards from a note and checking them before saving |
 | `Quiz.tsx` | A multiple-choice quiz on a note, and adding missed questions as cards |
 | `deckChoices.ts` | The decks a card can be added to, for both card-from-note screens |
@@ -1091,7 +1103,7 @@ The current README is explicit about these gaps.
 - Audio transcription.
 - YouTube transcript import.
 - Web clipping.
-- Rich-text or Markdown note formatting.
+- Rich-text formatting, or Markdown while editing. Markdown is shown formatted when reading a note (section 4.12).
 
 
 ### AI
