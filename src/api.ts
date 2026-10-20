@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 /** Mirrors `DeckSummary` in `src-tauri/src/study.rs`. */
@@ -161,10 +161,11 @@ export type ExportOutcome = { status: "saved"; fileName: string } | { status: "c
  * Mirrors `ImportCheck` in `src-tauri/src/commands.rs`. A "ready" backup has
  * passed every check but has replaced nothing yet; `token` identifies it to
  * `confirmImport` and `cancelImport`. `fileName` is the name only, never the
- * folder, and `exportedAt` is ISO-8601 UTC.
+ * folder, and `exportedAt` is ISO-8601 UTC. `keptFiles` counts the files
+ * (sources, pictures) it holds: 0 for a backup made before Synapse kept files.
  */
 export type ImportCheck =
-  | { status: "ready"; token: number; fileName: string; exportedAt: string }
+  | { status: "ready"; token: number; fileName: string; exportedAt: string; keptFiles: number }
   | { status: "cancelled" };
 
 /** Mirrors `NoteSummary` in `src-tauri/src/notes.rs`: one note in the library. */
@@ -1084,4 +1085,156 @@ export function toCommandError(err: unknown): CommandError {
     return err as CommandError;
   }
   return { kind: "failed", message: "Something went wrong." };
+}
+
+/**
+ * Mirrors `MediaType` in `src-tauri/src/assets.rs`: what a kept file is,
+ * worked out by Rust from its bytes.
+ */
+export type MediaType =
+  | "image/png"
+  | "image/jpeg"
+  | "image/gif"
+  | "image/webp"
+  | "application/pdf"
+  | "text/plain"
+  | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  | "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+
+/**
+ * Mirrors `Asset` in `src-tauri/src/assets.rs`: one file Synapse keeps (a
+ * picture, or a source's original). `sha256` names it and never changes;
+ * refer to it by `id` in anything stored, and show it with `keptFileUrl`.
+ */
+export type Asset = {
+  id: number;
+  sha256: string;
+  mediaType: MediaType;
+  /** Bytes. */
+  size: number;
+  /** ISO-8601 UTC. */
+  createdAt: string;
+};
+
+/**
+ * The address the webview loads a kept picture or PDF from, by its hash
+ * (Rust's `synapse:` scheme, `assets::respond`). Only kept pictures and PDFs
+ * load; anything else is a 404. Never build an address from text in a note.
+ */
+export function keptFileUrl(sha256: string): string {
+  return convertFileSrc(sha256, "synapse");
+}
+
+/** Mirrors `PictureChoice` in `src-tauri/src/commands.rs`. */
+export type PictureChoice = { status: "added"; asset: Asset } | { status: "cancelled" };
+
+/**
+ * Chooses a picture file (PNG, JPEG, GIF, or WebP, up to 20 MB) and keeps it.
+ * Rust opens the OS "open file" dialog; closing it resolves with
+ * `{ status: "cancelled" }`. The same picture is kept once however often it's
+ * added. Nothing refers to it yet: the caller stores its `id` where it's used.
+ */
+export function choosePicture(): Promise<PictureChoice> {
+  return invoke<PictureChoice>("choose_picture");
+}
+
+/**
+ * Keeps a pasted or dropped picture from its bytes. Rust checks the bytes are
+ * a PNG, JPEG, GIF, or WebP up to 20 MB, whatever the clipboard said.
+ */
+export function storePicture(bytes: Uint8Array): Promise<Asset> {
+  return invoke<Asset>("store_picture", bytes);
+}
+
+/**
+ * Mirrors `Source` in `src-tauri/src/sources.rs`: an imported document kept
+ * with its original file. `deletedAt` is null while it's active.
+ */
+export type Source = {
+  id: number;
+  title: string;
+  kind: FileKind;
+  /** The file's name when it was imported, never its folder. */
+  fileName: string;
+  /** Pages of a PDF or slides of a presentation; 1 for other documents. */
+  pageCount: number;
+  asset: Asset;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+};
+
+/** Mirrors `SourcePage` in `src-tauri/src/sources.rs`; `text` is empty for a page without text. */
+export type SourcePage = { number: number; text: string };
+
+/**
+ * Mirrors `SourceImport` in `src-tauri/src/commands.rs`: the kept source and
+ * the text `importFile` would give, for a note written from it.
+ */
+export type SourceImport =
+  | {
+      status: "imported";
+      source: Source;
+      text: {
+        kind: FileKind;
+        title: string;
+        body: string;
+        pages: number | null;
+        pagesWithoutText: number[];
+      };
+    }
+  | { status: "cancelled" };
+
+/**
+ * Chooses a document (PDF, text, Markdown, Word, or PowerPoint) and keeps it
+ * as a source: the original file and each page's text. Closing the file
+ * window resolves with `{ status: "cancelled" }`.
+ */
+export function importSource(): Promise<SourceImport> {
+  return invoke<SourceImport>("import_source");
+}
+
+/** Every active source, most recently changed first. */
+export function getSources(): Promise<Source[]> {
+  return invoke<Source[]>("get_sources");
+}
+
+/** Every deleted source, most recently deleted first. */
+export function getDeletedSources(): Promise<Source[]> {
+  return invoke<Source[]>("get_deleted_sources");
+}
+
+/** One active source; a deleted one rejects with kind "stale". */
+export function getSource(sourceId: number): Promise<Source> {
+  return invoke<Source>("get_source", { sourceId });
+}
+
+/** The text of every page of an active source, numbered from 1. */
+export function getSourcePages(sourceId: number): Promise<SourcePage[]> {
+  return invoke<SourcePage[]>("get_source_pages", { sourceId });
+}
+
+/** Renames an active source; a refused title rejects with field "title". */
+export function renameSource(sourceId: number, title: string): Promise<Source> {
+  return invoke<Source>("rename_source", { sourceId, title });
+}
+
+/** Deletes a source softly; its file and pages are kept. */
+export function deleteSource(sourceId: number): Promise<void> {
+  return invoke<void>("delete_source", { sourceId });
+}
+
+/** Restores a deleted source exactly as it was. */
+export function restoreSource(sourceId: number): Promise<void> {
+  return invoke<void>("restore_source", { sourceId });
+}
+
+/** Records, once and for good, that a note was written from a source. */
+export function linkNoteToSource(noteId: number, sourceId: number): Promise<void> {
+  return invoke<void>("link_note_to_source", { noteId, sourceId });
+}
+
+/** The id of the source a note was written from, or null. */
+export function getNoteSource(noteId: number): Promise<number | null> {
+  return invoke<number | null>("get_note_source", { noteId });
 }

@@ -1,5 +1,6 @@
 mod aid;
 mod anki;
+mod assets;
 mod authoring;
 mod cards_csv;
 mod cloze;
@@ -15,6 +16,7 @@ mod quiz;
 mod retention;
 mod scheduler;
 mod search;
+mod sources;
 mod stats;
 mod study;
 mod suggest;
@@ -48,7 +50,19 @@ pub fn run() {
             if let Ok(workspace) = db::Database::import_workspace(app.handle()) {
                 import::discard_staged(&workspace);
             }
+            // A kept file whose writing never finished isn't kept.
+            if let Ok(store) = db::Database::asset_store(app.handle()) {
+                store.remove_partials();
+            }
             Ok(())
+        })
+        // Kept pictures and PDFs, by hash, for the webview (`assets::respond`).
+        .register_asynchronous_uri_scheme_protocol(assets::SCHEME, |context, request, responder| {
+            let app = context.app_handle().clone();
+            let path = request.uri().path().to_string();
+            tauri::async_runtime::spawn(async move {
+                responder.respond(commands::kept_file(&app, &path).await);
+            });
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_decks,
@@ -108,7 +122,19 @@ pub fn run() {
             commands::stop_quiz,
             commands::read_anki_package,
             commands::import_anki_package,
-            commands::cancel_anki_import
+            commands::cancel_anki_import,
+            commands::choose_picture,
+            commands::store_picture,
+            commands::import_source,
+            commands::get_sources,
+            commands::get_deleted_sources,
+            commands::get_source,
+            commands::get_source_pages,
+            commands::rename_source,
+            commands::delete_source,
+            commands::restore_source,
+            commands::link_note_to_source,
+            commands::get_note_source
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

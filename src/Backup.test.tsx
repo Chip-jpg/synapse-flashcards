@@ -10,6 +10,7 @@ const BACKUP: ImportCheck = {
   token: 42,
   fileName: "synapse-export-2026-10-01.zip",
   exportedAt: CREATED,
+  keptFiles: 0,
 };
 
 function sidebar() {

@@ -2,27 +2,34 @@
 //! can copy anywhere. This is the export half of the portability contract in
 //! `docs/Synapse_Project_Spec.md` §7; `import.rs` restores these packages.
 //!
-//! The package holds exactly two entries:
+//! The package (format 2, since migration 0016) holds:
 //!
 //! ```text
 //! synapse-export-YYYY-MM-DD.zip
 //! ├── manifest.json        # what this package is, and which schema it holds
-//! └── db/synapse.sqlite    # the whole local database, as one consistent copy
+//! ├── db/synapse.sqlite    # the whole local database, as one consistent copy
+//! └── assets/<sha256>      # each file Synapse keeps (sources, pictures)
 //! ```
 //!
 //! The database *is* the study data: decks (active and archived), cards
 //! (active and soft-deleted), their FSRS scheduling, every `review_logs` row,
-//! every session, the `seed_markers` rows, and the user's typed notes.
-//! Exporting the file whole means an import restores history exactly, with no
-//! field left behind by a hand-written serializer.
+//! every session, the `seed_markers` rows, the user's typed notes, and the
+//! `assets` table listing every kept file. Exporting the file whole means an
+//! import restores history exactly, with no field left behind by a
+//! hand-written serializer.
 //!
-//! Deliberately **not** included, because Synapse does not have them yet:
-//! `notes/raw/`, `notes/extracted/`, and `audio/` (typed notes are plain text
-//! in the `notes` table, so they need no files; PDF and slide ingestion, spec
-//! §5.7, doesn't exist) and `config/settings.json` (the `settings` table, spec
-//! §5.6). Nothing outside Synapse's own database is ever read, so
-//! no credential, key, or unrelated file can reach an export. Synapse stores
-//! no credentials at all (spec §8).
+//! `assets/` holds exactly the files the exported database lists, no more
+//! and no fewer, each named by the SHA-256 of its bytes. Each one is hashed
+//! again while it is packed, so a file that went missing or changed on disk
+//! stops the export rather than producing a backup that can't be restored.
+//! A file in the store that no row names (see `assets.rs`) is never packed.
+//!
+//! Format 1 (up to v0.7.3) was the same without `assets/`. Synapse still
+//! restores it; an older Synapse refuses format 2 as too new.
+//!
+//! Nothing outside Synapse's own database and its `assets/` folder is ever
+//! read, so no credential, key, or unrelated file can reach an export.
+//! Synapse stores no credentials at all (spec §8).
 //!
 //! Writing is all-or-nothing. The snapshot and the growing archive are
 //! written beside the destination under unique temporary names, and the
@@ -43,17 +50,21 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 
+use crate::assets::{AssetStore, HashingWriter, MediaType};
 use crate::db::{to_db_time, DbError};
 
 /// Identifies the package, so an import can reject an unrelated `.zip`.
 pub const FORMAT: &str = "synapse-export";
 
 /// The package layout's own version, separate from the database schema
-/// version. It changes only if the entries below are rearranged.
-pub const FORMAT_VERSION: u32 = 1;
+/// version. It changes only if the entries below are rearranged: 2 added
+/// `assets/`.
+pub const FORMAT_VERSION: u32 = 2;
 
 pub const MANIFEST_ENTRY: &str = "manifest.json";
 pub const DATABASE_ENTRY: &str = "db/synapse.sqlite";
+/// The folder of kept files: each entry is this followed by a SHA-256.
+pub const ASSETS_FOLDER: &str = "assets/";
 
 /// What `manifest.json` holds. An import reads this first and can refuse the
 /// package before touching any data:
@@ -87,6 +98,10 @@ pub struct Manifest {
 #[serde(deny_unknown_fields)]
 pub struct Contents {
     pub database: String,
+    /// The folder of kept files: [`ASSETS_FOLDER`] in format 2, absent in
+    /// format 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assets: Option<String>,
 }
 
 /// Why an export didn't happen. Detail is for logs only; commands replace it
@@ -96,6 +111,9 @@ pub enum ExportError {
     /// The chosen destination can't be written to (a folder that disappeared,
     /// a read-only drive, no space).
     Destination(DbError),
+    /// A file the database lists is missing from the store, or its bytes no
+    /// longer match their hash. Nothing was written.
+    MissingAsset(DbError),
     /// Anything else: reading the database, or building the archive.
     Internal(DbError),
 }
@@ -158,6 +176,7 @@ fn temp_paths(destination: &Path, now: DateTime<Utc>) -> (PathBuf, PathBuf) {
 /// file or the new one, never a half-written mixture.
 pub async fn write_package(
     pool: &SqlitePool,
+    store: &AssetStore,
     destination: &Path,
     now: DateTime<Utc>,
     app_version: &str,
@@ -166,6 +185,7 @@ pub async fn write_package(
 
     let result = build_package(
         pool,
+        store,
         destination,
         &snapshot_path,
         &archive_path,
@@ -186,6 +206,7 @@ pub async fn write_package(
 /// The steps of an export, so [`write_package`] can clean up after any of them.
 async fn build_package(
     pool: &SqlitePool,
+    store: &AssetStore,
     destination: &Path,
     snapshot_path: &Path,
     archive_path: &Path,
@@ -200,6 +221,7 @@ async fn build_package(
         exported_at: to_db_time(now),
         contents: Contents {
             database: DATABASE_ENTRY.to_string(),
+            assets: Some(ASSETS_FOLDER.to_string()),
         },
     };
     let manifest =
@@ -228,7 +250,12 @@ async fn build_package(
         .await
         .map_err(|err| ExportError::Destination(err.into()))?;
 
-    write_archive(snapshot_path, archive_path, &manifest)?;
+    // The files to pack are the ones the snapshot lists, so the backup is
+    // consistent even if a file is added meanwhile.
+    let files = listed_assets(snapshot_path)
+        .await
+        .map_err(ExportError::Internal)?;
+    write_archive(snapshot_path, archive_path, &manifest, store, &files)?;
 
     // The archive is complete and flushed, so publishing it is one rename on
     // the same folder: either the old file is there or the new one is.
@@ -237,12 +264,53 @@ async fn build_package(
     Ok(())
 }
 
-/// Builds the `.zip` at `archive_path` from `manifest` and the database
-/// snapshot, and flushes it to disk before returning.
+/// One kept file a database lists: its hash, type and size.
+pub(crate) type Listed = (String, MediaType, u64);
+
+/// Every file the database at `path` lists in `assets`, by hash. A database
+/// from before migration 0016 has none.
+pub(crate) async fn listed_assets(path: &Path) -> Result<Vec<Listed>, DbError> {
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(path)
+        .read_only(true);
+    let snapshot = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await?;
+    let result = async {
+        let has_table: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'assets')",
+        )
+        .fetch_one(&snapshot)
+        .await?;
+        if !has_table {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<(String, String, i64)> =
+            sqlx::query_as("SELECT sha256, media_type, size FROM assets ORDER BY sha256")
+                .fetch_all(&snapshot)
+                .await?;
+        rows.into_iter()
+            .map(|(sha256, media_type, size)| {
+                let kind = MediaType::parse(&media_type)
+                    .ok_or_else(|| format!("unknown media type {media_type:?}"))?;
+                Ok((sha256, kind, u64::try_from(size)?))
+            })
+            .collect()
+    }
+    .await;
+    snapshot.close().await;
+    result
+}
+
+/// Builds the `.zip` at `archive_path` from `manifest`, the database
+/// snapshot, and the kept `files`, and flushes it to disk before returning.
 fn write_archive(
     snapshot_path: &Path,
     archive_path: &Path,
     manifest: &[u8],
+    store: &AssetStore,
+    files: &[Listed],
 ) -> Result<(), ExportError> {
     let file = File::create(archive_path).map_err(|err| ExportError::Destination(Box::new(err)))?;
     let mut zip = zip::ZipWriter::new(BufWriter::new(file));
@@ -265,6 +333,36 @@ fn write_archive(
     };
     write().map_err(|err| ExportError::Internal(Box::new(err)))?;
 
+    for (sha256, kind, size) in files {
+        // Pictures, PDFs and Office files are compressed already; only text
+        // is worth deflating.
+        let method = if *kind == MediaType::Text {
+            zip::CompressionMethod::Deflated
+        } else {
+            zip::CompressionMethod::Stored
+        };
+        let missing = |detail: String| ExportError::MissingAsset(detail.into());
+        let path = store
+            .path_of(sha256)
+            .ok_or_else(|| missing(format!("{sha256:?} isn't a kept file's name")))?;
+        let file = File::open(&path).map_err(|err| missing(format!("{sha256}: {err}")))?;
+        zip.start_file(
+            format!("{ASSETS_FOLDER}{sha256}"),
+            options.compression_method(method),
+        )
+        .map_err(|err| ExportError::Internal(Box::new(err)))?;
+        // Hashed on the way into the archive, so what is packed is checked.
+        let mut tee = HashingWriter::new(&mut zip);
+        let copied = std::io::copy(&mut BufReader::new(file), &mut tee)
+            .map_err(|err| ExportError::Internal(Box::new(err)))?;
+        let hash = tee.finish();
+        if copied != *size || hash != *sha256 {
+            return Err(missing(format!(
+                "{sha256}: {copied} bytes hashing to {hash}, not {size}"
+            )));
+        }
+    }
+
     // Finish the archive, then make sure it's really on disk before it gets
     // renamed into place as a finished backup.
     let mut file = zip
@@ -280,6 +378,7 @@ fn write_archive(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assets::test_support::*;
     use crate::db::open_file;
     use crate::db::test_support::*;
     use std::io::Read;
@@ -417,12 +516,19 @@ mod tests {
             let pool = populated(&dir).await;
             let archive = dir.join("backup.zip");
 
-            write_package(&pool, &archive, at(NOW), APP_VERSION)
-                .await
-                .unwrap();
+            write_package(
+                &pool,
+                &store_of(&pool).await,
+                &archive,
+                at(NOW),
+                APP_VERSION,
+            )
+            .await
+            .unwrap();
 
-            // Exactly the two documented entries: nothing else can be in an
-            // export, so no unrelated file or credential can travel in one.
+            // Exactly the two documented entries, as nothing is kept in the
+            // store: nothing else can be in an export, so no unrelated file
+            // or credential can travel in one.
             assert_eq!(
                 entry_names(&archive),
                 vec![MANIFEST_ENTRY.to_string(), DATABASE_ENTRY.to_string()]
@@ -435,7 +541,7 @@ mod tests {
                     .unwrap(),
                 serde_json::json!({
                     "format": "synapse-export",
-                    "format_version": 1,
+                    "format_version": 2,
                     // Every migration in the repository is applied. Taken from
                     // the migrations themselves: it's the key names that are
                     // the contract here, and pinning the number as a literal
@@ -443,7 +549,7 @@ mod tests {
                     "schema_version": crate::db::latest_schema_version(),
                     "app_version": "0.1.0",
                     "exported_at": "2026-09-16T09:30:00.000Z",
-                    "contents": { "database": "db/synapse.sqlite" },
+                    "contents": { "database": "db/synapse.sqlite", "assets": "assets/" },
                 })
             );
             // Only the export is left behind: no snapshot, no partial archive.
@@ -466,9 +572,15 @@ mod tests {
             let pool = populated(&dir).await;
             let archive = dir.join("backup.zip");
 
-            write_package(&pool, &archive, at(NOW), APP_VERSION)
-                .await
-                .unwrap();
+            write_package(
+                &pool,
+                &store_of(&pool).await,
+                &archive,
+                at(NOW),
+                APP_VERSION,
+            )
+            .await
+            .unwrap();
 
             let restored = exported_database(&archive, &dir.join("restored.sqlite")).await;
 
@@ -614,7 +726,7 @@ mod tests {
                 .unwrap();
 
             let archive = dir.join("backup.zip");
-            write_package(&pool, &archive, now, APP_VERSION)
+            write_package(&pool, &store_of(&pool).await, &archive, now, APP_VERSION)
                 .await
                 .unwrap();
             let restored = exported_database(&archive, &dir.join("restored.sqlite")).await;
@@ -669,9 +781,15 @@ mod tests {
             let pool = populated(&dir).await;
             let archive = dir.join("backup.zip");
 
-            write_package(&pool, &archive, at(NOW), APP_VERSION)
-                .await
-                .unwrap();
+            write_package(
+                &pool,
+                &store_of(&pool).await,
+                &archive,
+                at(NOW),
+                APP_VERSION,
+            )
+            .await
+            .unwrap();
             let first = std::fs::read(&archive).unwrap();
 
             // A second export to the same path (the user confirmed the
@@ -680,7 +798,7 @@ mod tests {
             crate::authoring::create_deck(&pool, "Physics", None, later)
                 .await
                 .unwrap();
-            write_package(&pool, &archive, later, APP_VERSION)
+            write_package(&pool, &store_of(&pool).await, &archive, later, APP_VERSION)
                 .await
                 .unwrap();
 
@@ -708,23 +826,36 @@ mod tests {
             // A destination inside a folder that doesn't exist: the snapshot
             // can't be written, so the export fails before anything is made.
             let missing = dir.join("no-such-folder").join("backup.zip");
-            assert!(write_package(&pool, &missing, at(NOW), APP_VERSION)
-                .await
-                .is_err());
+            assert!(write_package(
+                &pool,
+                &store_of(&pool).await,
+                &missing,
+                at(NOW),
+                APP_VERSION
+            )
+            .await
+            .is_err());
             assert!(!missing.exists());
             assert!(!missing.parent().unwrap().exists());
 
             // An existing export is untouched by a later failure, so a good
             // backup is never destroyed by a bad one.
             let archive = dir.join("backup.zip");
-            write_package(&pool, &archive, at(NOW), APP_VERSION)
-                .await
-                .unwrap();
+            write_package(
+                &pool,
+                &store_of(&pool).await,
+                &archive,
+                at(NOW),
+                APP_VERSION,
+            )
+            .await
+            .unwrap();
             let good = std::fs::read(&archive).unwrap();
+            let store = store_of(&pool).await;
             pool.close().await;
 
             // Exporting from a closed pool fails at the snapshot step.
-            assert!(write_package(&pool, &archive, at(NOW), APP_VERSION)
+            assert!(write_package(&pool, &store, &archive, at(NOW), APP_VERSION)
                 .await
                 .is_err());
             assert_eq!(std::fs::read(&archive).unwrap(), good);
@@ -751,9 +882,15 @@ mod tests {
             let pool = open_file(&dir.join("synapse.sqlite")).await.unwrap();
             let archive = dir.join("backup.zip");
 
-            write_package(&pool, &archive, at(NOW), APP_VERSION)
-                .await
-                .unwrap();
+            write_package(
+                &pool,
+                &store_of(&pool).await,
+                &archive,
+                at(NOW),
+                APP_VERSION,
+            )
+            .await
+            .unwrap();
 
             assert_eq!(
                 manifest_of(&archive).schema_version,
@@ -781,9 +918,15 @@ mod tests {
             migrations_up_to(3).run(&pool).await.unwrap();
             let archive = dir.join("backup.zip");
 
-            write_package(&pool, &archive, at(NOW), APP_VERSION)
-                .await
-                .unwrap();
+            write_package(
+                &pool,
+                &store_of(&pool).await,
+                &archive,
+                at(NOW),
+                APP_VERSION,
+            )
+            .await
+            .unwrap();
 
             // An import uses this to decide whether it can read the package,
             // so it must describe the exported file, not today's Synapse.
@@ -812,9 +955,15 @@ mod tests {
             // disk and has to be cleaned up.
             let occupied = dir.join("already-a-folder");
             std::fs::create_dir(&occupied).unwrap();
-            assert!(write_package(&pool, &occupied, at(NOW), APP_VERSION)
-                .await
-                .is_err());
+            assert!(write_package(
+                &pool,
+                &store_of(&pool).await,
+                &occupied,
+                at(NOW),
+                APP_VERSION
+            )
+            .await
+            .is_err());
             assert!(occupied.is_dir());
 
             // No snapshot and no partial archive survive next to it.
@@ -831,6 +980,66 @@ mod tests {
     }
 
     #[test]
+    fn an_export_packs_each_kept_file_and_refuses_a_missing_or_changed_one() {
+        tauri::async_runtime::block_on(async {
+            let dir = scratch("export-kept-files");
+            let pool = populated(&dir).await;
+            let store = store_of(&pool).await;
+            let picture = png(20);
+            let kept = crate::assets::add_picture(&pool, &store, &picture, at(NOW))
+                .await
+                .unwrap();
+            // A file in the store that no row names is never packed.
+            let stray = png(21);
+            store
+                .write(&crate::assets::sha256_hex(&stray), &stray)
+                .unwrap();
+
+            let archive = dir.join("backup.zip");
+            write_package(&pool, &store, &archive, at(NOW), APP_VERSION)
+                .await
+                .unwrap();
+            let entry = format!("{ASSETS_FOLDER}{}", kept.sha256);
+            assert_eq!(
+                entry_names(&archive),
+                vec![
+                    MANIFEST_ENTRY.to_string(),
+                    DATABASE_ENTRY.to_string(),
+                    entry.clone()
+                ]
+            );
+            assert_eq!(read_entry(&archive, &entry), picture);
+            let good = std::fs::read(&archive).unwrap();
+
+            // Changed on disk (same size), then gone: the export stops, and
+            // the earlier backup is untouched.
+            let path = store.path_of(&kept.sha256).unwrap();
+            let mut changed = picture.clone();
+            *changed.last_mut().unwrap() ^= 1;
+            std::fs::write(&path, &changed).unwrap();
+            assert!(matches!(
+                write_package(&pool, &store, &archive, at(NOW), APP_VERSION).await,
+                Err(ExportError::MissingAsset(_))
+            ));
+            std::fs::remove_file(&path).unwrap();
+            assert!(matches!(
+                write_package(&pool, &store, &archive, at(NOW), APP_VERSION).await,
+                Err(ExportError::MissingAsset(_))
+            ));
+            assert_eq!(std::fs::read(&archive).unwrap(), good);
+            let mut left: Vec<String> = std::fs::read_dir(&dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            left.sort();
+            assert_eq!(left, vec!["assets", "backup.zip", "synapse.sqlite"]);
+
+            pool.close().await;
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    #[test]
     fn an_unwritable_destination_is_reported_as_a_destination_problem() {
         tauri::async_runtime::block_on(async {
             let dir = scratch("export-destination-error");
@@ -840,7 +1049,14 @@ mod tests {
             // this must not be reported as Synapse failing to build a package.
             let missing = dir.join("no-such-folder").join("backup.zip");
             assert!(matches!(
-                write_package(&pool, &missing, at(NOW), APP_VERSION).await,
+                write_package(
+                    &pool,
+                    &store_of(&pool).await,
+                    &missing,
+                    at(NOW),
+                    APP_VERSION
+                )
+                .await,
                 Err(ExportError::Destination(_))
             ));
 

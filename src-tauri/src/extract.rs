@@ -121,6 +121,25 @@ pub enum ExtractError {
 /// Reads the text of the file at `path`, starting `helper` (normally Synapse
 /// itself) to read a PDF. Blocking: run it off the async runtime.
 pub fn read_file(path: &Path, helper: &Path) -> Result<ExtractedText, ExtractError> {
+    read_document(path, helper).map(|document| document.text)
+}
+
+/// A file read whole, for keeping it as a source (`sources.rs`): its bytes,
+/// the text [`read_file`] gives, and the text of each of its pages.
+#[derive(Debug)]
+pub struct Document {
+    /// The file's name, without its folder.
+    pub file_name: String,
+    pub bytes: Vec<u8>,
+    pub text: ExtractedText,
+    /// One entry per page of a PDF or slide of a presentation, tidied like
+    /// the body (a page without text is empty); the whole body as one page
+    /// for any other file.
+    pub pages: Vec<String>,
+}
+
+/// [`read_file`], keeping the bytes and each page's text too. Blocking.
+pub fn read_document(path: &Path, helper: &Path) -> Result<Document, ExtractError> {
     let kind = FileKind::of(path).ok_or(ExtractError::Unsupported)?;
     let size = std::fs::metadata(path)
         .map_err(|err| ExtractError::Unreadable(err.into()))?
@@ -133,20 +152,25 @@ pub fn read_file(path: &Path, helper: &Path) -> Result<ExtractedText, ExtractErr
         .file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_default();
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
 
-    let (own_title, body, pages, pages_without_text) = match kind {
-        FileKind::Text => (None, decode_text(&bytes), None, Vec::new()),
+    let (own_title, body, pages, pages_without_text, page_texts) = match kind {
+        FileKind::Text => (None, decode_text(&bytes), None, Vec::new(), None),
         FileKind::Markdown => {
             let text = decode_text(&bytes).replace("\r\n", "\n");
-            (markdown_title(&text), text, None, Vec::new())
+            (markdown_title(&text), text, None, Vec::new(), None)
         }
         FileKind::Word => {
             let (title, body) = word_text(&bytes)?;
-            (title, body, None, Vec::new())
+            (title, body, None, Vec::new(), None)
         }
         FileKind::PowerPoint => {
-            let (title, body, slides) = powerpoint_text(&bytes)?;
-            (title, body, Some(slides), Vec::new())
+            let (title, slides) = powerpoint_text(&bytes)?;
+            let body = slides.concat();
+            (title, body, Some(slides.len()), Vec::new(), Some(slides))
         }
         FileKind::Pdf => {
             let texts = read_pdf(helper, &bytes)?;
@@ -157,7 +181,13 @@ pub fn read_file(path: &Path, helper: &Path) -> Result<ExtractedText, ExtractErr
                 .map(|(index, _)| index + 1)
                 .collect();
             let text: Vec<String> = texts.iter().map(|page| unwrap_lines(page)).collect();
-            (None, text.join("\n\n"), Some(texts.len()), empty)
+            (
+                None,
+                text.join("\n\n"),
+                Some(texts.len()),
+                empty,
+                Some(text),
+            )
         }
     };
 
@@ -165,12 +195,21 @@ pub fn read_file(path: &Path, helper: &Path) -> Result<ExtractedText, ExtractErr
     if body.is_empty() {
         return Err(ExtractError::NoText);
     }
-    Ok(ExtractedText {
-        kind,
-        title: note_title(own_title.as_deref().unwrap_or(&file_title)),
-        body,
-        pages,
-        pages_without_text,
+    let pages_text = match page_texts {
+        Some(texts) if !texts.is_empty() => texts.iter().map(|text| tidy(text)).collect(),
+        _ => vec![body.clone()],
+    };
+    Ok(Document {
+        file_name,
+        bytes,
+        text: ExtractedText {
+            kind,
+            title: note_title(own_title.as_deref().unwrap_or(&file_title)),
+            body,
+            pages,
+            pages_without_text,
+        },
+        pages: pages_text,
     })
 }
 
@@ -549,7 +588,7 @@ fn resolve(folder: &str, target: &str) -> String {
 /// A presentation's own title, if it has one; its text, slide by slide in the
 /// order they're shown, each under "Slide N" and followed by its speaker
 /// notes; and how many slides it has.
-fn powerpoint_text(bytes: &[u8]) -> Result<(Option<String>, String, usize), ExtractError> {
+fn powerpoint_text(bytes: &[u8]) -> Result<(Option<String>, Vec<String>), ExtractError> {
     let mut package = open_package(bytes)?;
     let presentation = package_part(&mut package, "ppt/presentation.xml")?
         .ok_or_else(|| ExtractError::Damaged("no ppt/presentation.xml".into()))?;
@@ -587,8 +626,9 @@ fn powerpoint_text(bytes: &[u8]) -> Result<(Option<String>, String, usize), Extr
         }
     }
 
-    let mut out = String::new();
+    let mut slides = Vec::new();
     for (number, path) in slide_paths.iter().enumerate() {
+        let mut out = String::new();
         let slide = package_part(&mut package, path)?
             .ok_or_else(|| ExtractError::Damaged(format!("missing {path}").into()))?;
         out.push_str(&format!("Slide {}\n", number + 1));
@@ -612,8 +652,9 @@ fn powerpoint_text(bytes: &[u8]) -> Result<(Option<String>, String, usize), Extr
             }
         }
         out.push_str("\n\n");
+        slides.push(out);
     }
-    Ok((package_title(&mut package)?, out, slide_paths.len()))
+    Ok((package_title(&mut package)?, slides))
 }
 
 /// The speaker notes on a notes page: the text of its body placeholder only,

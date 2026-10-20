@@ -11,18 +11,31 @@
 //! 2. [`replace_database`] swaps that checked copy in for the real database,
 //!    keeping a rollback copy until the new one has opened successfully.
 //!
-//! Only Synapse's own export format is accepted — `format_version` 1, which
-//! holds exactly two entries:
+//! Only Synapse's own export formats are accepted. Format 2 (since migration
+//! 0016) holds:
 //!
 //! ```text
 //! manifest.json
 //! db/synapse.sqlite
+//! assets/<sha256>      (one per row of the database's `assets` table)
 //! ```
+//!
+//! Format 1 (up to v0.7.3) is exactly the first two entries; it still
+//! restores, and its database, brought up to date, simply keeps no files.
 //!
 //! Anything else is refused: other or extra entries, duplicate names, paths
 //! that could climb out of a folder, directories, symlinks, encrypted
 //! entries, unusual compression, an archive comment, or data in front of the
-//! archive. Nothing is ever extracted to a path taken from the archive.
+//! archive. Nothing is ever extracted to a path taken from the archive: a
+//! kept file is written under its hash, after the name was checked to be
+//! exactly 64 hex digits.
+//!
+//! The kept files are restored together with the database. Because each is
+//! named by its hash and never changes, they *join* the store beside the
+//! database rather than replacing it: at every moment the store holds every
+//! file either database needs, so a restore stopped at any point never
+//! leaves a database pointing at a missing file. Files that only the
+//! replaced database used stay in the store unused (see `assets.rs`).
 
 use std::fs::File;
 use std::io::{BufWriter, ErrorKind, Read, Seek, SeekFrom, Write};
@@ -34,8 +47,11 @@ use sqlx::SqlitePool;
 use tauri::async_runtime::Mutex;
 use zip::{CompressionMethod, ZipArchive};
 
+use crate::assets::{self, AssetStore, HashingWriter, MediaType};
 use crate::db::{self, Database, DbError};
-use crate::export::{Manifest, DATABASE_ENTRY, FORMAT, FORMAT_VERSION, MANIFEST_ENTRY};
+use crate::export::{
+    self, Manifest, ASSETS_FOLDER, DATABASE_ENTRY, FORMAT, FORMAT_VERSION, MANIFEST_ENTRY,
+};
 
 /// The largest `manifest.json` accepted. A real one is a few hundred bytes.
 pub const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
@@ -48,6 +64,8 @@ pub const MAX_DATABASE_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// The checked copy of a backup's database, inside the import workspace.
 const STAGED_FILE: &str = "staged.sqlite";
+/// The checked copies of a backup's kept files, inside the import workspace.
+const STAGED_ASSETS: &str = "staged-assets";
 /// The current database's safety copy, kept only while a restore runs.
 const ROLLBACK_FILE: &str = "rollback.sqlite";
 
@@ -60,11 +78,18 @@ const SIDECAR_SUFFIXES: [&str; 3] = ["-journal", "-wal", "-shm"];
 struct Limits {
     manifest: u64,
     database: u64,
+    /// One kept file, and all of them together, and how many.
+    asset: u64,
+    assets_total: u64,
+    asset_count: u64,
 }
 
 const LIMITS: Limits = Limits {
     manifest: MAX_MANIFEST_BYTES,
     database: MAX_DATABASE_BYTES,
+    asset: assets::MAX_ASSET_BYTES,
+    assets_total: assets::MAX_STORE_BYTES,
+    asset_count: assets::MAX_STORE_FILES,
 };
 
 /// Why a backup was refused or couldn't be prepared. The current database
@@ -79,7 +104,8 @@ pub enum ImportError {
     /// A Synapse export whose contents fail a check: a bad checksum, a broken
     /// manifest, or a database that isn't intact or isn't Synapse's schema.
     Damaged(DbError),
-    /// Bigger than [`MAX_DATABASE_BYTES`] or [`MAX_MANIFEST_BYTES`].
+    /// Bigger than [`MAX_DATABASE_BYTES`] or [`MAX_MANIFEST_BYTES`], or
+    /// with more kept files than the store can hold (`assets.rs`).
     TooLarge,
     /// The chosen file couldn't be read at all.
     Unreadable(DbError),
@@ -104,6 +130,9 @@ fn internal(detail: impl Into<DbError>) -> ImportError {
 pub struct StagedImport {
     /// The checked database, already brought up to this build's schema.
     pub database: PathBuf,
+    /// The hashes of the checked kept files, in the workspace's
+    /// `staged-assets` folder, in order.
+    pub assets: Vec<String>,
     pub manifest: Manifest,
 }
 
@@ -112,16 +141,19 @@ pub struct StagedImport {
 /// The real database is never touched. Checks run in this order, and the
 /// first failure stops everything and removes the private copy:
 ///
-/// 1. The file ends in a zip directory record listing exactly two entries and
-///    no archive comment. (Read directly, because the zip reader quietly
-///    merges entries that share a name.)
-/// 2. The zip opens with nothing in front of it and holds exactly
-///    `manifest.json` and `db/synapse.sqlite`: plain files with safe names,
-///    not encrypted, stored or deflated, and within the size limits.
+/// 1. The file ends in a zip directory record listing at least two entries
+///    (and no more than the store can hold) and no archive comment. (Read
+///    directly, because the zip reader quietly merges entries that share a
+///    name.)
+/// 2. The zip opens with nothing in front of it and holds `manifest.json`,
+///    `db/synapse.sqlite`, and nothing else but `assets/<sha256>` entries:
+///    plain files with safe names, not encrypted, stored or deflated, and
+///    within the size limits.
 /// 3. The manifest (its CRC-32 verified) names `format` "synapse-export",
-///    then a `format_version` this build reads; then it parses strictly,
-///    names the database entry, and has a `schema_version` from 1 up to this
-///    build's and a valid `exported_at`.
+///    then a `format_version` this build reads (1 or 2); then it parses
+///    strictly, names the entries its format has (format 1 has no kept
+///    files), and has a `schema_version` from 1 up to this build's and a
+///    valid `exported_at`.
 /// 4. The database is extracted, CRC-32 verified and size-capped, to a fixed
 ///    name in the workspace.
 /// 5. It starts with SQLite's file header.
@@ -133,6 +165,9 @@ pub struct StagedImport {
 /// 9. Migrated forward by this build's own migrations (as any older database
 ///    is at launch), it passes the integrity check again, matches the current
 ///    schema, has no broken references, and has exactly one sample deck.
+/// 10. The package's kept files are exactly the ones the database lists, and
+///     each one, extracted to the workspace, has the size its row says, bytes
+///     that hash to its name, and the type its row says (by its first bytes).
 pub async fn stage_package(archive: &Path, workspace: &Path) -> Result<StagedImport, ImportError> {
     stage_with_limits(archive, workspace, LIMITS).await
 }
@@ -161,10 +196,12 @@ async fn stage(
     staged: &Path,
     limits: Limits,
 ) -> Result<StagedImport, ImportError> {
-    let manifest = unpack(archive, workspace, staged, limits)?;
+    let (manifest, mut zip, entries) = unpack(archive, workspace, staged, limits)?;
     check_database(staged, manifest.schema_version).await?;
+    let assets = stage_assets(&mut zip, staged, &workspace.join(STAGED_ASSETS), entries).await?;
     Ok(StagedImport {
         database: staged.to_path_buf(),
+        assets,
         manifest,
     })
 }
@@ -174,7 +211,22 @@ async fn stage(
 /// creates are ever removed.
 pub fn discard_staged(workspace: &Path) {
     remove_database_files(&workspace.join(STAGED_FILE));
+    remove_staged_assets(workspace);
     let _ = std::fs::remove_dir(workspace);
+}
+
+/// Removes the checked copies of a backup's kept files (only names that are
+/// a kept file's), then their folder if nothing else is in it.
+fn remove_staged_assets(workspace: &Path) {
+    let dir = workspace.join(STAGED_ASSETS);
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            if assets::is_asset_name(&entry.file_name().to_string_lossy()) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    let _ = std::fs::remove_dir(&dir);
 }
 
 fn remove_database_files(path: &Path) {
@@ -199,27 +251,33 @@ fn has_sidecar(path: &Path) -> bool {
         .any(|suffix| !matches!(sidecar(path, suffix).try_exists(), Ok(false)))
 }
 
+/// What [`unpack`] hands on: the manifest, the open archive, and its kept
+/// files' hashes and sizes.
+type Unpacked = (Manifest, ZipArchive<File>, Vec<(String, u64)>);
+
 /// Checks 1–5: the archive, its manifest, and extracting the database.
+/// Returns the manifest, the open archive, and the hashes of its kept files
+/// with their sizes, in order.
 fn unpack(
     archive: &Path,
     workspace: &Path,
     staged: &Path,
     limits: Limits,
-) -> Result<Manifest, ImportError> {
+) -> Result<Unpacked, ImportError> {
     let mut file = File::open(archive).map_err(|err| ImportError::Unreadable(Box::new(err)))?;
-    check_end_record(&mut file)?;
+    let listed = check_end_record(&mut file, limits)?;
 
     let mut zip = ZipArchive::new(file).map_err(|err| ImportError::NotAnExport(Box::new(err)))?;
     if zip.offset() != 0 {
         return Err(not_an_export("there is data in front of the archive"));
     }
-    check_entries(&mut zip, limits)?;
-    let manifest = read_manifest(&mut zip, limits)?;
+    let entries = check_entries(&mut zip, listed, limits)?;
+    let manifest = read_manifest(&mut zip, limits, !entries.is_empty())?;
 
     std::fs::create_dir_all(workspace).map_err(internal)?;
     extract_database(&mut zip, staged, limits)?;
     check_sqlite_header(staged)?;
-    Ok(manifest)
+    Ok((manifest, zip, entries))
 }
 
 /// The zip "end of central directory" record: 22 bytes, then the archive
@@ -229,8 +287,9 @@ const END_RECORD_LEN: u64 = 22;
 /// needs zip64. A Synapse export never does.
 const ZIP64_LOCATOR_LEN: u64 = 20;
 
-/// Check 1: the end record lists exactly two entries and no comment.
-fn check_end_record(file: &mut File) -> Result<(), ImportError> {
+/// Check 1: the end record lists at least the two required entries, no more
+/// than kept files allow, and no comment. Returns how many it lists.
+fn check_end_record(file: &mut File, limits: Limits) -> Result<usize, ImportError> {
     let unreadable = |err: std::io::Error| ImportError::Unreadable(Box::new(err));
     let len = file.metadata().map_err(unreadable)?.len();
     if len < END_RECORD_LEN {
@@ -256,29 +315,49 @@ fn check_end_record(file: &mut File) -> Result<(), ImportError> {
         return Err(not_an_export("the archive uses zip64"));
     }
     // Entries on this disk, and in total.
-    if field(8) != 2 || field(10) != 2 {
+    let listed = field(10);
+    if field(8) != listed || listed < 2 || u64::from(listed) > 2 + limits.asset_count {
         return Err(not_an_export(format!(
-            "the archive lists {} entries, not 2",
-            field(10)
+            "the archive lists {listed} entries ({} on this disk)",
+            field(8)
         )));
     }
-    Ok(())
+    Ok(usize::from(listed))
 }
 
-/// Check 2: exactly the two expected entries, each a plain, safe file.
-fn check_entries(zip: &mut ZipArchive<File>, limits: Limits) -> Result<(), ImportError> {
-    // The end record said two; the reader agrees only if the names differ.
-    if zip.len() != 2 {
+/// Check 2: the manifest, the database, and kept files only, each a plain,
+/// safe file. Returns the kept files' hashes and sizes, in order.
+fn check_entries(
+    zip: &mut ZipArchive<File>,
+    listed: usize,
+    limits: Limits,
+) -> Result<Vec<(String, u64)>, ImportError> {
+    // The reader agrees with the end record only if no names repeat.
+    if zip.len() != listed {
         return Err(not_an_export("the archive's entries share a name"));
     }
-    // Two entries, each one of two distinct names, means both are present.
+    let mut required = 0;
+    let mut kept = Vec::new();
+    let mut kept_total: u64 = 0;
     for index in 0..zip.len() {
         let entry = zip
             .by_index_raw(index)
             .map_err(|err| ImportError::Damaged(Box::new(err)))?;
+        let hash = entry
+            .name_raw()
+            .strip_prefix(ASSETS_FOLDER.as_bytes())
+            .and_then(|name| std::str::from_utf8(name).ok())
+            .filter(|name| assets::is_asset_name(name));
         let limit = match entry.name_raw() {
-            name if name == MANIFEST_ENTRY.as_bytes() => limits.manifest,
-            name if name == DATABASE_ENTRY.as_bytes() => limits.database,
+            name if name == MANIFEST_ENTRY.as_bytes() || name == DATABASE_ENTRY.as_bytes() => {
+                required += 1;
+                if name == MANIFEST_ENTRY.as_bytes() {
+                    limits.manifest
+                } else {
+                    limits.database
+                }
+            }
+            _ if hash.is_some() => limits.asset,
             name => {
                 return Err(not_an_export(format!(
                     "unexpected entry {:?}",
@@ -313,12 +392,29 @@ fn check_entries(zip: &mut ZipArchive<File>, limits: Limits) -> Result<(), Impor
         if entry.size() > limit {
             return Err(ImportError::TooLarge);
         }
+        if let Some(hash) = hash {
+            kept_total = kept_total.saturating_add(entry.size());
+            kept.push((hash.to_string(), entry.size()));
+        }
     }
-    Ok(())
+    // Distinct names, so two required ones means both are there.
+    if required != 2 {
+        return Err(not_an_export("the manifest or the database is missing"));
+    }
+    if kept_total > limits.assets_total {
+        return Err(ImportError::TooLarge);
+    }
+    kept.sort();
+    Ok(kept)
 }
 
 /// Check 3: the manifest describes a package this build can restore.
-fn read_manifest(zip: &mut ZipArchive<File>, limits: Limits) -> Result<Manifest, ImportError> {
+/// `has_assets` says whether the archive has kept files.
+fn read_manifest(
+    zip: &mut ZipArchive<File>,
+    limits: Limits,
+    has_assets: bool,
+) -> Result<Manifest, ImportError> {
     let mut bytes = Vec::new();
     let entry = zip
         .by_name(MANIFEST_ENTRY)
@@ -332,7 +428,9 @@ fn read_manifest(zip: &mut ZipArchive<File>, limits: Limits) -> Result<Manifest,
         return Err(not_an_export("the manifest's format isn't synapse-export"));
     }
     match value.get("format_version").and_then(|v| v.as_u64()) {
-        Some(version) if version == u64::from(FORMAT_VERSION) => {}
+        // Format 1 has no kept files: one there isn't part of this format.
+        Some(1) if has_assets => return Err(not_an_export("format 1 holds no kept files")),
+        Some(version) if (1..=u64::from(FORMAT_VERSION)).contains(&version) => {}
         Some(version) if version > u64::from(FORMAT_VERSION) => {
             return Err(ImportError::TooNew(
                 format!("format_version {version}").into(),
@@ -346,6 +444,10 @@ fn read_manifest(zip: &mut ZipArchive<File>, limits: Limits) -> Result<Manifest,
     let mut manifest: Manifest = serde_json::from_value(value).map_err(damaged)?;
     if manifest.contents.database != DATABASE_ENTRY {
         return Err(damaged("the manifest names another database entry"));
+    }
+    let expected_assets = (manifest.format_version >= 2).then_some(ASSETS_FOLDER);
+    if manifest.contents.assets.as_deref() != expected_assets {
+        return Err(damaged("the manifest names another folder of kept files"));
     }
     let latest = db::latest_schema_version();
     if manifest.schema_version > latest {
@@ -484,6 +586,73 @@ async fn check_current(pool: &SqlitePool) -> Result<(), ImportError> {
     Ok(())
 }
 
+/// Check 10: extracts the kept files the checked database lists into
+/// `dir`, checking each one, and returns their hashes in order. `entries`
+/// are the archive's kept files (from check 2), which must be exactly those.
+async fn stage_assets(
+    zip: &mut ZipArchive<File>,
+    staged: &Path,
+    dir: &Path,
+    entries: Vec<(String, u64)>,
+) -> Result<Vec<String>, ImportError> {
+    let listed = export::listed_assets(staged).await.map_err(damaged)?;
+    let names: Vec<&str> = listed.iter().map(|(hash, _, _)| hash.as_str()).collect();
+    let packed: Vec<&str> = entries.iter().map(|(hash, _)| hash.as_str()).collect();
+    if names != packed {
+        return Err(damaged(format!(
+            "the package has {} kept files, and they aren't the {} its database lists",
+            packed.len(),
+            names.len()
+        )));
+    }
+    if listed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    std::fs::create_dir_all(dir).map_err(internal)?;
+    for ((hash, kind, size), (_, packed_size)) in listed.iter().zip(&entries) {
+        if packed_size != size {
+            return Err(damaged(format!(
+                "kept file {hash} isn't the size its row says"
+            )));
+        }
+        let entry = zip
+            .by_name(&format!("{ASSETS_FOLDER}{hash}"))
+            .map_err(|err| ImportError::Damaged(Box::new(err)))?;
+        let path = dir.join(hash);
+        // `create_new`: never writes over a file, even one this module owns.
+        let file = File::create_new(&path).map_err(internal)?;
+        let mut out = HashingWriter::new(BufWriter::new(file));
+        copy_limited(entry, &mut out, *size)?;
+        let found = out.finish_into();
+        let file = found
+            .1
+            .into_inner()
+            .map_err(|err| internal(err.into_error()))?;
+        file.sync_all().map_err(internal)?;
+        if found.0 != *hash {
+            return Err(damaged(format!(
+                "kept file {hash} doesn't hash to its name"
+            )));
+        }
+        if !starts_as(&path, *kind) {
+            return Err(damaged(format!(
+                "kept file {hash} isn't the type its row says"
+            )));
+        }
+    }
+    Ok(listed.into_iter().map(|(hash, _, _)| hash).collect())
+}
+
+/// Whether the file at `path` starts the way a file of `kind` does.
+fn starts_as(path: &Path, kind: MediaType) -> bool {
+    let mut head = Vec::with_capacity(16);
+    File::open(path)
+        .and_then(|file| file.take(16).read_to_end(&mut head))
+        .is_ok()
+        && assets::matches_type(&head, kind)
+}
+
 /// `PRAGMA integrity_check` reports exactly "ok".
 async fn integrity_ok(pool: &SqlitePool) -> Result<(), DbError> {
     let report: Vec<String> = sqlx::query_scalar("PRAGMA integrity_check")
@@ -580,7 +749,9 @@ pub enum RestoreError {
     RollbackFailed(DbError),
 }
 
-/// Replaces the database at `db_path` with the checked copy at `staged`.
+/// Replaces the database at `db_path` with the checked copy at `staged`, and
+/// adds the backup's checked kept files (in the workspace's `staged-assets`
+/// folder) to `store`.
 ///
 /// Holds the database lock throughout, so no command can read, write, or
 /// reopen either file while they change places. In order:
@@ -592,21 +763,28 @@ pub enum RestoreError {
 ///    read-only connection. A rollback copy left by an earlier failed restore
 ///    is moved aside under a dated name first, never deleted. If this fails,
 ///    stop and reopen the current database.
-/// 3. If a journal is beside either file (an interrupted write, which SQLite
-///    would replay into whichever database then has that name), stop and
-///    reopen the current database.
+/// 3. The backup's kept files are moved into the store, each a rename on the
+///    same drive. A file already there (same name, same size) is left as it
+///    is: the same name means the same bytes. If a move fails, the files
+///    moved so far are removed again; stop and reopen the current database.
+///    From here the store holds every file either database lists.
+///    If a journal is beside either database file (an interrupted write,
+///    which SQLite would replay into whichever database then has that name),
+///    stop and reopen the current database.
 /// 4. The checked copy is renamed over the database: one step on the same
 ///    drive, so the file is always either the old database or the new one.
 ///    If that fails — on Windows, also when another program still has the
 ///    file open — stop and reopen the current database.
-/// 5. The new database is opened and its integrity checked. If that fails,
-///    the rollback copy is renamed back and reopened instead.
+/// 5. The new database is opened, its integrity checked, and every file it
+///    lists found in the store. If that fails, the rollback copy is renamed
+///    back and reopened instead, and the files step 3 added are removed.
 /// 6. The new pool is installed and the rollback copy deleted.
 ///
 /// Every stop before step 6 leaves the previous data in place.
 pub async fn replace_database(
     database: &Database,
     db_path: &Path,
+    store: &AssetStore,
     staged: &Path,
     workspace: &Path,
 ) -> Result<(), RestoreError> {
@@ -630,23 +808,37 @@ pub async fn replace_database(
         return Err(RestoreError::NotRestored(err));
     }
 
-    // 3 and 4. Nothing on disk has changed if this fails.
+    // 3. The store only gains files, which the current database doesn't
+    // list, so it is unaffected whatever happens next.
+    let added = match add_staged_assets(&workspace.join(STAGED_ASSETS), store) {
+        Ok(added) => added,
+        Err(err) => {
+            remove_database_files(&rollback);
+            *slot = reopen(db_path).await;
+            return Err(RestoreError::NotRestored(err));
+        }
+    };
+
+    // 3 and 4. Nothing the current database uses has changed if this fails.
     if let Err(err) = swap_in(staged, db_path) {
+        remove_files(&added);
         remove_database_files(&rollback);
         *slot = reopen(db_path).await;
         return Err(RestoreError::NotRestored(err));
     }
 
     // 5.
-    match open_checked(db_path).await {
+    match open_checked(db_path, store).await {
         Ok(pool) => {
             // 6.
             *slot = Some(pool);
             remove_database_files(&rollback);
+            remove_staged_assets(workspace);
             let _ = std::fs::remove_dir(workspace);
             Ok(())
         }
         Err(err) => {
+            remove_files(&added);
             if let Err(back) = put_back(&rollback, db_path) {
                 return Err(RestoreError::RollbackFailed(
                     format!("opening the restored database failed ({err}); putting the previous one back failed ({back})").into(),
@@ -723,10 +915,70 @@ fn swap_in(staged: &Path, db_path: &Path) -> Result<(), DbError> {
     Ok(())
 }
 
-/// Opens the restored database, checking it again now it's in place.
-async fn open_checked(path: &Path) -> Result<SqlitePool, DbError> {
+/// Step 3: moves every checked kept file in `staged` into `store`, and
+/// returns the files that weren't there before. On a failure, those moved so
+/// far are removed again, so the store is as it was.
+fn add_staged_assets(staged: &Path, store: &AssetStore) -> Result<Vec<PathBuf>, DbError> {
+    let mut added = Vec::new();
+    let result = (|| -> Result<(), DbError> {
+        let entries = match std::fs::read_dir(staged) {
+            Ok(entries) => entries,
+            // A backup with no kept files has no folder.
+            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(err) => return Err(err.into()),
+        };
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(target) = store.path_of(&name) else {
+                continue;
+            };
+            let size = entry.metadata()?.len();
+            if store.has(&name, size) {
+                continue;
+            }
+            std::fs::create_dir_all(store.dir())?;
+            let existed = !matches!(target.try_exists(), Ok(false));
+            std::fs::rename(entry.path(), &target)?;
+            if !existed {
+                added.push(target);
+            }
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => Ok(added),
+        Err(err) => {
+            remove_files(&added);
+            Err(err)
+        }
+    }
+}
+
+fn remove_files(paths: &[PathBuf]) {
+    for path in paths {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Opens the restored database, checking it again now it's in place: its
+/// integrity, and every file it lists there in `store`, at its size.
+async fn open_checked(path: &Path, store: &AssetStore) -> Result<SqlitePool, DbError> {
     let pool = db::open_file(path).await?;
-    if let Err(err) = integrity_ok(&pool).await {
+    let checked = async {
+        integrity_ok(&pool).await?;
+        let listed: Vec<(String, i64)> = sqlx::query_as("SELECT sha256, size FROM assets")
+            .fetch_all(&pool)
+            .await?;
+        for (hash, size) in listed {
+            if !store.has(&hash, u64::try_from(size)?) {
+                return Err(format!("kept file {hash} isn't in the store").into());
+            }
+        }
+        Ok::<_, DbError>(())
+    }
+    .await;
+    if let Err(err) = checked {
         pool.close().await;
         return Err(err);
     }
@@ -810,6 +1062,7 @@ impl Pending {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assets::test_support::*;
     use crate::authoring::{archive_deck, create_deck, create_flashcard, delete_flashcard};
     use crate::db::open_file;
     use crate::db::test_support::*;
@@ -821,6 +1074,11 @@ mod tests {
 
     const NOW: &str = "2026-09-16T09:30:00Z";
     const LATER: &str = "2026-09-16T10:00:00Z";
+
+    /// The store beside the database at `db_path`, where the app keeps it.
+    fn store_beside(db_path: &Path) -> AssetStore {
+        AssetStore::new(db_path.parent().unwrap().join(assets::STORE_FOLDER))
+    }
 
     /// A fresh folder under the build's `target/`. Removed by the test.
     fn scratch(name: &str) -> PathBuf {
@@ -1093,9 +1351,15 @@ mod tests {
             let dir = scratch("import-restore");
             let source = source_database(&dir.join("source").join("synapse.sqlite")).await;
             let archive = dir.join("backup.zip");
-            write_package(&source, &archive, at(LATER), "0.1.0")
-                .await
-                .unwrap();
+            write_package(
+                &source,
+                &store_of(&source).await,
+                &archive,
+                at(LATER),
+                "0.1.0",
+            )
+            .await
+            .unwrap();
             let source_rows = dump(&source).await;
             source.close().await;
 
@@ -1112,9 +1376,15 @@ mod tests {
             // Checking and preparing the backup changed nothing yet.
             assert_eq!(dump(&installed(&database).await).await, target_rows);
 
-            replace_database(&database, &target_path, &staged.database, &workspace)
-                .await
-                .unwrap();
+            replace_database(
+                &database,
+                &target_path,
+                &store_beside(&target_path),
+                &staged.database,
+                &workspace,
+            )
+            .await
+            .unwrap();
 
             // Every row of every table is the source's, and nothing of the
             // target's own data is left.
@@ -1301,14 +1571,27 @@ mod tests {
             let dir = scratch("import-refused");
             let source = source_database(&dir.join("source").join("synapse.sqlite")).await;
             let genuine_path = dir.join("genuine.zip");
-            write_package(&source, &genuine_path, at(NOW), "0.1.0")
-                .await
-                .unwrap();
+            write_package(
+                &source,
+                &store_of(&source).await,
+                &genuine_path,
+                at(NOW),
+                "0.1.0",
+            )
+            .await
+            .unwrap();
             source.close().await;
             let genuine = std::fs::read(&genuine_path).unwrap();
             let manifest = read_entry(&genuine, MANIFEST_ENTRY);
             let database = read_entry(&genuine, DATABASE_ENTRY);
             let latest = db::latest_schema_version();
+            assert_eq!(
+                serde_json::from_slice::<Manifest>(&manifest)
+                    .unwrap()
+                    .format_version,
+                2
+            );
+            let kept_entry = format!("{ASSETS_FOLDER}{}", assets::sha256_hex(&png(0)));
 
             // Databases that are valid SQLite but not what a backup may hold.
             let made = dir.join("made");
@@ -1412,11 +1695,91 @@ mod tests {
                     zip_of(&[
                         (
                             MANIFEST_ENTRY,
-                            &manifest_with(|m| m["format_version"] = 2.into()),
+                            &manifest_with(|m| m["format_version"] = 3.into()),
                         ),
                         (DATABASE_ENTRY, &database),
                     ]),
                     "too new",
+                ),
+                (
+                    "format 2 without its folder of kept files",
+                    zip_of(&[
+                        (
+                            MANIFEST_ENTRY,
+                            &manifest_with(|m| m["format_version"] = 2.into()),
+                        ),
+                        (DATABASE_ENTRY, &database),
+                    ]),
+                    "damaged",
+                ),
+                (
+                    "format 1 naming a folder of kept files",
+                    zip_of(&[
+                        (
+                            MANIFEST_ENTRY,
+                            &manifest_with(|m| m["contents"]["assets"] = "assets/".into()),
+                        ),
+                        (DATABASE_ENTRY, &database),
+                    ]),
+                    "damaged",
+                ),
+                (
+                    "format 2 naming another folder",
+                    zip_of(&[
+                        (
+                            MANIFEST_ENTRY,
+                            &manifest_with(|m| {
+                                m["format_version"] = 2.into();
+                                m["contents"]["assets"] = "files/".into();
+                            }),
+                        ),
+                        (DATABASE_ENTRY, &database),
+                    ]),
+                    "damaged",
+                ),
+                (
+                    "format 1 with a kept file",
+                    zip_of(&[
+                        (MANIFEST_ENTRY, &manifest_with(|_| {})),
+                        (DATABASE_ENTRY, &database),
+                        (&kept_entry, &png(0)),
+                    ]),
+                    "not an export",
+                ),
+                (
+                    "a kept file the database doesn't list",
+                    zip_of(&[
+                        (MANIFEST_ENTRY, &manifest),
+                        (DATABASE_ENTRY, &database),
+                        (&kept_entry, &png(0)),
+                    ]),
+                    "damaged",
+                ),
+                (
+                    "a kept file under a name that isn't a hash",
+                    zip_of(&[
+                        (MANIFEST_ENTRY, &manifest),
+                        (DATABASE_ENTRY, &database),
+                        (
+                            &kept_entry.to_uppercase().replace("ASSETS/", "assets/"),
+                            &png(0),
+                        ),
+                    ]),
+                    "not an export",
+                ),
+                (
+                    "a folder of kept files as an entry",
+                    {
+                        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+                        let options = SimpleFileOptions::default();
+                        zip.start_file(MANIFEST_ENTRY, options).unwrap();
+                        zip.write_all(&manifest).unwrap();
+                        zip.start_file(DATABASE_ENTRY, options).unwrap();
+                        zip.write_all(&database).unwrap();
+                        zip.add_directory("assets/", options).unwrap();
+                        zip.finish().unwrap().into_inner()
+                    },
+                    "not an export",
                 ),
                 (
                     "format version 0",
@@ -1696,6 +2059,7 @@ mod tests {
             ];
             // Unsafe names, each paired with the manifest so there are two entries.
             for name in [
+                "assets/../db/synapse.sqlite",
                 "../db/synapse.sqlite",
                 "/db/synapse.sqlite",
                 "db\\synapse.sqlite",
@@ -1760,22 +2124,28 @@ mod tests {
                 .await
                 .unwrap();
             let archive = dir.join("backup.zip");
-            write_package(&source, &archive, at(NOW), "0.1.0")
-                .await
-                .unwrap();
+            write_package(
+                &source,
+                &store_of(&source).await,
+                &archive,
+                at(NOW),
+                "0.1.0",
+            )
+            .await
+            .unwrap();
             source.close().await;
             let workspace = dir.join("import-workspace");
 
             // Declared sizes over the limit are refused before extracting.
             let tiny = Limits {
                 manifest: 16,
-                database: MAX_DATABASE_BYTES,
+                ..LIMITS
             };
             let result = stage_with_limits(&archive, &workspace, tiny).await;
             assert_eq!(describe(&result), "too large");
             let tiny = Limits {
-                manifest: MAX_MANIFEST_BYTES,
                 database: 1024,
+                ..LIMITS
             };
             let result = stage_with_limits(&archive, &workspace, tiny).await;
             assert_eq!(describe(&result), "too large");
@@ -1821,9 +2191,15 @@ mod tests {
                 sqlx::query(sql).execute(&source).await.unwrap();
             }
             let archive = dir.join("backup.zip");
-            write_package(&source, &archive, at(NOW), "0.1.0")
-                .await
-                .unwrap();
+            write_package(
+                &source,
+                &store_of(&source).await,
+                &archive,
+                at(NOW),
+                "0.1.0",
+            )
+            .await
+            .unwrap();
             source.close().await;
 
             let workspace = dir.join("target").join("import-workspace");
@@ -1882,9 +2258,15 @@ mod tests {
                 .unwrap();
             optimizer::tests::add_history(&source, 150).await;
             let archive = dir.join("backup.zip");
-            write_package(&source, &archive, at(NOW), "0.6.0")
-                .await
-                .unwrap();
+            write_package(
+                &source,
+                &store_of(&source).await,
+                &archive,
+                at(NOW),
+                "0.6.0",
+            )
+            .await
+            .unwrap();
             let source_rows = dump(&source).await;
             source.close().await;
 
@@ -1904,9 +2286,15 @@ mod tests {
             let workspace = dir.join("target").join("import-workspace");
             let staged = stage_package(&archive, &workspace).await.unwrap();
             assert_eq!(staged.manifest.schema_version, 10);
-            replace_database(&database, &target_path, &staged.database, &workspace)
-                .await
-                .unwrap();
+            replace_database(
+                &database,
+                &target_path,
+                &store_beside(&target_path),
+                &staged.database,
+                &workspace,
+            )
+            .await
+            .unwrap();
             discard_staged(&workspace);
             let restored = installed(&database).await;
 
@@ -1946,9 +2334,15 @@ mod tests {
                 .await
                 .unwrap();
             let next = dir.join("next.zip");
-            write_package(&restored, &next, at(LATER), "0.7.0")
-                .await
-                .unwrap();
+            write_package(
+                &restored,
+                &store_of(&restored).await,
+                &next,
+                at(LATER),
+                "0.7.0",
+            )
+            .await
+            .unwrap();
             let workspace = dir.join("next-workspace");
             let staged = stage_package(&next, &workspace).await.unwrap();
             let copy = open_file(&staged.database).await.unwrap();
@@ -1994,9 +2388,15 @@ mod tests {
                 sqlx::query(sql).bind(NOW).execute(&source).await.unwrap();
             }
             let archive = dir.join("backup.zip");
-            write_package(&source, &archive, at(NOW), "0.7.0")
-                .await
-                .unwrap();
+            write_package(
+                &source,
+                &store_of(&source).await,
+                &archive,
+                at(NOW),
+                "0.7.0",
+            )
+            .await
+            .unwrap();
             source.close().await;
 
             let target_path = dir.join("target").join("synapse.sqlite");
@@ -2005,9 +2405,15 @@ mod tests {
             let workspace = dir.join("target").join("import-workspace");
             let staged = stage_package(&archive, &workspace).await.unwrap();
             assert_eq!(staged.manifest.schema_version, 11);
-            replace_database(&database, &target_path, &staged.database, &workspace)
-                .await
-                .unwrap();
+            replace_database(
+                &database,
+                &target_path,
+                &store_beside(&target_path),
+                &staged.database,
+                &workspace,
+            )
+            .await
+            .unwrap();
             discard_staged(&workspace);
             let restored = installed(&database).await;
 
@@ -2051,9 +2457,15 @@ mod tests {
             // A backup made now carries the index, passes every check, and
             // restores to the same rows, index included.
             let next = dir.join("next.zip");
-            write_package(&restored, &next, at(LATER), "0.8.0")
-                .await
-                .unwrap();
+            write_package(
+                &restored,
+                &store_of(&restored).await,
+                &next,
+                at(LATER),
+                "0.8.0",
+            )
+            .await
+            .unwrap();
             let workspace = dir.join("next-workspace");
             let staged = stage_package(&next, &workspace).await.unwrap();
             assert_eq!(staged.manifest.schema_version, db::latest_schema_version());
@@ -2098,9 +2510,15 @@ mod tests {
             .await
             .unwrap();
             let archive = dir.join("backup.zip");
-            write_package(&source, &archive, at(NOW), "0.7.0")
-                .await
-                .unwrap();
+            write_package(
+                &source,
+                &store_of(&source).await,
+                &archive,
+                at(NOW),
+                "0.7.0",
+            )
+            .await
+            .unwrap();
             let source_rows = dump(&source).await;
             source.close().await;
 
@@ -2123,9 +2541,15 @@ mod tests {
             let workspace = dir.join("target").join("import-workspace");
             let staged = stage_package(&archive, &workspace).await.unwrap();
             assert_eq!(staged.manifest.schema_version, 11);
-            replace_database(&database, &target_path, &staged.database, &workspace)
-                .await
-                .unwrap();
+            replace_database(
+                &database,
+                &target_path,
+                &store_beside(&target_path),
+                &staged.database,
+                &workspace,
+            )
+            .await
+            .unwrap();
             discard_staged(&workspace);
             let restored = installed(&database).await;
 
@@ -2165,9 +2589,15 @@ mod tests {
             .await
             .unwrap();
             let next = dir.join("next.zip");
-            write_package(&restored, &next, at(LATER), "0.8.0")
-                .await
-                .unwrap();
+            write_package(
+                &restored,
+                &store_of(&restored).await,
+                &next,
+                at(LATER),
+                "0.8.0",
+            )
+            .await
+            .unwrap();
             let workspace = dir.join("next-workspace");
             let staged = stage_package(&next, &workspace).await.unwrap();
             assert_eq!(staged.manifest.schema_version, db::latest_schema_version());
@@ -2218,9 +2648,15 @@ mod tests {
                 sqlx::query(sql).execute(&source).await.unwrap();
             }
             let archive = dir.join("backup.zip");
-            write_package(&source, &archive, at(NOW), "0.7.0")
-                .await
-                .unwrap();
+            write_package(
+                &source,
+                &store_of(&source).await,
+                &archive,
+                at(NOW),
+                "0.7.0",
+            )
+            .await
+            .unwrap();
             let source_rows = dump(&source).await;
             source.close().await;
 
@@ -2230,9 +2666,15 @@ mod tests {
             let workspace = dir.join("target").join("import-workspace");
             let staged = stage_package(&archive, &workspace).await.unwrap();
             assert_eq!(staged.manifest.schema_version, 11);
-            replace_database(&database, &target_path, &staged.database, &workspace)
-                .await
-                .unwrap();
+            replace_database(
+                &database,
+                &target_path,
+                &store_beside(&target_path),
+                &staged.database,
+                &workspace,
+            )
+            .await
+            .unwrap();
             discard_staged(&workspace);
             let restored = installed(&database).await;
 
@@ -2271,9 +2713,15 @@ mod tests {
                 .await
                 .unwrap();
             let next = dir.join("next.zip");
-            write_package(&restored, &next, at(LATER), "0.8.0")
-                .await
-                .unwrap();
+            write_package(
+                &restored,
+                &store_of(&restored).await,
+                &next,
+                at(LATER),
+                "0.8.0",
+            )
+            .await
+            .unwrap();
             let before = dump(&restored).await;
 
             let other_path = dir.join("other").join("synapse.sqlite");
@@ -2282,9 +2730,15 @@ mod tests {
             let workspace = dir.join("other").join("import-workspace");
             let staged = stage_package(&next, &workspace).await.unwrap();
             assert_eq!(staged.manifest.schema_version, db::latest_schema_version());
-            replace_database(&other, &other_path, &staged.database, &workspace)
-                .await
-                .unwrap();
+            replace_database(
+                &other,
+                &other_path,
+                &store_beside(&other_path),
+                &staged.database,
+                &workspace,
+            )
+            .await
+            .unwrap();
             discard_staged(&workspace);
             let copy = installed(&other).await;
             let after = dump(&copy).await;
@@ -2349,9 +2803,15 @@ mod tests {
                 sqlx::query(sql).execute(&source).await.unwrap();
             }
             let archive = dir.join("backup.zip");
-            write_package(&source, &archive, at(NOW), "0.1.0")
-                .await
-                .unwrap();
+            write_package(
+                &source,
+                &store_of(&source).await,
+                &archive,
+                at(NOW),
+                "0.1.0",
+            )
+            .await
+            .unwrap();
             let source_rows = dump(&source).await;
             source.close().await;
 
@@ -2367,9 +2827,15 @@ mod tests {
                 ),
                 (7, "0.1.0")
             );
-            replace_database(&database, &target_path, &staged.database, &workspace)
-                .await
-                .unwrap();
+            replace_database(
+                &database,
+                &target_path,
+                &store_beside(&target_path),
+                &staged.database,
+                &workspace,
+            )
+            .await
+            .unwrap();
             let restored = installed(&database).await;
 
             // Every deck, card, log, session, and marker is exactly the
@@ -2459,6 +2925,471 @@ mod tests {
         });
     }
 
+    /// `source_database`, plus files kept beside it: a picture, and a PDF
+    /// kept as a source with a note written from it. Returns the pool and the
+    /// kept files' hashes, in order.
+    async fn database_with_kept_files(path: &Path) -> (SqlitePool, Vec<String>) {
+        let pool = source_database(path).await;
+        let store = store_of(&pool).await;
+        let picture = assets::add_picture(&pool, &store, &png(10), at(NOW))
+            .await
+            .unwrap();
+        let document = crate::sources::test_support::pdf_document("kept");
+        let source = crate::sources::create_source(&pool, &store, &document, at(NOW))
+            .await
+            .unwrap();
+        let note = crate::notes::create_note(&pool, "From the PDF", "Cells", at(NOW))
+            .await
+            .unwrap();
+        crate::sources::link_note(&pool, note.id, source.id, at(NOW))
+            .await
+            .unwrap();
+        let mut hashes = vec![picture.sha256, source.asset.sha256];
+        hashes.sort();
+        (pool, hashes)
+    }
+
+    /// The bytes of a new database at `path` whose only kept file is listed
+    /// with the given hash, type and size.
+    async fn database_listing(path: &Path, hash: &str, media: &str, size: usize) -> Vec<u8> {
+        let pool = open_file(path).await.unwrap();
+        sqlx::query(
+            "INSERT INTO assets (sha256, media_type, size, created_at)
+             VALUES (?1, ?2, ?3, '2026-10-20T12:00:00.000Z')",
+        )
+        .bind(hash)
+        .bind(media)
+        .bind(size as i64)
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+        std::fs::read(path).unwrap()
+    }
+
+    fn entry_names_of(archive: &[u8]) -> Vec<String> {
+        let mut zip = ZipArchive::new(Cursor::new(archive)).unwrap();
+        (0..zip.len())
+            .map(|i| zip.by_index(i).unwrap().name().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn kept_files_travel_in_a_backup_and_join_the_store_on_restore() {
+        tauri::async_runtime::block_on(async {
+            let dir = scratch("import-kept-files");
+            let (source, hashes) =
+                database_with_kept_files(&dir.join("source").join("synapse.sqlite")).await;
+            let archive = dir.join("backup.zip");
+            write_package(
+                &source,
+                &store_of(&source).await,
+                &archive,
+                at(LATER),
+                "0.8.0",
+            )
+            .await
+            .unwrap();
+            let source_rows = dump(&source).await;
+            source.close().await;
+
+            // Format 2: the manifest, the database, then each kept file.
+            let bytes = std::fs::read(&archive).unwrap();
+            let mut expected = vec![MANIFEST_ENTRY.to_string(), DATABASE_ENTRY.to_string()];
+            expected.extend(hashes.iter().map(|hash| format!("{ASSETS_FOLDER}{hash}")));
+            assert_eq!(entry_names_of(&bytes), expected);
+
+            // The database being replaced keeps a picture of its own.
+            let target_path = dir.join("target").join("synapse.sqlite");
+            let target = target_database(&target_path).await;
+            let store = store_beside(&target_path);
+            let own = assets::add_picture(&target, &store, &png(11), at(NOW))
+                .await
+                .unwrap();
+            let database = Database::default();
+            *database.slot().lock().await = Some(target);
+            let workspace = dir.join("target").join("import-workspace");
+
+            let staged = stage_package(&archive, &workspace).await.unwrap();
+            assert_eq!(staged.assets, hashes);
+            // Checked, but not in the store yet.
+            assert_eq!(stored_names(&store), vec![own.sha256.clone()]);
+
+            replace_database(
+                &database,
+                &target_path,
+                &store,
+                &staged.database,
+                &workspace,
+            )
+            .await
+            .unwrap();
+
+            let restored = installed(&database).await;
+            assert_eq!(dump(&restored).await, source_rows);
+            // Every file the restored database lists is there, whole; the
+            // replaced database's own picture stays, unused.
+            for hash in &hashes {
+                let kept = assets::asset_by_hash(&restored, hash)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(store.verify(hash, kept.size), "{hash}");
+            }
+            let mut all = hashes.clone();
+            all.push(own.sha256.clone());
+            all.sort();
+            assert_eq!(stored_names(&store), all);
+            assert!(!workspace.exists());
+
+            // The restored source opens with its pages, its picture and PDF
+            // are served, and the target's old picture isn't (no row names it).
+            let kept_source = crate::sources::sources(&restored).await.unwrap().remove(0);
+            assert_eq!(
+                crate::sources::source_pages(&restored, kept_source.id)
+                    .await
+                    .unwrap()
+                    .len(),
+                3
+            );
+            for hash in &hashes {
+                let response = assets::respond(&restored, &store, &format!("/{hash}")).await;
+                assert_eq!(response.status(), 200, "{hash}");
+            }
+            let response = assets::respond(&restored, &store, &format!("/{}", own.sha256)).await;
+            assert_eq!(response.status(), 404);
+
+            // Backed up again, it carries the same files and nothing else.
+            let again = dir.join("again.zip");
+            write_package(&restored, &store, &again, at(LATER), "0.8.0")
+                .await
+                .unwrap();
+            assert_eq!(entry_names_of(&std::fs::read(&again).unwrap()), expected);
+
+            restored.close().await;
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    #[test]
+    fn a_backup_whose_kept_files_dont_match_its_database_is_refused() {
+        tauri::async_runtime::block_on(async {
+            let dir = scratch("import-kept-files-refused");
+            let (source, hashes) =
+                database_with_kept_files(&dir.join("source").join("synapse.sqlite")).await;
+            let genuine_path = dir.join("genuine.zip");
+            write_package(
+                &source,
+                &store_of(&source).await,
+                &genuine_path,
+                at(NOW),
+                "0.8.0",
+            )
+            .await
+            .unwrap();
+            source.close().await;
+            let genuine = std::fs::read(&genuine_path).unwrap();
+            let manifest = read_entry(&genuine, MANIFEST_ENTRY);
+            let database = read_entry(&genuine, DATABASE_ENTRY);
+            let names: Vec<String> = hashes
+                .iter()
+                .map(|hash| format!("{ASSETS_FOLDER}{hash}"))
+                .collect();
+            let files: Vec<Vec<u8>> = names
+                .iter()
+                .map(|name| read_entry(&genuine, name))
+                .collect();
+
+            // Rows whose type or size doesn't match their file: a PNG listed
+            // as a JPEG, and a PNG listed one byte longer than it is.
+            let made = dir.join("made");
+            std::fs::create_dir_all(&made).unwrap();
+            let picture = png(12);
+            let hash = assets::sha256_hex(&picture);
+            let wrong_type = database_listing(
+                &made.join("type.sqlite"),
+                &hash,
+                "image/jpeg",
+                picture.len(),
+            )
+            .await;
+            let wrong_size = database_listing(
+                &made.join("size.sqlite"),
+                &hash,
+                "image/png",
+                picture.len() + 1,
+            )
+            .await;
+            let one_file = format!("{ASSETS_FOLDER}{hash}");
+
+            let mut altered = files[0].clone();
+            let last = altered.len() - 1;
+            altered[last] ^= 0x01;
+
+            let cases: Vec<(&str, Vec<u8>)> = vec![
+                (
+                    "a kept file missing",
+                    zip_of(&[
+                        (MANIFEST_ENTRY, &manifest),
+                        (DATABASE_ENTRY, &database),
+                        (&names[0], &files[0]),
+                    ]),
+                ),
+                (
+                    "a kept file whose bytes changed",
+                    zip_of(&[
+                        (MANIFEST_ENTRY, &manifest),
+                        (DATABASE_ENTRY, &database),
+                        (&names[0], &altered),
+                        (&names[1], &files[1]),
+                    ]),
+                ),
+                (
+                    "kept files swapped",
+                    zip_of(&[
+                        (MANIFEST_ENTRY, &manifest),
+                        (DATABASE_ENTRY, &database),
+                        (&names[0], &files[1]),
+                        (&names[1], &files[0]),
+                    ]),
+                ),
+                (
+                    "a kept file that isn't the type its row says",
+                    zip_of(&[
+                        (MANIFEST_ENTRY, &manifest),
+                        (DATABASE_ENTRY, &wrong_type),
+                        (&one_file, &picture),
+                    ]),
+                ),
+                (
+                    "a kept file that isn't the size its row says",
+                    zip_of(&[
+                        (MANIFEST_ENTRY, &manifest),
+                        (DATABASE_ENTRY, &wrong_size),
+                        (&one_file, &picture),
+                    ]),
+                ),
+                (
+                    "a kept file too many",
+                    zip_of(&[
+                        (MANIFEST_ENTRY, &manifest),
+                        (DATABASE_ENTRY, &database),
+                        (&names[0], &files[0]),
+                        (&names[1], &files[1]),
+                        (&format!("{ASSETS_FOLDER}{hash}"), &picture),
+                    ]),
+                ),
+            ];
+
+            let target_path = dir.join("target").join("synapse.sqlite");
+            let target = target_database(&target_path).await;
+            let before = dump(&target).await;
+            let workspace = dir.join("target").join("import-workspace");
+            for (name, bytes) in &cases {
+                let archive = dir.join("candidate.zip");
+                std::fs::write(&archive, bytes).unwrap();
+                let result = stage_package(&archive, &workspace).await;
+                assert_eq!(describe(&result), "damaged", "{name}: {result:?}");
+                assert!(!workspace.exists(), "{name}: the workspace was left behind");
+                assert_eq!(dump(&target).await, before, "{name}");
+            }
+            // The genuine package is accepted, so the cases above failed for
+            // what was changed.
+            assert_eq!(
+                describe(&stage_package(&genuine_path, &workspace).await),
+                "accepted"
+            );
+            discard_staged(&workspace);
+            assert!(!workspace.exists());
+
+            target.close().await;
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    #[test]
+    fn a_format_1_backup_from_v0_7_3_restores_with_no_kept_files() {
+        tauri::async_runtime::block_on(async {
+            let dir = scratch("import-format-1");
+            // What v0.7.3 wrote: schema 15, and a format 1 package of exactly
+            // a manifest (with no folder of kept files) and the database.
+            let source_path = dir.join("source").join("synapse.sqlite");
+            std::fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+            let source =
+                sqlx::SqlitePool::connect(&format!("sqlite:{}?mode=rwc", source_path.display()))
+                    .await
+                    .unwrap();
+            migrations_up_to(15).run(&source).await.unwrap();
+            for sql in [
+                "INSERT INTO seed_markers (name) VALUES ('sample_card')",
+                "INSERT INTO decks (name, created_at) VALUES ('Biology', ?1)",
+                "INSERT INTO flashcards (deck_id, front, back) VALUES (2, 'Cell', 'Unit of life')",
+                "INSERT INTO notes (title, body, created_at, updated_at)
+                 VALUES ('Lecture', 'Cells', ?1, ?1)",
+            ] {
+                sqlx::query(sql).bind(NOW).execute(&source).await.unwrap();
+            }
+            let made = dir.join("made.zip");
+            write_package(&source, &store_of(&source).await, &made, at(NOW), "0.7.3")
+                .await
+                .unwrap();
+            source.close().await;
+            let made = std::fs::read(&made).unwrap();
+            let mut manifest: serde_json::Value =
+                serde_json::from_slice(&read_entry(&made, MANIFEST_ENTRY)).unwrap();
+            manifest["format_version"] = 1.into();
+            manifest["contents"]
+                .as_object_mut()
+                .unwrap()
+                .remove("assets");
+            assert_eq!(
+                manifest["contents"],
+                serde_json::json!({ "database": "db/synapse.sqlite" })
+            );
+            let archive = dir.join("v0.7.3.zip");
+            std::fs::write(
+                &archive,
+                zip_of(&[
+                    (
+                        MANIFEST_ENTRY,
+                        &serde_json::to_vec_pretty(&manifest).unwrap(),
+                    ),
+                    (DATABASE_ENTRY, &read_entry(&made, DATABASE_ENTRY)),
+                ]),
+            )
+            .unwrap();
+
+            // Restored over a database that keeps a picture.
+            let target_path = dir.join("target").join("synapse.sqlite");
+            let target = target_database(&target_path).await;
+            let store = store_beside(&target_path);
+            let own = assets::add_picture(&target, &store, &png(13), at(NOW))
+                .await
+                .unwrap();
+            let database = Database::default();
+            *database.slot().lock().await = Some(target);
+            let workspace = dir.join("target").join("import-workspace");
+            let staged = stage_package(&archive, &workspace).await.unwrap();
+            assert_eq!(
+                (
+                    staged.manifest.format_version,
+                    staged.manifest.schema_version
+                ),
+                (1, 15)
+            );
+            assert!(staged.assets.is_empty());
+            replace_database(
+                &database,
+                &target_path,
+                &store,
+                &staged.database,
+                &workspace,
+            )
+            .await
+            .unwrap();
+            discard_staged(&workspace);
+
+            // Everything it held is back, brought up to date with no kept
+            // files and no sources; the store is untouched.
+            let restored = installed(&database).await;
+            assert_eq!(
+                count(&restored, "SELECT COUNT(*) FROM _sqlx_migrations").await,
+                migration_count()
+            );
+            for table in ["assets", "sources", "source_pages", "source_notes"] {
+                let sql = format!("SELECT COUNT(*) FROM {table}");
+                let rows: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+                    .fetch_one(&restored)
+                    .await
+                    .unwrap();
+                assert_eq!(rows, 0, "{table}");
+            }
+            assert_eq!(
+                crate::notes::notes(&restored).await.unwrap()[0].title,
+                "Lecture"
+            );
+            assert_eq!(stored_names(&store), vec![own.sha256.clone()]);
+            // It now keeps files like any database.
+            let picture = assets::add_picture(&restored, &store, &png(14), at(LATER))
+                .await
+                .unwrap();
+            assert!(store.verify(&picture.sha256, picture.size));
+
+            restored.close().await;
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    #[test]
+    fn a_restore_that_fails_takes_back_the_kept_files_it_added() {
+        tauri::async_runtime::block_on(async {
+            let dir = scratch("import-kept-files-rollback");
+            let (source, hashes) =
+                database_with_kept_files(&dir.join("source").join("synapse.sqlite")).await;
+            let archive = dir.join("backup.zip");
+            write_package(
+                &source,
+                &store_of(&source).await,
+                &archive,
+                at(NOW),
+                "0.8.0",
+            )
+            .await
+            .unwrap();
+            source.close().await;
+
+            let target_path = dir.join("target").join("synapse.sqlite");
+            let target = target_database(&target_path).await;
+            let store = store_beside(&target_path);
+            // The target already keeps one of the backup's files.
+            let shared = assets::add_picture(&target, &store, &png(10), at(NOW))
+                .await
+                .unwrap();
+            assert!(hashes.contains(&shared.sha256));
+            let before = dump(&target).await;
+            let database = Database::default();
+            *database.slot().lock().await = Some(target);
+            let workspace = dir.join("target").join("import-workspace");
+
+            // Once with the restored database unopenable, once with one of
+            // its files gone missing before the swap.
+            for fault in ["unopenable", "missing file"] {
+                let staged = stage_package(&archive, &workspace).await.unwrap();
+                match fault {
+                    "unopenable" => std::fs::write(&staged.database, vec![0x42u8; 8192]).unwrap(),
+                    _ => {
+                        let other = hashes.iter().find(|h| **h != shared.sha256).unwrap();
+                        std::fs::remove_file(workspace.join(STAGED_ASSETS).join(other)).unwrap();
+                    }
+                }
+                let result = replace_database(
+                    &database,
+                    &target_path,
+                    &store,
+                    &staged.database,
+                    &workspace,
+                )
+                .await;
+                assert!(
+                    matches!(result, Err(RestoreError::NotRestored(_))),
+                    "{fault}: {result:?}"
+                );
+                discard_staged(&workspace);
+
+                // The previous database is back, and the store holds exactly
+                // what it did: the shared file stays, the added one is gone.
+                let pool = installed(&database).await;
+                assert_eq!(dump(&pool).await, before, "{fault}");
+                assert_eq!(stored_names(&store), vec![shared.sha256.clone()], "{fault}");
+                assert!(store.verify(&shared.sha256, shared.size));
+                assert!(!workspace.exists(), "{fault}");
+            }
+
+            installed(&database).await.close().await;
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
     #[test]
     fn a_restored_database_that_fails_to_open_or_check_is_rolled_back() {
         tauri::async_runtime::block_on(async {
@@ -2489,7 +3420,14 @@ mod tests {
                 let staged = workspace.join(STAGED_FILE);
                 std::fs::write(&staged, &bad).unwrap();
 
-                let result = replace_database(&database, &target_path, &staged, &workspace).await;
+                let result = replace_database(
+                    &database,
+                    &target_path,
+                    &store_beside(&target_path),
+                    &staged,
+                    &workspace,
+                )
+                .await;
                 assert!(
                     matches!(result, Err(RestoreError::NotRestored(_))),
                     "{result:?}"
@@ -2527,7 +3465,14 @@ mod tests {
             let staged = dir.join("staged.sqlite");
             std::fs::write(&staged, b"never used").unwrap();
 
-            let result = replace_database(&database, &target_path, &staged, &workspace).await;
+            let result = replace_database(
+                &database,
+                &target_path,
+                &store_beside(&target_path),
+                &staged,
+                &workspace,
+            )
+            .await;
             assert!(
                 matches!(result, Err(RestoreError::NotRestored(_))),
                 "{result:?}"
@@ -2547,9 +3492,15 @@ mod tests {
             let dir = scratch("import-kept-rollback");
             let source = source_database(&dir.join("source").join("synapse.sqlite")).await;
             let archive = dir.join("backup.zip");
-            write_package(&source, &archive, at(NOW), "0.1.0")
-                .await
-                .unwrap();
+            write_package(
+                &source,
+                &store_of(&source).await,
+                &archive,
+                at(NOW),
+                "0.1.0",
+            )
+            .await
+            .unwrap();
             let source_rows = dump(&source).await;
             source.close().await;
 
@@ -2562,9 +3513,15 @@ mod tests {
             // What a restore whose rollback couldn't be renamed back leaves.
             std::fs::write(workspace.join(ROLLBACK_FILE), b"earlier data").unwrap();
 
-            replace_database(&database, &target_path, &staged.database, &workspace)
-                .await
-                .unwrap();
+            replace_database(
+                &database,
+                &target_path,
+                &store_beside(&target_path),
+                &staged.database,
+                &workspace,
+            )
+            .await
+            .unwrap();
             let pool = installed(&database).await;
             assert_eq!(dump(&pool).await, source_rows);
 
@@ -2596,7 +3553,14 @@ mod tests {
 
             // The checked copy has vanished, so the rename fails.
             let missing = workspace.join(STAGED_FILE);
-            let result = replace_database(&database, &target_path, &missing, &workspace).await;
+            let result = replace_database(
+                &database,
+                &target_path,
+                &store_beside(&target_path),
+                &missing,
+                &workspace,
+            )
+            .await;
             assert!(
                 matches!(result, Err(RestoreError::NotRestored(_))),
                 "{result:?}"
@@ -2619,9 +3583,15 @@ mod tests {
                 .await
                 .unwrap();
             let archive = dir.join("backup.zip");
-            write_package(&source, &archive, at(NOW), "0.1.0")
-                .await
-                .unwrap();
+            write_package(
+                &source,
+                &store_of(&source).await,
+                &archive,
+                at(NOW),
+                "0.1.0",
+            )
+            .await
+            .unwrap();
             source.close().await;
 
             let target_path = dir.join("target").join("synapse.sqlite");
@@ -2640,8 +3610,14 @@ mod tests {
             ] {
                 std::fs::write(&journal, b"").unwrap();
 
-                let result =
-                    replace_database(&database, &target_path, &staged.database, &workspace).await;
+                let result = replace_database(
+                    &database,
+                    &target_path,
+                    &store_beside(&target_path),
+                    &staged.database,
+                    &workspace,
+                )
+                .await;
                 assert!(
                     matches!(result, Err(RestoreError::NotRestored(_))),
                     "{result:?}"
@@ -2669,9 +3645,15 @@ mod tests {
             let dir = scratch("import-cancel");
             let source = source_database(&dir.join("source").join("synapse.sqlite")).await;
             let archive = dir.join("backup.zip");
-            write_package(&source, &archive, at(NOW), "0.1.0")
-                .await
-                .unwrap();
+            write_package(
+                &source,
+                &store_of(&source).await,
+                &archive,
+                at(NOW),
+                "0.1.0",
+            )
+            .await
+            .unwrap();
             source.close().await;
 
             let target_path = dir.join("target").join("synapse.sqlite");

@@ -15,6 +15,7 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::aid::{self, CardHelp, HelpKind, Helping};
 use crate::anki::{self, AnkiError, AnkiImported, AnkiImports, Skipped};
+use crate::assets::{self, Asset, AssetError, AssetStore};
 use crate::authoring::{self, ArchivedDeck, AuthoringError, CardText, DeckDetail, InvalidInput};
 use crate::cards_csv::{self, CardsImported, CsvError, Delimiter, Duplicate, RowProblem};
 use crate::cloze::{self, ClozeChanges, RestoreBlock};
@@ -28,6 +29,7 @@ use crate::quiz::{self, QuizQuestion, Quizzing};
 use crate::retention::{self, RetentionError};
 use crate::scheduler::Rating;
 use crate::search::{self, Scope, SearchResults};
+use crate::sources::{self, InvalidTitle, Source, SourceError, SourcePage};
 use crate::stats::{self, Statistics};
 use crate::study::{self, DeckSummary, SessionCard, StartedSession, StudyError, TodaySummary};
 use crate::suggest::{self, NotePart, Ollama, SuggestError, SuggestedCard, Suggesting};
@@ -1597,8 +1599,13 @@ pub async fn export_data(
 
     // Timed when the package is written, not when the dialog opened, so
     // `exported_at` says when the backup was actually taken.
+    let store = Database::asset_store(&app).map_err(|err| {
+        eprintln!("[synapse] locating the kept files failed: {err}");
+        CommandError::failed("Synapse couldn't build the export.")
+    })?;
     export::write_package(
         &pool,
+        &store,
         &destination,
         Utc::now(),
         app.package_info().version.to_string().as_str(),
@@ -1608,6 +1615,13 @@ pub async fn export_data(
         ExportError::Destination(detail) => {
             eprintln!("[synapse] writing the export failed: {detail}");
             CommandError::failed("Synapse couldn't save the export there. Try another folder.")
+        }
+        ExportError::MissingAsset(detail) => {
+            eprintln!("[synapse] a kept file couldn't be exported: {detail}");
+            CommandError::failed(
+                "A file Synapse keeps (a source or a picture) is missing or damaged, so the \
+                 backup wouldn't be complete. Nothing was saved.",
+            )
         }
         ExportError::Internal(detail) => {
             eprintln!("[synapse] building the export failed: {detail}");
@@ -1641,6 +1655,9 @@ pub enum ImportCheck {
         file_name: String,
         /// When the backup was made (ISO-8601 UTC), from its manifest.
         exported_at: String,
+        /// How many files (sources, pictures) it keeps; 0 for a backup made
+        /// before Synapse kept files.
+        kept_files: usize,
     },
     /// The user closed the file window without choosing a file.
     Cancelled,
@@ -1767,6 +1784,7 @@ pub async fn prepare_import(
     let staged = import::stage_package(&archive, &workspace)
         .await
         .map_err(import_error)?;
+    let kept_files = staged.assets.len();
     let token = pending.hold(staged.database);
     let file_name = archive
         .file_name()
@@ -1776,6 +1794,7 @@ pub async fn prepare_import(
         token,
         file_name,
         exported_at: staged.manifest.exported_at,
+        kept_files,
     })
 }
 
@@ -1806,7 +1825,11 @@ pub async fn confirm_import(
         // The database is open whenever the dashboard is shown, but make
         // sure: replacing needs the open pool to take its rollback copy.
         pool(&app, &database).await?;
-        import::replace_database(&database, &db_path, &staged, &workspace)
+        let store = Database::asset_store(&app).map_err(|err| {
+            eprintln!("[synapse] locating the kept files for a restore failed: {err}");
+            CommandError::failed(IMPORT_NOT_READY)
+        })?;
+        import::replace_database(&database, &db_path, &store, &staged, &workspace)
             .await
             .map_err(restore_error)
     }
@@ -2608,6 +2631,398 @@ pub fn cancel_anki_import(imports: State<'_, AnkiImports>, token: u64) {
     imports.forget(token);
 }
 
+/// The folder of kept files, beside the database.
+fn asset_store(app: &AppHandle, failed: &'static str) -> Result<AssetStore, CommandError> {
+    Database::asset_store(app).map_err(|err| {
+        eprintln!("[synapse] locating the kept files failed: {err}");
+        CommandError::failed(failed)
+    })
+}
+
+/// The answer to a `synapse:` request from the webview: a kept picture or
+/// PDF by its hash (see `assets::respond`), or a plain 404.
+pub async fn kept_file(app: &AppHandle, path: &str) -> tauri::http::Response<Vec<u8>> {
+    let database = app.state::<Database>();
+    match (database.pool(app).await, Database::asset_store(app)) {
+        (Ok(pool), Ok(store)) => assets::respond(&pool, &store, path).await,
+        (Err(err), _) | (_, Err(err)) => {
+            eprintln!("[synapse] opening the database to show a kept file failed: {err}");
+            assets::not_found()
+        }
+    }
+}
+
+const PICTURE_NOT_KEPT: &str = "Synapse couldn't keep that picture.";
+
+/// Turns a picture that wasn't kept into a user-safe error.
+fn picture_error(err: AssetError) -> CommandError {
+    match err {
+        AssetError::TooLarge => CommandError::invalid("Pictures can be at most 20 MB."),
+        AssetError::WrongType => CommandError::invalid(
+            "Synapse can keep PNG, JPEG, GIF, and WebP pictures. That file isn't one.",
+        ),
+        AssetError::StoreFull => CommandError::invalid(STORE_FULL),
+        AssetError::Internal(detail) => {
+            eprintln!("[synapse] keeping a picture failed: {detail}");
+            CommandError::failed(PICTURE_NOT_KEPT)
+        }
+    }
+}
+
+const STORE_FULL: &str = "Synapse already keeps 2 GB of sources and pictures, as much as one \
+                          backup can hold, so it can't keep more.";
+
+/// What choosing a picture did: `{ "status": "added", "asset": Asset }` or
+/// `{ "status": "cancelled" }`.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PictureChoice {
+    /// The picture is kept. Show it with its `sha256` (see `api.ts`'s
+    /// `keptFileUrl`) and refer to it by its `id`.
+    Added { asset: Asset },
+    /// The user closed the file window without choosing a file.
+    Cancelled,
+}
+
+/// Chooses a picture file (PNG, JPEG, GIF or WebP) and keeps it, returning
+/// its `assets` row. The same picture chosen twice is kept once. Nothing
+/// points at it yet: whatever the picture is for records that.
+///
+/// Takes no arguments. Returns [`PictureChoice`].
+#[tauri::command]
+pub async fn choose_picture(
+    app: AppHandle,
+    database: State<'_, Database>,
+) -> Result<PictureChoice, CommandError> {
+    let pool = pool(&app, &database).await?;
+    let store = asset_store(&app, PICTURE_NOT_KEPT)?;
+
+    let (sender, mut receiver) = tauri::async_runtime::channel(1);
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Choose a picture")
+        .add_filter("Pictures", &["png", "jpg", "jpeg", "gif", "webp"]);
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.pick_file(move |path| {
+        let _ = sender.try_send(path);
+    });
+    let Some(chosen) = receiver.recv().await else {
+        eprintln!("[synapse] the picture file dialog closed without an answer");
+        return Err(CommandError::failed(
+            "Synapse couldn't open the file window.",
+        ));
+    };
+    let Some(chosen) = chosen else {
+        return Ok(PictureChoice::Cancelled);
+    };
+    let path = chosen.into_path().map_err(|err| {
+        eprintln!("[synapse] the chosen picture's path was unusable: {err}");
+        CommandError::invalid("That file can't be used.")
+    })?;
+    let unreadable = |err: std::io::Error| {
+        eprintln!("[synapse] reading a picture failed: {err}");
+        CommandError::failed("Synapse couldn't read that file.")
+    };
+    // The type is read from the bytes, whatever the file's name says.
+    if std::fs::metadata(&path).map_err(unreadable)?.len() > assets::MAX_PICTURE_BYTES {
+        return Err(picture_error(AssetError::TooLarge));
+    }
+    let bytes = std::fs::read(&path).map_err(unreadable)?;
+    let asset = assets::add_picture(&pool, &store, &bytes, Utc::now())
+        .await
+        .map_err(picture_error)?;
+    Ok(PictureChoice::Added { asset })
+}
+
+/// Keeps a picture sent as raw bytes (a pasted or dropped image):
+/// `invoke("store_picture", bytes)` with a `Uint8Array`. Returns its
+/// `assets` row; bytes that aren't a PNG, JPEG, GIF or WebP are refused.
+#[tauri::command]
+pub async fn store_picture(
+    app: AppHandle,
+    database: State<'_, Database>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Asset, CommandError> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err(CommandError::invalid(
+            "Synapse can keep PNG, JPEG, GIF, and WebP pictures. That isn't one.",
+        ));
+    };
+    let pool = pool(&app, &database).await?;
+    let store = asset_store(&app, PICTURE_NOT_KEPT)?;
+    assets::add_picture(&pool, &store, bytes, Utc::now())
+        .await
+        .map_err(picture_error)
+}
+
+const SOURCE_NOT_FOUND: &str = "That source doesn't exist.";
+
+/// Turns a source operation that didn't happen into a user-safe error.
+fn source_error(err: SourceError, context: &str, failed: &'static str) -> CommandError {
+    match err {
+        SourceError::Invalid(problem) => CommandError {
+            kind: ErrorKind::Invalid,
+            message: match problem {
+                InvalidTitle::Blank => "Give the source a title.",
+                InvalidTitle::TooLong => "Titles can be at most 200 characters.",
+            },
+            field: Some(Field::Title),
+            index: None,
+        },
+        SourceError::NotFound => CommandError::invalid(SOURCE_NOT_FOUND),
+        SourceError::Deleted => CommandError::stale("This source or note was deleted."),
+        SourceError::NotDeleted => CommandError::stale("This source isn't deleted."),
+        SourceError::AlreadyLinked => {
+            CommandError::stale("This note already says which source it came from.")
+        }
+        SourceError::Asset(AssetError::TooLarge) => {
+            CommandError::invalid("That file is too large to keep: the limit is 50 MB.")
+        }
+        SourceError::Asset(AssetError::WrongType) => CommandError::invalid(
+            "That file isn't the kind of document its name says, so Synapse can't keep it.",
+        ),
+        SourceError::Asset(AssetError::StoreFull) => CommandError::invalid(STORE_FULL),
+        SourceError::Asset(AssetError::Internal(detail)) | SourceError::Internal(detail) => {
+            eprintln!("[synapse] {context} failed: {detail}");
+            CommandError::failed(failed)
+        }
+    }
+}
+
+/// What choosing a document to keep did: `{ "status": "imported", "source":
+/// Source, "text": ExtractedText }` or `{ "status": "cancelled" }`. `text`
+/// is what `import_file` returns, for a note written from the source.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum SourceImport {
+    Imported {
+        source: Box<Source>,
+        text: Box<ExtractedText>,
+    },
+    Cancelled,
+}
+
+/// Chooses a document (PDF, text, Markdown, Word or PowerPoint) and keeps it
+/// as a source: the original file and each page's text. Opens the same file
+/// window as `import_file`, which it extends: a note saved from the returned
+/// text can be linked to the source with `link_note_to_source`.
+///
+/// Takes no arguments. Returns [`SourceImport`]; a file that can't be read
+/// or kept rejects with kind "invalid" or "failed", and nothing is kept.
+#[tauri::command]
+pub async fn import_source(
+    app: AppHandle,
+    database: State<'_, Database>,
+) -> Result<SourceImport, CommandError> {
+    const NOT_KEPT: &str = "Synapse couldn't keep that file.";
+    let pool = pool(&app, &database).await?;
+    let store = asset_store(&app, NOT_KEPT)?;
+
+    let (sender, mut receiver) = tauri::async_runtime::channel(1);
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Choose a document to keep as a source")
+        .add_filter("Notes and documents", &FileKind::EXTENSIONS);
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.pick_file(move |path| {
+        let _ = sender.try_send(path);
+    });
+    let Some(chosen) = receiver.recv().await else {
+        eprintln!("[synapse] the source file dialog closed without an answer");
+        return Err(CommandError::failed(
+            "Synapse couldn't open the file window.",
+        ));
+    };
+    let Some(chosen) = chosen else {
+        return Ok(SourceImport::Cancelled);
+    };
+    let path = chosen.into_path().map_err(|err| {
+        eprintln!("[synapse] the chosen file's path was unusable: {err}");
+        CommandError::invalid("That file can't be used.")
+    })?;
+    let helper = std::env::current_exe().map_err(|err| {
+        eprintln!("[synapse] finding Synapse's own program failed: {err}");
+        CommandError::failed("Synapse couldn't read that file.")
+    })?;
+    let document =
+        tauri::async_runtime::spawn_blocking(move || extract::read_document(&path, &helper))
+            .await
+            .map_err(|err| {
+                eprintln!("[synapse] reading a file to keep stopped: {err}");
+                CommandError::failed("Synapse couldn't read that file.")
+            })?
+            .map_err(extract_error)?;
+    let source = sources::create_source(&pool, &store, &document, Utc::now())
+        .await
+        .map_err(|err| source_error(err, "keeping a source", NOT_KEPT))?;
+    Ok(SourceImport::Imported {
+        source: Box::new(source),
+        text: Box::new(document.text),
+    })
+}
+
+/// Every active source, most recently changed first. Returns `[Source]`.
+#[tauri::command]
+pub async fn get_sources(
+    app: AppHandle,
+    database: State<'_, Database>,
+) -> Result<Vec<Source>, CommandError> {
+    let pool = pool(&app, &database).await?;
+    sources::sources(&pool).await.map_err(|err| {
+        source_error(
+            err,
+            "loading sources",
+            "Synapse couldn't load your sources.",
+        )
+    })
+}
+
+/// Every deleted source, most recently deleted first. Returns `[Source]`.
+#[tauri::command]
+pub async fn get_deleted_sources(
+    app: AppHandle,
+    database: State<'_, Database>,
+) -> Result<Vec<Source>, CommandError> {
+    let pool = pool(&app, &database).await?;
+    sources::deleted_sources(&pool).await.map_err(|err| {
+        source_error(
+            err,
+            "loading deleted sources",
+            "Synapse couldn't load your deleted sources.",
+        )
+    })
+}
+
+/// One active source, by `{ sourceId }`. Returns [`Source`]; a deleted one
+/// rejects with kind "stale".
+#[tauri::command]
+pub async fn get_source(
+    app: AppHandle,
+    database: State<'_, Database>,
+    source_id: i64,
+) -> Result<Source, CommandError> {
+    let pool = pool(&app, &database).await?;
+    sources::source(&pool, source_id).await.map_err(|err| {
+        source_error(
+            err,
+            "loading a source",
+            "Synapse couldn't open that source.",
+        )
+    })
+}
+
+/// The text of every page of an active source, by `{ sourceId }`. Returns
+/// `[{ number, text }]`, numbered from 1.
+#[tauri::command]
+pub async fn get_source_pages(
+    app: AppHandle,
+    database: State<'_, Database>,
+    source_id: i64,
+) -> Result<Vec<SourcePage>, CommandError> {
+    let pool = pool(&app, &database).await?;
+    sources::source_pages(&pool, source_id)
+        .await
+        .map_err(|err| {
+            source_error(
+                err,
+                "loading a source's pages",
+                "Synapse couldn't open that source.",
+            )
+        })
+}
+
+/// Renames an active source: `{ sourceId, title }`. Returns the [`Source`].
+#[tauri::command]
+pub async fn rename_source(
+    app: AppHandle,
+    database: State<'_, Database>,
+    source_id: i64,
+    title: String,
+) -> Result<Source, CommandError> {
+    let pool = pool(&app, &database).await?;
+    sources::rename_source(&pool, source_id, &title, Utc::now())
+        .await
+        .map_err(|err| source_error(err, "renaming a source", "Synapse couldn't rename it."))
+}
+
+/// Deletes a source softly, by `{ sourceId }`; its file and pages are kept.
+#[tauri::command]
+pub async fn delete_source(
+    app: AppHandle,
+    database: State<'_, Database>,
+    source_id: i64,
+) -> Result<(), CommandError> {
+    let pool = pool(&app, &database).await?;
+    sources::delete_source(&pool, source_id, Utc::now())
+        .await
+        .map_err(|err| source_error(err, "deleting a source", "Synapse couldn't delete it."))
+}
+
+/// Restores a deleted source exactly as it was, by `{ sourceId }`.
+#[tauri::command]
+pub async fn restore_source(
+    app: AppHandle,
+    database: State<'_, Database>,
+    source_id: i64,
+) -> Result<(), CommandError> {
+    let pool = pool(&app, &database).await?;
+    sources::restore_source(&pool, source_id)
+        .await
+        .map_err(|err| source_error(err, "restoring a source", "Synapse couldn't restore it."))
+}
+
+/// Records that a note was written from a source: `{ noteId, sourceId }`.
+/// Both must be active; a note's source is set once and never changes.
+#[tauri::command]
+pub async fn link_note_to_source(
+    app: AppHandle,
+    database: State<'_, Database>,
+    note_id: i64,
+    source_id: i64,
+) -> Result<(), CommandError> {
+    let pool = pool(&app, &database).await?;
+    sources::link_note(&pool, note_id, source_id, Utc::now())
+        .await
+        .map_err(|err| {
+            source_error(
+                err,
+                "linking a note to its source",
+                "Synapse couldn't record where the note came from.",
+            )
+        })
+}
+
+/// The id of the source a note was written from, by `{ noteId }`, or null.
+#[tauri::command]
+pub async fn get_note_source(
+    app: AppHandle,
+    database: State<'_, Database>,
+    note_id: i64,
+) -> Result<Option<i64>, CommandError> {
+    let pool = pool(&app, &database).await?;
+    sources::note_source(&pool, note_id).await.map_err(|err| {
+        source_error(
+            err,
+            "finding a note's source",
+            "Synapse couldn't load that note's source.",
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2755,13 +3170,15 @@ mod tests {
                 token: 3,
                 file_name: "synapse-export-2026-09-16.zip".to_string(),
                 exported_at: "2026-09-16T09:30:00.000Z".to_string(),
+                kept_files: 2,
             })
             .unwrap(),
             json!({
                 "status": "ready",
                 "token": 3,
                 "fileName": "synapse-export-2026-09-16.zip",
-                "exportedAt": "2026-09-16T09:30:00.000Z"
+                "exportedAt": "2026-09-16T09:30:00.000Z",
+                "keptFiles": 2
             })
         );
         assert_eq!(

@@ -46,8 +46,8 @@ export function Backup({
             Backup &amp; restore
           </h2>
           <p className="page-intro">
-            Everything Synapse stores is kept in one database on this computer. Save a copy of it,
-            or replace it with a copy you saved before.
+            Everything Synapse stores is kept on this computer: one database, and the files it keeps
+            beside it. Save a copy of both, or replace them with a copy you saved before.
           </p>
         </div>
       </div>
@@ -145,7 +145,8 @@ function ExportData({
   return (
     <div className="data-action">
       <p id="export-hint" className="field-hint">
-        Save a copy of every deck, card, review, and note as a .zip file you keep.
+        Save a copy of every deck, card, review, and note, and every file Synapse keeps, as a .zip
+        file you keep.
       </p>
       <button
         type="button"

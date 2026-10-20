@@ -69,6 +69,14 @@ impl Database {
         Ok(database_dir(app)?.join(IMPORT_WORKSPACE))
     }
 
+    /// The folder of files Synapse keeps (sources, pictures), beside the
+    /// database, so a restore moves files into it by renaming on one drive.
+    pub fn asset_store(app: &AppHandle) -> Result<crate::assets::AssetStore, DbError> {
+        Ok(crate::assets::AssetStore::new(
+            database_dir(app)?.join(crate::assets::STORE_FOLDER),
+        ))
+    }
+
     /// The slot holding the open pool. Restoring a backup locks it for the
     /// whole replacement, so no command can use the old database or reopen
     /// it halfway through; commands that arrive meanwhile wait, then get the
@@ -1115,7 +1123,7 @@ mod tests {
             let pool = memory_pool().await;
             migrate_and_seed(&pool).await.unwrap();
 
-            // Migrations 0008–0010 freeze a put-away row by listing its
+            // Migrations 0008–0010 and 0016 freeze a put-away row by listing its
             // columns, so that a restore gives back exactly what was put
             // away, and each says a column added later belongs in its list.
             // This is what notices if one is forgotten: every column of the
@@ -1129,6 +1137,7 @@ mod tests {
                 ),
                 ("decks", "decks_archived_are_read_only", "archived_at"),
                 ("notes", "notes_deleted_are_read_only", "deleted_at"),
+                ("sources", "sources_deleted_are_read_only", "deleted_at"),
             ] {
                 let sql: String = sqlx::query_scalar(
                     "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?1",
