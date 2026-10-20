@@ -1126,7 +1126,9 @@ function rememberFormatted(formatted: boolean) {
  * with no Markdown in it is shown as plain text, as it was typed.
  */
 function NoteReading({ body }: { body: string }) {
-  const formattable = useMemo(() => hasFormatting(parseMarkdown(body)), [body]);
+  // Parsed once, both to decide whether to offer formatting and to show it.
+  const blocks = useMemo(() => parseMarkdown(body), [body]);
+  const formattable = useMemo(() => hasFormatting(blocks), [blocks]);
   const [formatted, setFormatted] = useState(rememberedFormatted);
 
   if (!formattable) {
@@ -1162,7 +1164,7 @@ function NoteReading({ body }: { body: string }) {
           Plain text
         </button>
       </div>
-      {formatted ? <MarkdownView text={body} /> : <p className="note-body">{body}</p>}
+      {formatted ? <MarkdownView blocks={blocks} /> : <p className="note-body">{body}</p>}
     </div>
   );
 }

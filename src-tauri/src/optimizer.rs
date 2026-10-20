@@ -168,14 +168,27 @@ impl History {
 /// Every rating ever recorded, of every card: deleted cards, archived decks,
 /// and the sample deck included, since each one is real evidence of how the
 /// user remembers.
-pub async fn history(pool: &SqlitePool) -> Result<History, DbError> {
-    let reviews = sqlx::query_as::<_, LoggedReview>(
+async fn logged_reviews(pool: &SqlitePool) -> Result<Vec<LoggedReview>, sqlx::Error> {
+    sqlx::query_as::<_, LoggedReview>(
         "SELECT card_id, rating, state_before, reviewed_at
          FROM review_logs ORDER BY card_id, reviewed_at, id",
     )
     .fetch_all(pool)
-    .await?;
-    training_history(&reviews)
+    .await
+}
+
+/// The whole review history, as FSRS learns from it.
+pub async fn history(pool: &SqlitePool) -> Result<History, DbError> {
+    training_history(&logged_reviews(pool).await?)
+}
+
+/// How many reviews an optimization could learn from now: the
+/// [`History::usable_reviews`] of [`history`], counted without building the
+/// training items, each of which copies every earlier rating of its card.
+pub async fn usable_reviews(pool: &SqlitePool) -> Result<usize, DbError> {
+    let mut usable = 0;
+    walk_history(&logged_reviews(pool).await?, |_, _, _| usable += 1)?;
+    Ok(usable)
 }
 
 /// Builds FSRS's training items from ratings sorted by card, then time.
@@ -191,6 +204,33 @@ pub async fn history(pool: &SqlitePool) -> Result<History, DbError> {
 ///   recent reviews more heavily.
 pub fn training_history(reviews: &[LoggedReview]) -> Result<History, DbError> {
     let mut items: Vec<(DateTime<Utc>, i64, FSRSItem)> = Vec::new();
+    walk_history(reviews, |at, card_id, sequence| {
+        items.push((
+            at,
+            card_id,
+            FSRSItem {
+                reviews: sequence.to_vec(),
+            },
+        ));
+    })?;
+
+    // Stable, so ratings made at the same moment keep the card order.
+    items.sort_by_key(|(at, _, _)| *at);
+    let (card_ids, items) = items
+        .into_iter()
+        .map(|(_, card_id, item)| (card_id, item))
+        .unzip();
+    Ok(History { items, card_ids })
+}
+
+/// Walks ratings sorted by card, then time, by the rules of
+/// [`training_history`], calling `item` with each rating that is an item to
+/// learn from: when it was made, its card, and the card's ratings up to and
+/// including it.
+fn walk_history(
+    reviews: &[LoggedReview],
+    mut item: impl FnMut(DateTime<Utc>, i64, &[FSRSReview]),
+) -> Result<(), DbError> {
     let mut card: Option<i64> = None;
     let mut sequence: Vec<FSRSReview> = Vec::new();
     let mut previous: Option<DateTime<Utc>> = None;
@@ -227,23 +267,10 @@ pub fn training_history(reviews: &[LoggedReview]) -> Result<History, DbError> {
         sequence.push(FSRSReview { rating, delta_t });
         previous = Some(at);
         if delta_t > 0 {
-            items.push((
-                at,
-                review.card_id,
-                FSRSItem {
-                    reviews: sequence.clone(),
-                },
-            ));
+            item(at, review.card_id, &sequence);
         }
     }
-
-    // Stable, so ratings made at the same moment keep the card order.
-    items.sort_by_key(|(at, _, _)| *at);
-    let (card_ids, items) = items
-        .into_iter()
-        .map(|(_, card_id, item)| (card_id, item))
-        .unzip();
-    Ok(History { items, card_ids })
+    Ok(())
 }
 
 /// How well a set of parameters predicts the user's own reviews. Lower is
@@ -642,7 +669,7 @@ pub struct Settings {
 
 pub async fn settings(pool: &SqlitePool) -> Result<Settings, DbError> {
     let current = in_use(&mut *pool.acquire().await?).await?;
-    let usable_reviews = history(pool).await?.usable_reviews();
+    let usable_reviews = usable_reviews(pool).await?;
     Ok(Settings {
         version: current.version,
         personal: current.personal.is_some(),

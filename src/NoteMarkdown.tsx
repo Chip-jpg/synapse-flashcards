@@ -1,13 +1,12 @@
-import { useMemo } from "react";
-import { parseMarkdown, type Block, type Inline } from "./markdown";
+import type { Block, Inline } from "./markdown";
 
 /**
- * A note's text shown formatted as Markdown. Everything is drawn as React
- * elements from what `parseMarkdown` found, so no part of the note is ever
- * read as HTML; links and pictures are described, never opened or loaded.
+ * A note's text shown formatted as Markdown, from the `blocks` `parseMarkdown`
+ * found in it. Everything is drawn as React elements, so no part of the note
+ * is ever read as HTML; links and pictures are described, never opened or
+ * loaded.
  */
-export function MarkdownView({ text }: { text: string }) {
-  const blocks = useMemo(() => parseMarkdown(text), [text]);
+export function MarkdownView({ blocks }: { blocks: Block[] }) {
   return <div className="note-body markdown">{renderBlocks(blocks)}</div>;
 }
 

@@ -2190,11 +2190,13 @@ pub async fn read_cards_csv(
     }
     let pool = pool(&app, &database).await?;
     // Refuse a deck that can't take cards before asking for a file.
-    authoring::deck_detail(&pool, deck_id, Utc::now())
-        .await
-        .map_err(|err| {
-            authoring_error(err, "loading a deck", "Synapse couldn't load this deck.")
-        })?;
+    let checked = match pool.acquire().await {
+        Ok(mut conn) => authoring::active_normal_deck(&mut conn, deck_id).await,
+        Err(err) => Err(err.into()),
+    };
+    checked.map_err(|err| {
+        authoring_error(err, "loading a deck", "Synapse couldn't load this deck.")
+    })?;
 
     // As in `export_data`: the dialog answers through a callback.
     let (sender, mut receiver) = tauri::async_runtime::channel(1);

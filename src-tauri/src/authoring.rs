@@ -450,6 +450,27 @@ pub async fn create_deck(
     })
 }
 
+/// Checks that `deck_id` is an active normal deck, refusing it exactly as
+/// [`load_deck_detail`] does (missing, sample, then archived) but reading only
+/// the two columns that decide it: the checks made before a write don't need
+/// the deck's cards, which can number in the tens of thousands.
+pub(crate) async fn active_normal_deck(
+    conn: &mut SqliteConnection,
+    deck_id: i64,
+) -> Result<(), AuthoringError> {
+    let deck: Option<(bool, bool)> =
+        sqlx::query_as("SELECT is_sample, archived_at IS NOT NULL FROM decks WHERE id = ?1")
+            .bind(deck_id)
+            .fetch_optional(conn)
+            .await?;
+    match deck {
+        None => Err(AuthoringError::DeckNotFound),
+        Some((true, _)) => Err(AuthoringError::SampleDeck),
+        Some((false, true)) => Err(AuthoringError::DeckArchived),
+        Some((false, false)) => Ok(()),
+    }
+}
+
 /// A deck row with its counts, before checking it's an active normal deck.
 #[derive(sqlx::FromRow)]
 struct DeckRow {
@@ -596,7 +617,7 @@ pub async fn create_flashcard(
 
     // Stops here, before writing anything, if the deck is missing, archived,
     // or the sample deck. Returning early drops `tx`, which rolls it back.
-    load_deck_detail(&mut tx, deck_id, &now).await?;
+    active_normal_deck(&mut tx, deck_id).await?;
     insert_new_card(&mut tx, deck_id, &card, &now).await?;
 
     let deck = load_deck_detail(&mut tx, deck_id, &now).await?;
@@ -635,7 +656,7 @@ pub async fn create_flashcards(
     let now = to_db_time(now);
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     // As in `create_flashcard`: refused here, before any card is written.
-    load_deck_detail(&mut tx, deck_id, &now).await?;
+    active_normal_deck(&mut tx, deck_id).await?;
     for card in &cards {
         insert_new_card(&mut tx, deck_id, card, &now).await?;
     }
@@ -1097,7 +1118,7 @@ pub async fn move_flashcards(
     check_selected_in(&deck, card_ids)?;
     // A cloze text's cards stay in one deck.
     cloze::check_whole_texts(&mut tx, card_ids).await?;
-    match load_deck_detail(&mut tx, to_deck, &now).await {
+    match active_normal_deck(&mut tx, to_deck).await {
         Ok(_) => {}
         Err(
             AuthoringError::DeckNotFound
@@ -1154,7 +1175,7 @@ pub async fn rename_deck(
 
     // Stops here, before writing anything, if the deck is missing, archived,
     // or the sample deck.
-    load_deck_detail(&mut tx, deck_id, &now).await?;
+    active_normal_deck(&mut tx, deck_id).await?;
     // The deck's own name doesn't count, so changing only letter case works.
     ensure_name_free(&mut tx, name, Some(deck_id)).await?;
 
@@ -1191,7 +1212,7 @@ pub async fn archive_deck(
 
     // Stops here, before writing anything, if the deck is missing, already
     // archived, or the sample deck.
-    load_deck_detail(&mut tx, deck_id, &now).await?;
+    active_normal_deck(&mut tx, deck_id).await?;
 
     // The session must end first: migration 0006 refuses to archive a deck
     // that still has one open.
