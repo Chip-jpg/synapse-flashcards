@@ -1,7 +1,7 @@
 //! Importing an Anki package (`.apkg`, or a whole collection as `.colpkg`)
 //! as new cards in new decks.
 //!
-//! Only the text of front/back notes travels. Every imported card starts as a
+//! Only the text of front/back and cloze notes travels. Every imported card starts as a
 //! brand-new card, exactly like one the user typed: Anki's schedule and review
 //! history are not imported, and neither are images or sounds.
 //!
@@ -29,10 +29,22 @@
 //! (optional reversed card)" and "Basic (type in the answer)", and any custom
 //! type built the same way. A note becomes one card; when its type has a
 //! reverse template and Anki made that card for the note, it is *reversible*,
-//! and the user can choose to add the reversed card too. Everything else is
-//! left out and counted by [`Skipped`]: cloze notes (and image occlusion,
-//! which is a kind of cloze), other note types, notes with an empty side, and
-//! sides over the 2,000-character limit of a card.
+//! and the user can choose to add the reversed card too.
+//!
+//! A cloze note (Anki's "Cloze", or any note type of the cloze kind whose one
+//! template asks with exactly one `{{cloze:Field}}` and shows no other field
+//! on the question) becomes a cloze text, as one typed in Synapse would: its
+//! field's HTML becomes text, it is checked as `cloze::validate_cloze` checks
+//! a typed text, and it makes one card per deletion number. Anki's syntax is
+//! the same (`{{c1::answer}}`, `{{c1::answer::hint}}`). Other fields shown on
+//! the answer, such as "Back Extra", are left out, and notes where they held
+//! text are counted. A text Synapse wouldn't accept (nested deletions, an
+//! empty answer, a number over 999) is left out and counted.
+//!
+//! Everything else is left out and counted by [`Skipped`]: image occlusion
+//! (a kind of cloze that needs its picture), other note types, notes with an
+//! empty side or text, and sides or texts over the 2,000-character limit of a
+//! card.
 //!
 //! A field's HTML becomes plain text by [`html_to_text`]. Nothing here logs a
 //! card's text.
@@ -51,6 +63,7 @@ use sqlx::{ConnectOptions, SqlitePool};
 use crate::authoring::{
     insert_new_card, validate_card, AuthoringError, InvalidInput, DECK_NAME_MAX_CHARS,
 };
+use crate::cloze::{insert_cloze, validate_cloze};
 use crate::db::to_db_time;
 
 /// The largest package read. Its media, which are most of a big package, are
@@ -73,18 +86,27 @@ const COLLECTION_ENTRIES: [&str; 3] = [
     "collection.anki21",
     "collection.anki2",
 ];
+/// What marks image occlusion, in its template and in its deletions
+/// (`{{c1::image-occlusion:rect:…}}`).
+const IMAGE_OCCLUSION: &str = "image-occlusion";
 /// Field values in a note are separated by this character.
 const FIELD_SEPARATOR: char = '\u{1f}';
 /// Anki's names for a subdeck's parents, joined by this in the newer schema.
 const DECK_SEPARATOR: char = '\u{1f}';
 
-/// One note that can become a card.
+/// One note that can become cards.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnkiNote {
+    /// A front/back note's front, or a cloze note's first card's front.
     pub front: String,
+    /// A front/back note's back, or a cloze note's first card's back.
     pub back: String,
     /// Anki also made the reversed card (back as the question) for this note.
     pub reversible: bool,
+    /// A cloze note's text, checked, as it will be saved.
+    pub cloze: Option<String>,
+    /// The cards it adds one way: 1, or a cloze text's deletion numbers.
+    pub cards: usize,
 }
 
 /// An Anki deck with the notes from it that can become cards.
@@ -99,13 +121,17 @@ pub struct AnkiDeck {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Skipped {
-    /// Cloze notes, image occlusion included.
-    pub cloze: usize,
+    /// Image occlusion notes.
+    pub image_occlusion: usize,
+    /// Cloze notes whose text Synapse doesn't accept (nested deletions, an
+    /// empty answer or hint, a number over 999).
+    pub bad_cloze: usize,
     /// Notes whose type isn't one front and one back.
     pub other_note_type: usize,
-    /// A front or back with no text (perhaps only an image or sound).
+    /// A front, back or cloze text with no text (perhaps only an image or
+    /// sound).
     pub empty: usize,
-    /// A front or back over a card's 2,000 characters.
+    /// A front, back or cloze text over a card's 2,000 characters.
     pub too_long: usize,
     /// Notes Anki made no card for.
     pub no_card: usize,
@@ -121,18 +147,23 @@ pub struct AnkiPackage {
     pub skipped: Skipped,
     /// Notes to add that had an image, sound, or video, which is left out.
     pub media_removed: usize,
+    /// Cloze notes to add with text in another field (such as "Back Extra"),
+    /// which is left out.
+    pub extra_removed: usize,
     /// Notes to add that had been reviewed in Anki; they start as new here.
     pub reviewed: usize,
 }
 
 impl AnkiPackage {
-    /// The cards saving would add: one per note, plus the reversed ones.
+    /// The cards saving would add: one per front/back note and one per
+    /// deletion number of a cloze note, plus the reversed ones.
     pub fn card_count(&self, both_directions: bool) -> usize {
         self.decks
             .iter()
             .map(|deck| {
+                let forward: usize = deck.notes.iter().map(|note| note.cards).sum();
                 let reversed = deck.notes.iter().filter(|note| note.reversible).count();
-                deck.notes.len() + if both_directions { reversed } else { 0 }
+                forward + if both_directions { reversed } else { 0 }
             })
             .sum()
     }
@@ -317,7 +348,7 @@ struct NoteType {
 }
 
 /// What a note type's notes become.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Shape {
     /// Field `front` on the question, field `back` on the answer, and the
     /// template that reverses them, if there is one.
@@ -326,7 +357,13 @@ enum Shape {
         back: usize,
         reverse_ord: Option<i64>,
     },
-    Cloze,
+    /// A cloze text in field `text`; `extras` are the other fields the answer
+    /// shows, which are left out.
+    Cloze {
+        text: usize,
+        extras: BTreeSet<usize>,
+    },
+    ImageOcclusion,
     Other,
 }
 
@@ -337,6 +374,8 @@ struct TemplateFields {
     shown: BTreeSet<usize>,
     /// Fields the user types in (`{{type:Field}}`).
     typed: BTreeSet<usize>,
+    /// Fields with deletions (`{{cloze:Field}}`); also in `shown`.
+    cloze_fields: BTreeSet<usize>,
     cloze: bool,
 }
 
@@ -375,7 +414,10 @@ fn template_fields(template: &str, fields: &[String]) -> TemplateFields {
             continue;
         }
         if let Some(index) = fields.iter().position(|field| field == name) {
-            if filters.contains(&"type") {
+            if filters.contains(&"cloze") {
+                found.cloze_fields.insert(index);
+                found.shown.insert(index);
+            } else if filters.contains(&"type") {
                 found.typed.insert(index);
             } else {
                 found.shown.insert(index);
@@ -406,14 +448,47 @@ fn question_and_answer(question: &str, answer: &str, fields: &[String]) -> Optio
     }
 }
 
+/// What a cloze note type's notes become: a cloze text when its one template
+/// asks with one cloze field and shows nothing else on the question.
+fn cloze_shape(note_type: &NoteType) -> Shape {
+    // Anki's own image occlusion template sets the picture up by this name.
+    if note_type.templates.iter().any(|(_, question, answer)| {
+        question.contains(IMAGE_OCCLUSION) || answer.contains(IMAGE_OCCLUSION)
+    }) {
+        return Shape::ImageOcclusion;
+    }
+    let [(_, question, answer)] = &note_type.templates[..] else {
+        return Shape::Other;
+    };
+    let question = template_fields(question, &note_type.fields);
+    let answer = template_fields(answer, &note_type.fields);
+    let Some(&text) = question.cloze_fields.first() else {
+        return Shape::Other;
+    };
+    if question.cloze_fields.len() != 1 || question.shown.len() != 1 || !question.typed.is_empty() {
+        return Shape::Other;
+    }
+    let extras = answer
+        .shown
+        .union(&answer.typed)
+        .copied()
+        .filter(|&field| field != text)
+        .collect();
+    Shape::Cloze { text, extras }
+}
+
 fn shape(note_type: &NoteType) -> Shape {
-    let cloze = note_type.cloze
-        || note_type.templates.iter().any(|(_, question, answer)| {
-            template_fields(question, &note_type.fields).cloze
-                || template_fields(answer, &note_type.fields).cloze
-        });
+    if note_type.cloze {
+        return cloze_shape(note_type);
+    }
+    // Deletions in a normal note type's template: Anki makes one card per
+    // template there, not one per number, so it is neither shape.
+    let cloze = note_type.templates.iter().any(|(_, question, answer)| {
+        template_fields(question, &note_type.fields).cloze
+            || template_fields(answer, &note_type.fields).cloze
+    });
     if cloze {
-        return Shape::Cloze;
+        return Shape::Other;
     }
     let mut templates = note_type.templates.iter();
     let Some((_, question, answer)) = templates.next() else {
@@ -687,24 +762,21 @@ pub async fn read_collection(path: &Path) -> Result<AnkiPackage, AnkiError> {
         notes: notes.len(),
         skipped: Skipped::default(),
         media_removed: 0,
+        extra_removed: 0,
         reviewed: 0,
     };
     let mut by_deck: HashMap<i64, Vec<AnkiNote>> = HashMap::new();
     for (id, note_type, fields) in notes {
-        let (front, back, reverse_ord) = match shapes.get(&note_type) {
-            Some(Shape::FrontBack {
-                front,
-                back,
-                reverse_ord,
-            }) => (*front, *back, *reverse_ord),
-            Some(Shape::Cloze) => {
-                package.skipped.cloze += 1;
+        let shape = match shapes.get(&note_type) {
+            Some(Shape::ImageOcclusion) => {
+                package.skipped.image_occlusion += 1;
                 continue;
             }
             Some(Shape::Other) | None => {
                 package.skipped.other_note_type += 1;
                 continue;
             }
+            Some(shape) => shape,
         };
         let Some(note_cards) = cards.get(&id) else {
             package.skipped.no_card += 1;
@@ -712,30 +784,82 @@ pub async fn read_collection(path: &Path) -> Result<AnkiPackage, AnkiError> {
         };
         let fields: Vec<&str> = fields.split(FIELD_SEPARATOR).collect();
         let field = |index: usize| fields.get(index).copied().unwrap_or_default();
-        let (front, front_media) = html_to_text(field(front));
-        let (back, back_media) = html_to_text(field(back));
-        let card = match validate_card(&front, &back) {
-            Ok(card) => card,
-            Err(InvalidInput::FrontTooLong | InvalidInput::BackTooLong) => {
-                package.skipped.too_long += 1;
-                continue;
+        let (note, media, extra) = match *shape {
+            Shape::FrontBack {
+                front,
+                back,
+                reverse_ord,
+            } => {
+                let (front, front_media) = html_to_text(field(front));
+                let (back, back_media) = html_to_text(field(back));
+                let card = match validate_card(&front, &back) {
+                    Ok(card) => card,
+                    Err(InvalidInput::FrontTooLong | InvalidInput::BackTooLong) => {
+                        package.skipped.too_long += 1;
+                        continue;
+                    }
+                    Err(_) => {
+                        package.skipped.empty += 1;
+                        continue;
+                    }
+                };
+                let note = AnkiNote {
+                    front: card.front,
+                    back: card.back,
+                    reversible: reverse_ord.is_some_and(|ord| note_cards.ords.contains(&ord)),
+                    cloze: None,
+                    cards: 1,
+                };
+                (note, front_media || back_media, false)
             }
-            Err(_) => {
-                package.skipped.empty += 1;
-                continue;
+            Shape::Cloze { text, ref extras } => {
+                let (text, media) = html_to_text(field(text));
+                if text.contains(IMAGE_OCCLUSION) {
+                    package.skipped.image_occlusion += 1;
+                    continue;
+                }
+                let cloze = match validate_cloze(&text) {
+                    Ok(cloze) => cloze,
+                    Err(InvalidInput::ClozeTooLong) => {
+                        package.skipped.too_long += 1;
+                        continue;
+                    }
+                    Err(InvalidInput::ClozeBlank) => {
+                        package.skipped.empty += 1;
+                        continue;
+                    }
+                    Err(_) => {
+                        package.skipped.bad_cloze += 1;
+                        continue;
+                    }
+                };
+                let extra = extras
+                    .iter()
+                    .any(|&index| !html_to_text(field(index)).0.trim().is_empty());
+                let numbers = cloze.numbers();
+                let first = numbers.first().copied().unwrap_or(1);
+                let note = AnkiNote {
+                    front: cloze.front(first),
+                    back: cloze.back(first),
+                    reversible: false,
+                    cards: numbers.len(),
+                    cloze: Some(cloze.text),
+                };
+                (note, media, extra)
             }
+            // Left out above.
+            Shape::ImageOcclusion | Shape::Other => continue,
         };
-        if front_media || back_media {
+        if media {
             package.media_removed += 1;
+        }
+        if extra {
+            package.extra_removed += 1;
         }
         if note_cards.reviewed {
             package.reviewed += 1;
         }
-        by_deck.entry(note_cards.deck).or_default().push(AnkiNote {
-            front: card.front,
-            back: card.back,
-            reversible: reverse_ord.is_some_and(|ord| note_cards.ords.contains(&ord)),
-        });
+        by_deck.entry(note_cards.deck).or_default().push(note);
     }
 
     package.decks = by_deck
@@ -838,8 +962,9 @@ pub async fn planned_names(
     Ok(deck_names(taken.iter().map(String::as_str), &wanted))
 }
 
-/// Saves a package: a new deck for each of its decks and a new card for each
-/// note, plus the reversed card of each reversible note with
+/// Saves a package: a new deck for each of its decks, a new card for each
+/// front/back note and a cloze text with a new card per number for each
+/// cloze note, plus the reversed card of each reversible note with
 /// `both_directions`. All or nothing, in one transaction. Names are chosen
 /// again at this moment, so a deck created since the preview is never
 /// clashed with.
@@ -892,28 +1017,50 @@ pub async fn import_package(
         .await
         .map_err(AuthoringError::from)?;
 
-        // Every card the one way first, then the reversed ones, so a note's
-        // two cards aren't studied one straight after the other.
-        let forward = deck.notes.iter().map(|note| (&note.front, &note.back));
+        // Every card the one way first (a cloze note's text with all its
+        // cards), then the reversed ones, so a note's two cards aren't
+        // studied one straight after the other.
+        let forward = deck.notes.iter().map(|note| match &note.cloze {
+            Some(text) => ToSave::Cloze(text),
+            None => ToSave::Card(&note.front, &note.back),
+        });
         let reversed = deck
             .notes
             .iter()
             .filter(|note| both_directions && note.reversible)
-            .map(|note| (&note.back, &note.front));
+            .map(|note| ToSave::Card(&note.back, &note.front));
         let mut cards = 0;
-        for (index, (front, back)) in forward.chain(reversed).enumerate() {
-            let card = validate_card(front, back)
-                .map_err(|problem| AuthoringError::InvalidCard(index, problem))?;
-            insert_new_card(&mut tx, id, &card, &now)
-                .await
-                .map_err(AuthoringError::from)?;
-            cards += 1;
+        for (index, card) in forward.chain(reversed).enumerate() {
+            let refused = |problem| AuthoringError::InvalidCard(index, problem);
+            match card {
+                ToSave::Card(front, back) => {
+                    let card = validate_card(front, back).map_err(refused)?;
+                    insert_new_card(&mut tx, id, &card, &now)
+                        .await
+                        .map_err(AuthoringError::from)?;
+                    cards += 1;
+                }
+                ToSave::Cloze(text) => {
+                    let cloze = validate_cloze(text).map_err(refused)?;
+                    cards += insert_cloze(&mut tx, id, &cloze, &now)
+                        .await
+                        .map_err(AuthoringError::from)?;
+                }
+            }
         }
         imported.cards += cards;
         imported.decks.push(ImportedDeck { id, name, cards });
     }
     tx.commit().await.map_err(AuthoringError::from)?;
     Ok(imported)
+}
+
+/// One thing [`import_package`] saves into a deck.
+enum ToSave<'a> {
+    /// A card's front and back.
+    Card(&'a str, &'a str),
+    /// A cloze text, with its cards.
+    Cloze(&'a str),
 }
 
 /// A package read and waiting for the user to add or cancel it, under a
@@ -1282,13 +1429,14 @@ mod tests {
             .collect();
         assert_eq!(
             decks,
-            vec![("Biology", 1), ("Biology::Cells", 2), ("French", 4)]
+            vec![("Biology", 3), ("Biology::Cells", 2), ("French", 4)]
         );
-        assert_eq!(package.notes, 11);
+        assert_eq!(package.notes, 14);
         assert_eq!(
             package.skipped,
             Skipped {
-                cloze: 1,
+                image_occlusion: 1,
+                bad_cloze: 1,
                 other_note_type: 1,
                 empty: 1,
                 too_long: 1,
@@ -1296,6 +1444,7 @@ mod tests {
             }
         );
         assert_eq!(package.media_removed, 1);
+        assert_eq!(package.extra_removed, 1);
         assert_eq!(package.reviewed, 1);
 
         let (deck, cell) = note(package, "What is a cell?");
@@ -1315,8 +1464,27 @@ mod tests {
         assert!(!note(package, "oiseau").1.reversible);
         let (_, typed) = note(package, "maison");
         assert_eq!((typed.back.as_str(), typed.reversible), ("house", false));
-        assert_eq!(package.card_count(false), 7);
-        assert_eq!(package.card_count(true), 9);
+        assert_eq!(note(package, "chat").1.cloze, None);
+
+        // Cloze notes: the text as plain text, one card per number, and the
+        // first card's front and back for the preview.
+        let (deck, mitosis) = note(package, "[...] divides cells");
+        assert_eq!(deck, "Biology");
+        assert_eq!(
+            mitosis.cloze.as_deref(),
+            Some("{{c1::Mitosis}} divides cells")
+        );
+        assert_eq!((mitosis.back.as_str(), mitosis.cards), ("Mitosis", 1));
+        let (_, ribosomes) = note(package, "[...] make proteins\nin the [...]");
+        assert_eq!(
+            ribosomes.cloze.as_deref(),
+            Some("{{c1::Ribosomes}} make {{c2::proteins::what?}}\nin the {{c1::cytoplasm}}")
+        );
+        assert_eq!(ribosomes.back, "Ribosomes; cytoplasm");
+        assert_eq!((ribosomes.cards, ribosomes.reversible), (2, false));
+
+        assert_eq!(package.card_count(false), 10);
+        assert_eq!(package.card_count(true), 12);
     }
 
     #[test]
@@ -1500,14 +1668,30 @@ mod tests {
                 reverse_ord: None
             }
         );
-        // Cloze, by kind or by template.
+        // Cloze, by kind and template; what else the answer shows is left
+        // out. Deletions in a normal type, which Anki doesn't number, aren't.
+        let cloze_fields = ["Back Extra", "Text"];
         assert_eq!(
             shape(&note_type(
                 true,
-                &["Text"],
-                &[("{{cloze:Text}}", "{{cloze:Text}}")]
+                &cloze_fields,
+                &[("{{cloze:Text}}", "{{cloze:Text}}<br>\n{{Back Extra}}")]
             )),
-            Shape::Cloze
+            Shape::Cloze {
+                text: 1,
+                extras: BTreeSet::from([0])
+            }
+        );
+        assert_eq!(
+            shape(&note_type(
+                true,
+                &cloze_fields,
+                &[("{{#Text}}{{text:cloze:Text}}{{/Text}}", "{{cloze:Text}}")]
+            )),
+            Shape::Cloze {
+                text: 1,
+                extras: BTreeSet::new()
+            }
         );
         assert_eq!(
             shape(&note_type(
@@ -1515,7 +1699,36 @@ mod tests {
                 &["Text"],
                 &[("{{cloze:Text}}", "{{cloze:Text}}")]
             )),
-            Shape::Cloze
+            Shape::Other
+        );
+        // A cloze type that asks with another field too, with two cloze
+        // fields, or with no deletions.
+        for question in [
+            "{{Back Extra}} {{cloze:Text}}",
+            "{{cloze:Text}} {{cloze:Back Extra}}",
+            "{{Text}}",
+        ] {
+            assert_eq!(
+                shape(&note_type(
+                    true,
+                    &cloze_fields,
+                    &[(question, "{{cloze:Text}}")]
+                )),
+                Shape::Other,
+                "{question}"
+            );
+        }
+        // Image occlusion, by its template.
+        assert_eq!(
+            shape(&note_type(
+                true,
+                &["Occlusion", "Image"],
+                &[(
+                    "<div>{{cloze:Occlusion}}</div>{{Image}}<script>anki.imageOcclusion.setup();</script><div id=\"image-occlusion-container\">",
+                    "{{cloze:Occlusion}}"
+                )]
+            )),
+            Shape::ImageOcclusion
         );
         // Two fields on the answer, two on the question, none at all, or a
         // second template that asks something else.
@@ -1664,13 +1877,52 @@ mod tests {
                 .collect();
             assert_eq!(
                 summary,
-                vec![("Biology", 1), ("Biology::Cells", 2), ("French (2)", 4)]
+                vec![("Biology", 4), ("Biology::Cells", 2), ("French (2)", 4)]
             );
-            assert_eq!(imported.cards, 7);
+            assert_eq!(imported.cards, 10);
             assert_eq!(
                 count(&pool, "SELECT COUNT(*) FROM flashcards").await,
-                before + 7
+                before + 10
             );
+            // The cloze notes are cloze texts, a card per number, in order.
+            let cloze: Vec<(String, String, String, i64, String)> = sqlx::query_as(
+                "SELECT f.front, f.back, f.kind, f.cloze_number, t.text
+                 FROM flashcards f JOIN decks d ON d.id = f.deck_id
+                 JOIN cloze_texts t ON t.id = f.cloze_text_id
+                 WHERE d.name = 'Biology' ORDER BY f.id",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            let ribosomes =
+                "{{c1::Ribosomes}} make {{c2::proteins::what?}}\nin the {{c1::cytoplasm}}";
+            assert_eq!(
+                cloze,
+                vec![
+                    (
+                        "[...] divides cells".to_string(),
+                        "Mitosis".to_string(),
+                        "cloze".to_string(),
+                        1,
+                        "{{c1::Mitosis}} divides cells".to_string()
+                    ),
+                    (
+                        "[...] make proteins\nin the [...]".to_string(),
+                        "Ribosomes; cytoplasm".to_string(),
+                        "cloze".to_string(),
+                        1,
+                        ribosomes.to_string()
+                    ),
+                    (
+                        "Ribosomes make [what?]\nin the cytoplasm".to_string(),
+                        "proteins".to_string(),
+                        "cloze".to_string(),
+                        2,
+                        ribosomes.to_string()
+                    ),
+                ]
+            );
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM cloze_texts").await, 2);
             // New cards, with no schedule or reviews.
             let stored: Vec<(String, String, String, Option<String>, i64, i64)> = sqlx::query_as(
                 "SELECT f.front, f.back, f.fsrs_state, f.due, f.reps, d.is_sample
@@ -1715,7 +1967,7 @@ mod tests {
             let imported = import_package(&pool, &package, true, at(NOW))
                 .await
                 .unwrap();
-            assert_eq!(imported.cards, 9);
+            assert_eq!(imported.cards, 12);
             let french: Vec<(String, String)> = sqlx::query_as(
                 "SELECT f.front, f.back FROM flashcards f JOIN decks d ON d.id = f.deck_id
                  WHERE d.name = 'French' ORDER BY f.id",
@@ -1744,6 +1996,8 @@ mod tests {
                 front: "x".repeat(2_001),
                 back: "y".to_string(),
                 reversible: false,
+                cloze: None,
+                cards: 1,
             });
             let refused = import_package(&pool, &package, false, at(NOW)).await;
             assert!(matches!(
@@ -1759,11 +2013,37 @@ mod tests {
             );
             assert_eq!(count(&pool, "SELECT COUNT(*) FROM flashcards").await, 1);
 
+            // A cloze text that fails a typed text's checks, after a cloze
+            // text and cards that would have been saved.
+            package.decks[2].notes.pop();
+            package.decks[2].notes.push(AnkiNote {
+                front: "No".to_string(),
+                back: "deletion".to_string(),
+                reversible: false,
+                cloze: Some("No deletion".to_string()),
+                cards: 1,
+            });
+            let refused = import_package(&pool, &package, false, at(NOW)).await;
+            assert!(matches!(
+                refused,
+                Err(AnkiError::Authoring(AuthoringError::InvalidCard(
+                    4,
+                    InvalidInput::ClozeNoDeletion
+                )))
+            ));
+            assert_eq!(
+                count(&pool, "SELECT COUNT(*) FROM decks").await,
+                decks_before
+            );
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM flashcards").await, 1);
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM cloze_texts").await, 0);
+
             let empty = AnkiPackage {
                 decks: Vec::new(),
                 notes: 3,
                 skipped: Skipped::default(),
                 media_removed: 0,
+                extra_removed: 0,
                 reviewed: 0,
             };
             assert!(matches!(
@@ -1775,6 +2055,8 @@ mod tests {
                 front: "q".to_string(),
                 back: "a".to_string(),
                 reversible: true,
+                cloze: None,
+                cards: 1,
             };
             let many = AnkiPackage {
                 decks: vec![AnkiDeck {

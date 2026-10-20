@@ -47,7 +47,7 @@ migrations, validation, scheduling, and every business rule; React only calls ty
   *Deleted notes*, where *Restore note* brings it back unchanged.
 - **Cards from a spreadsheet** — add front/back cards to a deck from a CSV or TSV file, after
   checking every row, and save a deck's cards as a CSV file.
-- **Decks from Anki** — add the front/back notes of an Anki package (`.apkg` or `.colpkg`) as new
+- **Decks from Anki** — add the front/back and cloze notes of an Anki package (`.apkg` or `.colpkg`) as new
   decks of new cards, after a preview of what comes across and what's left out.
 - **Import files as notes** — make a note from the text of a PDF, text (`.txt`), Markdown (`.md`),
   Word (`.docx`), or PowerPoint (`.pptx`) file. You check and edit the text before it's saved; the
@@ -262,9 +262,12 @@ archived ones included, gets " (2)" added), how many cards it brings, and how ma
 out and why. Notes come across when their type has one front and one back, such as Anki's *Basic*,
 *Basic (and reversed card)*, *Basic (optional reversed card)* and *Basic (type in the answer)*, or
 your own types built the same way. A note becomes one card; tick the box to also add the reversed
-card for notes that have one in Anki. Formatting becomes plain text with its line breaks. Left out:
-cloze and image-occlusion notes, other note types, notes with an empty side, and sides over 2,000
-characters. *Add* creates every deck and card together, or nothing. Up to 50,000 cards and 1,000
+card for notes that have one in Anki. Cloze notes (Anki's *Cloze*, or your own cloze types that ask
+with one cloze field) become cloze texts, one card per deletion number, checked as a typed cloze
+text is; their *Back Extra* (or any other field on the answer) is left out, and the preview says
+how many had one. Formatting becomes plain text with its line breaks. Left out: image-occlusion
+notes, cloze notes Synapse can't read (nested deletions, an empty answer, a number over 999), other
+note types, notes with an empty side or text, and sides or texts over 2,000 characters. *Add* creates every deck and card together, or nothing. Up to 50,000 cards and 1,000
 decks at a time.
 
 **Write notes.** *Notes* (in the sidebar, or *Open notes* on the Study Desk) → *New note*. A note
@@ -413,7 +416,7 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   assuming you review everything due and add no new cards; same-day repeats after *Again* aren't
   counted. The sample deck and archived decks always follow the value for all decks.
 - **Two card types, both text.** Basic front/back and cloze: no images, audio, or tags, and a
-  card can't change type. Anki's cloze notes aren't imported.
+  card can't change type. Anki's cloze notes are imported without their *Back Extra*.
 - **Search matches words, not meanings.** *Search* finds words by their start (no fuzzy matching,
   no matching inside a word, no synonyms), never searches deleted cards or notes, and shows at most
   50 results. Words are split on anything that isn't a letter or digit, so text in scripts written
