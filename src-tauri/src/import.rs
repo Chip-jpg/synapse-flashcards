@@ -2300,14 +2300,15 @@ mod tests {
 
             // The backup's history is all there, and its ratings are
             // scheduled with FSRS's defaults, not the replaced database's.
-            // Its cards gained only their kind (migration 0012).
+            // Its cards gained only their kind (migration 0012) and no image
+            // occlusion (0018).
             let imported = dump(&restored).await;
             for (name, rows) in &source_rows {
                 if name != "sqlite_master" && name != "_sqlx_migrations" {
                     let found = imported.iter().find(|(table, _)| table == name).unwrap();
                     let rows: Vec<String> = if name == "flashcards" {
                         rows.iter()
-                            .map(|row| format!("{row} | 'basic' | NULL | NULL"))
+                            .map(|row| format!("{row} | 'basic' | NULL | NULL | NULL | NULL"))
                             .collect()
                     } else {
                         rows.clone()
@@ -2687,7 +2688,7 @@ mod tests {
                 let found = imported.iter().find(|(table, _)| table == name).unwrap();
                 let rows: Vec<String> = if name == "flashcards" {
                     rows.iter()
-                        .map(|row| format!("{row} | 'basic' | NULL | NULL"))
+                        .map(|row| format!("{row} | 'basic' | NULL | NULL | NULL | NULL"))
                         .collect()
                 } else {
                     rows.clone()
@@ -2852,10 +2853,11 @@ mod tests {
             for name in ["decks", "review_logs", "sessions", "seed_markers"] {
                 assert_eq!(table(&imported, name), table(&source_rows, name), "{name}");
             }
-            // Its cards gained only their kind (migration 0012).
+            // Its cards gained only their kind (migration 0012) and no image
+            // occlusion (0018).
             let cards: Vec<String> = table(&source_rows, "flashcards")
                 .into_iter()
-                .map(|row| format!("{row} | 'basic' | NULL | NULL"))
+                .map(|row| format!("{row} | 'basic' | NULL | NULL | NULL | NULL"))
                 .collect();
             assert_eq!(table(&imported, "flashcards"), cards);
             let notes: Vec<String> = table(&source_rows, "notes")
@@ -2880,7 +2882,8 @@ mod tests {
             crate::notes::restore_note(&restored, 1).await.unwrap();
 
             // Each wrote only its state column, which is the last column of
-            // decks and, before the three cloze columns of 0012, of cards:
+            // decks and, before the three cloze columns of 0012 and the two
+            // image occlusion columns of 0018, of cards:
             // set aside, every row is still the backup's. Nothing else
             // moved, and no session was opened.
             fn without_state(rows: Vec<String>, from_end: usize) -> Vec<String> {
@@ -2893,7 +2896,7 @@ mod tests {
                     .collect()
             }
             let after = dump(&restored).await;
-            for (name, from_end) in [("decks", 0), ("flashcards", 3)] {
+            for (name, from_end) in [("decks", 0), ("flashcards", 5)] {
                 assert_eq!(
                     without_state(table(&after, name), from_end),
                     without_state(table(&imported, name), from_end),

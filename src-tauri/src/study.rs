@@ -28,6 +28,7 @@ use sqlx::{SqliteConnection, SqlitePool};
 
 use crate::aid;
 use crate::cloze::{self, ClozePart};
+use crate::occlusion::{self, SessionOcclusion};
 use crate::db::{to_db_time, DbError};
 use crate::optimizer;
 use crate::retention;
@@ -116,6 +117,9 @@ pub enum SessionCard {
         /// A cloze card as pieces of its text, its own deletions as gaps
         /// (`cloze::session_parts`); `null` for a front/back card.
         cloze: Option<Vec<ClozePart>>,
+        /// An image occlusion card's picture and boxes
+        /// (`occlusion::session_view`); `null` for any other card.
+        occlusion: Option<SessionOcclusion>,
     },
     Completed {
         cards_reviewed: i64,
@@ -150,9 +154,10 @@ impl From<DbError> for StudyError {
 }
 
 /// SQL selecting the ids of the cards buried right now, with `$since` the
-/// placeholder bound to [`bury_since`]: cloze cards one of whose siblings
-/// (another card of the same cloze text, in any state) was rated since the
-/// day began, while the card itself wasn't.
+/// placeholder bound to [`bury_since`]: cloze and image occlusion cards one
+/// of whose siblings (another card of the same cloze text, or of the same
+/// picture, in any state) was rated since the day began, while the card
+/// itself wasn't.
 ///
 /// The card that was rated isn't buried by its own rating, so a card rated
 /// Again still comes back when it is due again; only its siblings wait. Should
@@ -166,6 +171,16 @@ macro_rules! buried_cards {
             "SELECT buried.id FROM flashcards buried
              JOIN flashcards sibling
                ON sibling.cloze_text_id = buried.cloze_text_id AND sibling.id <> buried.id
+             WHERE sibling.id IN (SELECT card_id FROM review_logs WHERE reviewed_at >= ",
+            $since,
+            ")
+               AND buried.id NOT IN (SELECT card_id FROM review_logs WHERE reviewed_at >= ",
+            $since,
+            ")
+             UNION
+             SELECT buried.id FROM flashcards buried
+             JOIN flashcards sibling
+               ON sibling.occlusion_id = buried.occlusion_id AND sibling.id <> buried.id
              WHERE sibling.id IN (SELECT card_id FROM review_logs WHERE reviewed_at >= ",
             $since,
             ")
@@ -412,6 +427,7 @@ pub async fn session_card(
             let remaining = count_due_cards(&mut tx, deck_id, &now).await?;
             let again_streak = aid::again_streak(&mut tx, card.id).await?;
             let cloze = cloze::session_parts(&mut tx, card.id).await?;
+            let occlusion = occlusion::session_view(&mut tx, card.id).await?;
             tx.commit().await?;
             return Ok(SessionCard::Due {
                 card,
@@ -420,8 +436,11 @@ pub async fn session_card(
                     remaining,
                 },
                 again_streak,
-                offer_help: again_streak >= aid::HELP_AFTER_AGAINS,
+                // Help is written from the card's text, and an image
+                // occlusion card's answer is in its picture.
+                offer_help: again_streak >= aid::HELP_AFTER_AGAINS && occlusion.is_none(),
                 cloze,
+                occlusion,
             });
         }
         finish_session(&mut tx, session_id, &now).await?;

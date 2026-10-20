@@ -1,9 +1,10 @@
 //! Importing an Anki package (`.apkg`, or a whole collection as `.colpkg`)
 //! as new cards in new decks.
 //!
-//! Only the text of front/back and cloze notes travels. Every imported card starts as a
-//! brand-new card, exactly like one the user typed: Anki's schedule and review
-//! history are not imported, and neither are images or sounds.
+//! Only the text of front/back and cloze notes travels, and image occlusion
+//! notes with their picture. Every imported card starts as a brand-new card,
+//! exactly like one the user typed: Anki's schedule and review history are
+//! not imported, and neither are other images or sounds.
 //!
 //! Importing has two steps, so nothing is saved before the user has seen it:
 //! 1. [`extract_collection`] copies the collection database out of the
@@ -41,10 +42,26 @@
 //! text are counted. A text Synapse wouldn't accept (nested deletions, an
 //! empty answer, a number over 999) is left out and counted.
 //!
-//! Everything else is left out and counted by [`Skipped`]: image occlusion
-//! (a kind of cloze that needs its picture), other note types, notes with an
-//! empty side or text, and sides or texts over the 2,000-character limit of a
-//! card.
+//! An image occlusion note (Anki's "Image Occlusion": a cloze note type
+//! whose template sets up `image-occlusion`) becomes an image occlusion of
+//! its picture (`occlusion.rs`): the picture is read from the package's
+//! media and kept as Synapse keeps any picture, and each of its shapes
+//! becomes a box with the shape's number. Anki writes shapes as deletions,
+//! `{{c1::image-occlusion:rect:left=.1:top=.2:width=.3:height=.4:oi=1}}`,
+//! with coordinates from 0 to 1 of the picture. Rectangles are kept as they
+//! are; ellipses and polygons become the rectangles around them, and text
+//! labels drawn on the picture are left out (both counted in
+//! `occlusion_approximated`). `oi=1` (Anki's "hide all, guess one") on any
+//! shape makes the note hide all; otherwise it hides one. The header field
+//! is the header; "Back Extra" is left out and counted, as for cloze notes.
+//! A note whose picture isn't in the package (Anki leaves media out unless
+//! asked), isn't a PNG, JPEG, GIF or WebP, or is over 20 MB, or whose shapes
+//! can't be read (pixel coordinates from early versions of Anki's editor),
+//! is left out and counted as image occlusion.
+//!
+//! Everything else is left out and counted by [`Skipped`]: other note types,
+//! notes with an empty side or text, and sides or texts over the
+//! 2,000-character limit of a card.
 //!
 //! A field's HTML becomes plain text by [`html_to_text`]. Nothing here logs a
 //! card's text.
@@ -54,7 +71,7 @@ use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use chrono::{DateTime, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection};
@@ -63,8 +80,12 @@ use sqlx::{ConnectOptions, SqlitePool};
 use crate::authoring::{
     insert_new_card, validate_card, AuthoringError, InvalidInput, DECK_NAME_MAX_CHARS,
 };
+use crate::assets::{self, AssetError, AssetStore, MediaType, MAX_PICTURE_BYTES};
 use crate::cloze::{insert_cloze, validate_cloze};
 use crate::db::to_db_time;
+use crate::occlusion::{
+    insert_occlusion, renumber, validate_occlusion, Mode, Occlusion, OcclusionBox, NUMBER_MAX,
+};
 
 /// The largest package read. Its media, which are most of a big package, are
 /// never read, so this is only a sanity limit.
@@ -79,6 +100,14 @@ pub const ANKI_DECKS_MAX: usize = 1_000;
 pub const EXAMPLES_PER_DECK: usize = 3;
 /// The description every imported deck gets.
 pub const IMPORTED_DESCRIPTION: &str = "Imported from Anki.";
+/// The most picture bytes one import holds in memory for its image occlusion
+/// notes, between reading the package and saving it. Notes past it are left
+/// out as if their picture were missing.
+pub const ANKI_PICTURES_MAX_BYTES: u64 = 512 * 1024 * 1024;
+/// The largest list of media names read from a package.
+const MEDIA_INDEX_MAX_BYTES: u64 = 64 * 1024 * 1024;
+/// The first bytes of a zstd frame, which newer packages compress media with.
+const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
 
 /// The collection files a package may hold, in the order they are preferred.
 const COLLECTION_ENTRIES: [&str; 3] = [
@@ -105,8 +134,26 @@ pub struct AnkiNote {
     pub reversible: bool,
     /// A cloze note's text, checked, as it will be saved.
     pub cloze: Option<String>,
-    /// The cards it adds one way: 1, or a cloze text's deletion numbers.
+    /// An image occlusion note's picture and boxes, checked.
+    pub occlusion: Option<AnkiOcclusion>,
+    /// The cards it adds one way: 1, or a cloze text's deletion numbers, or
+    /// an image occlusion's box numbers.
     pub cards: usize,
+}
+
+/// An image occlusion note: the name of its picture in the package's media,
+/// and its header, way of asking and boxes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnkiOcclusion {
+    pub picture: String,
+    pub occlusion: Occlusion,
+}
+
+/// A picture read from a package, by its type (from its bytes).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnkiPicture {
+    pub bytes: Arc<[u8]>,
+    pub media_type: MediaType,
 }
 
 /// An Anki deck with the notes from it that can become cards.
@@ -121,7 +168,8 @@ pub struct AnkiDeck {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Skipped {
-    /// Image occlusion notes.
+    /// Image occlusion notes whose picture is missing or unusable, or whose
+    /// shapes can't be read.
     pub image_occlusion: usize,
     /// Cloze notes whose text Synapse doesn't accept (nested deletions, an
     /// empty answer or hint, a number over 999).
@@ -152,6 +200,12 @@ pub struct AnkiPackage {
     pub extra_removed: usize,
     /// Notes to add that had been reviewed in Anki; they start as new here.
     pub reviewed: usize,
+    /// Image occlusion notes to add whose ellipses or polygons became
+    /// rectangles, or whose text labels were left out.
+    pub occlusion_approximated: usize,
+    /// The pictures of the image occlusion notes to add, by their name in
+    /// the package.
+    pub pictures: HashMap<String, AnkiPicture>,
 }
 
 impl AnkiPackage {
@@ -208,6 +262,8 @@ pub enum AnkiError {
     Io(io::Error),
     /// Saving was refused, or the database failed.
     Authoring(AuthoringError),
+    /// A picture couldn't be kept (the store is full, or failed).
+    Picture(AssetError),
 }
 
 impl From<AuthoringError> for AnkiError {
@@ -363,8 +419,19 @@ enum Shape {
         text: usize,
         extras: BTreeSet<usize>,
     },
-    ImageOcclusion,
+    /// Anki's image occlusion: deletions in field `occlusion`, the picture
+    /// and header among `shown` (the other fields the question shows), and
+    /// `extras` (such as "Back Extra") shown only on the answer. `None` for
+    /// a note type laid out some other way, whose notes are left out.
+    ImageOcclusion(Option<OcclusionFields>),
     Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OcclusionFields {
+    occlusion: usize,
+    shown: Vec<usize>,
+    extras: BTreeSet<usize>,
 }
 
 /// The fields one template puts on its card.
@@ -455,7 +522,31 @@ fn cloze_shape(note_type: &NoteType) -> Shape {
     if note_type.templates.iter().any(|(_, question, answer)| {
         question.contains(IMAGE_OCCLUSION) || answer.contains(IMAGE_OCCLUSION)
     }) {
-        return Shape::ImageOcclusion;
+        let [(_, question, answer)] = &note_type.templates[..] else {
+            return Shape::ImageOcclusion(None);
+        };
+        let question = template_fields(question, &note_type.fields);
+        let answer = template_fields(answer, &note_type.fields);
+        let [occlusion] = question.cloze_fields.iter().copied().collect::<Vec<_>>()[..] else {
+            return Shape::ImageOcclusion(None);
+        };
+        let shown = question
+            .shown
+            .iter()
+            .copied()
+            .filter(|&field| field != occlusion)
+            .collect();
+        let extras = answer
+            .shown
+            .union(&answer.typed)
+            .copied()
+            .filter(|field| !question.shown.contains(field))
+            .collect();
+        return Shape::ImageOcclusion(Some(OcclusionFields {
+            occlusion,
+            shown,
+            extras,
+        }));
     }
     let [(_, question, answer)] = &note_type.templates[..] else {
         return Shape::Other;
@@ -517,7 +608,17 @@ fn shape(note_type: &NoteType) -> Shape {
 /// The fields of a protobuf message that are strings or varints, by field
 /// number: just enough to read the note type and template settings of a
 /// newer collection, which it stores as protobuf. Anything else is skipped.
-fn protobuf_fields(mut bytes: &[u8]) -> Option<HashMap<u64, ProtoValue<'_>>> {
+fn protobuf_fields(bytes: &[u8]) -> Option<HashMap<u64, ProtoValue<'_>>> {
+    let mut found = HashMap::new();
+    for (number, value) in protobuf_entries(bytes)? {
+        found.entry(number).or_insert(value);
+    }
+    Some(found)
+}
+
+/// Every string or varint field of a protobuf message in order, repeated
+/// ones included.
+fn protobuf_entries(mut bytes: &[u8]) -> Option<Vec<(u64, ProtoValue<'_>)>> {
     fn varint(bytes: &mut &[u8]) -> Option<u64> {
         let mut value = 0u64;
         for shift in (0..64).step_by(7) {
@@ -530,21 +631,21 @@ fn protobuf_fields(mut bytes: &[u8]) -> Option<HashMap<u64, ProtoValue<'_>>> {
         }
         None
     }
-    let mut found = HashMap::new();
+    let mut found = Vec::new();
     while !bytes.is_empty() {
         let key = varint(&mut bytes)?;
         let (number, wire) = (key >> 3, key & 7);
         match wire {
             0 => {
                 let value = varint(&mut bytes)?;
-                found.entry(number).or_insert(ProtoValue::Varint(value));
+                found.push((number, ProtoValue::Varint(value)));
             }
             1 => bytes = bytes.get(8..)?,
             2 => {
                 let len = usize::try_from(varint(&mut bytes)?).ok()?;
                 let value = bytes.get(..len)?;
                 bytes = &bytes[len..];
-                found.entry(number).or_insert(ProtoValue::Bytes(value));
+                found.push((number, ProtoValue::Bytes(value)));
             }
             5 => bytes = bytes.get(4..)?,
             _ => return None,
@@ -764,11 +865,13 @@ pub async fn read_collection(path: &Path) -> Result<AnkiPackage, AnkiError> {
         media_removed: 0,
         extra_removed: 0,
         reviewed: 0,
+        occlusion_approximated: 0,
+        pictures: HashMap::new(),
     };
     let mut by_deck: HashMap<i64, Vec<AnkiNote>> = HashMap::new();
     for (id, note_type, fields) in notes {
         let shape = match shapes.get(&note_type) {
-            Some(Shape::ImageOcclusion) => {
+            Some(Shape::ImageOcclusion(None)) => {
                 package.skipped.image_occlusion += 1;
                 continue;
             }
@@ -808,6 +911,7 @@ pub async fn read_collection(path: &Path) -> Result<AnkiPackage, AnkiError> {
                     back: card.back,
                     reversible: reverse_ord.is_some_and(|ord| note_cards.ords.contains(&ord)),
                     cloze: None,
+                    occlusion: None,
                     cards: 1,
                 };
                 (note, front_media || back_media, false)
@@ -844,11 +948,40 @@ pub async fn read_collection(path: &Path) -> Result<AnkiPackage, AnkiError> {
                     reversible: false,
                     cards: numbers.len(),
                     cloze: Some(cloze.text),
+                    occlusion: None,
                 };
                 (note, media, extra)
             }
+            Shape::ImageOcclusion(Some(ref fields)) => {
+                let (occlusion, approximated, extra) = match read_image_occlusion(fields, field) {
+                    Ok(read) => read,
+                    Err(OcclusionProblem::TooLong) => {
+                        package.skipped.too_long += 1;
+                        continue;
+                    }
+                    Err(OcclusionProblem::Unreadable) => {
+                        package.skipped.image_occlusion += 1;
+                        continue;
+                    }
+                };
+                if approximated {
+                    package.occlusion_approximated += 1;
+                }
+                let numbers = occlusion.occlusion.numbers();
+                let first = numbers.first().copied().unwrap_or(1);
+                let note = AnkiNote {
+                    front: occlusion.occlusion.front(first),
+                    back: occlusion.occlusion.back(first),
+                    reversible: false,
+                    cloze: None,
+                    cards: numbers.len(),
+                    occlusion: Some(occlusion),
+                };
+                // Its picture is used, not left out.
+                (note, false, extra)
+            }
             // Left out above.
-            Shape::ImageOcclusion | Shape::Other => continue,
+            Shape::ImageOcclusion(None) | Shape::Other => continue,
         };
         if media {
             package.media_removed += 1;
@@ -885,10 +1018,302 @@ pub async fn read_collection(path: &Path) -> Result<AnkiPackage, AnkiError> {
     Ok(package)
 }
 
+/// Why an image occlusion note is left out.
+enum OcclusionProblem {
+    /// No picture named, shapes that can't be read, or no box left.
+    Unreadable,
+    /// The header, or a number's labels, is too long.
+    TooLong,
+}
+
+/// Reads an image occlusion note: its picture's name, header and boxes;
+/// whether a shape was approximated or left out; and whether an answer-only
+/// field held text. The picture itself is read later ([`attach_pictures`]).
+fn read_image_occlusion<'a>(
+    fields: &OcclusionFields,
+    field: impl Fn(usize) -> &'a str,
+) -> Result<(AnkiOcclusion, bool, bool), OcclusionProblem> {
+    let (picture_field, picture) = fields
+        .shown
+        .iter()
+        .find_map(|&index| picture_name(field(index)).map(|name| (index, name)))
+        .ok_or(OcclusionProblem::Unreadable)?;
+    let header = fields
+        .shown
+        .iter()
+        .filter(|&&index| index != picture_field)
+        .map(|&index| html_to_text(field(index)).0)
+        .find(|text| !text.trim().is_empty())
+        .unwrap_or_default();
+    let (mut boxes, hide_all, approximated) =
+        read_shapes(field(fields.occlusion)).ok_or(OcclusionProblem::Unreadable)?;
+    if boxes.iter().any(|shape| shape.number > NUMBER_MAX) {
+        renumber(&mut boxes);
+    }
+    let mode = if hide_all { Mode::HideAll } else { Mode::HideOne };
+    let occlusion = validate_occlusion(&header, mode, &boxes).map_err(|problem| match problem {
+        InvalidInput::OcclusionHeaderTooLong | InvalidInput::OcclusionLabelTooLong => {
+            OcclusionProblem::TooLong
+        }
+        _ => OcclusionProblem::Unreadable,
+    })?;
+    let extra = fields
+        .extras
+        .iter()
+        .any(|&index| !html_to_text(field(index)).0.trim().is_empty());
+    Ok((AnkiOcclusion { picture, occlusion }, approximated, extra))
+}
+
+/// The media name of the first `<img src="…">` in a field, if it names a
+/// file in the package (not an address).
+fn picture_name(html: &str) -> Option<String> {
+    let lower = html.to_ascii_lowercase();
+    let mut from = 0;
+    while let Some(at) = lower[from..].find("<img") {
+        let start = from + at;
+        let (len, _, _) = parse_tag(&html[start..])?;
+        let tag = &html[start..start + len];
+        from = start + len;
+        let lower_tag = tag.to_ascii_lowercase();
+        let Some(src) = lower_tag
+            .match_indices("src")
+            .map(|(at, _)| at)
+            .find(|&at| tag[at + 3..].trim_start().starts_with('=') && tag[..at].ends_with(char::is_whitespace))
+        else {
+            continue;
+        };
+        let value = tag[src + 3..].trim_start()[1..].trim_start();
+        let value = match value.chars().next() {
+            Some(quote @ ('"' | '\'')) => value[1..].split(quote).next().unwrap_or_default(),
+            _ => value
+                .split(|ch: char| ch.is_whitespace() || ch == '>' || ch == '/')
+                .next()
+                .unwrap_or_default(),
+        };
+        let name = html_to_text(value).0;
+        let name = name.trim();
+        if !name.is_empty() && !name.contains(['/', '\\', ':']) {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+/// Anki's image occlusion shapes in a note's occlusion field, as boxes;
+/// whether any asks to hide all (`oi=1`); and whether any was approximated
+/// or left out. `None` if a deletion isn't a shape, a shape can't be read,
+/// or no box is left.
+fn read_shapes(html: &str) -> Option<(Vec<OcclusionBox>, bool, bool)> {
+    let text = html_to_text(html).0;
+    let mut boxes = Vec::new();
+    let (mut hide_all, mut approximated) = (false, false);
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find("{{c") {
+        let after = &rest[at + 3..];
+        let digits = after.bytes().take_while(u8::is_ascii_digit).count();
+        let body_start = after[digits..].strip_prefix("::")?;
+        let number: u32 = after[..digits].parse().ok().filter(|&n| n >= 1)?;
+        let end = body_start.find("}}")?;
+        let body = body_start[..end].strip_prefix(IMAGE_OCCLUSION)?.strip_prefix(':')?;
+        rest = &body_start[end + 2..];
+
+        let mut parts = body.split(':');
+        let kind = parts.next()?;
+        let props: HashMap<&str, &str> = parts.filter_map(|part| part.split_once('=')).collect();
+        let num = |key: &str| -> Option<f64> {
+            props
+                .get(key)?
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|value| value.is_finite())
+        };
+        if props.get("oi").is_some_and(|value| value.trim() == "1") {
+            hide_all = true;
+        }
+        if num("angle").is_some_and(|angle| angle != 0.0) {
+            approximated = true;
+        }
+        let (left, top, right, bottom) = match kind {
+            "rect" => {
+                let (left, top) = (num("left")?, num("top")?);
+                (left, top, left + num("width")?, top + num("height")?)
+            }
+            "ellipse" => {
+                approximated = true;
+                let (left, top) = (num("left")?, num("top")?);
+                (left, top, left + 2.0 * num("rx")?, top + 2.0 * num("ry")?)
+            }
+            "polygon" => {
+                approximated = true;
+                let points: Vec<(f64, f64)> = props
+                    .get("points")?
+                    .split_whitespace()
+                    .map(|pair| {
+                        let (x, y) = pair.split_once(',')?;
+                        Some((x.parse().ok()?, y.parse().ok()?))
+                    })
+                    .collect::<Option<_>>()?;
+                let xs = points.iter().map(|point| point.0);
+                let ys = points.iter().map(|point| point.1);
+                (
+                    xs.clone().fold(f64::INFINITY, f64::min),
+                    ys.clone().fold(f64::INFINITY, f64::min),
+                    xs.fold(f64::NEG_INFINITY, f64::max),
+                    ys.fold(f64::NEG_INFINITY, f64::max),
+                )
+            }
+            // A label written on the picture: nothing to hide.
+            "text" => {
+                approximated = true;
+                continue;
+            }
+            _ => return None,
+        };
+        // Early versions of Anki's editor stored pixels, not fractions.
+        if [left, top, right, bottom]
+            .iter()
+            .any(|&value| !value.is_finite() || !(-0.5..=1.5).contains(&value))
+        {
+            return None;
+        }
+        // A shape partly off the picture is cut to it.
+        let (left, top) = (left.max(0.0), top.max(0.0));
+        let (right, bottom) = (right.min(1.0), bottom.min(1.0));
+        if right - left < 0.002 || bottom - top < 0.002 {
+            approximated = true;
+            continue;
+        }
+        boxes.push(OcclusionBox {
+            number,
+            left,
+            top,
+            width: right - left,
+            height: bottom - top,
+            label: String::new(),
+        });
+    }
+    (!boxes.is_empty()).then_some((boxes, hide_all, approximated))
+}
+
+/// Reads at most `limit` bytes of `source`; `None` if it holds more.
+fn read_limited(source: impl Read, limit: u64) -> io::Result<Option<Vec<u8>>> {
+    let mut bytes = Vec::new();
+    source.take(limit + 1).read_to_end(&mut bytes)?;
+    Ok((bytes.len() as u64 <= limit).then_some(bytes))
+}
+
+/// An entry of the package, decompressed if newer Anki compressed it,
+/// within `limit` bytes; `None` if it is missing, larger, or unreadable.
+fn read_media_entry(archive: &mut zip::ZipArchive<File>, name: &str, limit: u64) -> Option<Vec<u8>> {
+    let entry = archive.by_name(name).ok()?;
+    // zstd adds a little to bytes it can't make smaller.
+    let raw = read_limited(entry, limit + limit / 64 + 1024).ok()??;
+    if raw.starts_with(&ZSTD_MAGIC) {
+        let decoder = ruzstd::decoding::StreamingDecoder::new(raw.as_slice()).ok()?;
+        read_limited(decoder, limit).ok()?
+    } else {
+        (raw.len() as u64 <= limit).then_some(raw)
+    }
+}
+
+/// Which entry of the package holds each media file, by the file's name.
+/// Older packages list them as JSON (`{"0": "heart.png"}`), newer ones as
+/// protobuf (`MediaEntries`: each entry's name, and the entry is its
+/// position unless it says otherwise).
+fn media_index(archive: &mut zip::ZipArchive<File>) -> HashMap<String, String> {
+    let Some(bytes) = read_media_entry(archive, "media", MEDIA_INDEX_MAX_BYTES) else {
+        return HashMap::new();
+    };
+    if let Ok(names) = serde_json::from_slice::<HashMap<String, String>>(&bytes) {
+        return names.into_iter().map(|(entry, name)| (name, entry)).collect();
+    }
+    let Some(entries) = protobuf_entries(&bytes) else {
+        return HashMap::new();
+    };
+    entries
+        .into_iter()
+        .filter(|(number, _)| *number == 1)
+        .enumerate()
+        .filter_map(|(position, (_, value))| {
+            let ProtoValue::Bytes(entry) = value else {
+                return None;
+            };
+            let fields = protobuf_fields(entry)?;
+            let name = proto_string(&fields, 1);
+            let entry = match fields.get(&255) {
+                Some(ProtoValue::Varint(entry)) => entry.to_string(),
+                _ => position.to_string(),
+            };
+            (!name.is_empty()).then_some((name, entry))
+        })
+        .collect()
+}
+
+/// Reads the pictures of the image occlusion notes from the package's media,
+/// and leaves out (as image occlusion) each note whose picture is missing,
+/// isn't a PNG, JPEG, GIF or WebP, is over 20 MB, or doesn't fit in
+/// [`ANKI_PICTURES_MAX_BYTES`]. Writes nothing.
+fn attach_pictures(mut package: AnkiPackage, path: &Path) -> AnkiPackage {
+    let wanted: BTreeSet<String> = package
+        .decks
+        .iter()
+        .flat_map(|deck| &deck.notes)
+        .filter_map(|note| Some(note.occlusion.as_ref()?.picture.clone()))
+        .collect();
+    if wanted.is_empty() {
+        return package;
+    }
+    let archive = File::open(path)
+        .ok()
+        .and_then(|file| zip::ZipArchive::new(file).ok());
+    if let Some(mut archive) = archive {
+        let index = media_index(&mut archive);
+        let mut total = 0u64;
+        for name in wanted {
+            let Some(entry) = index.get(&name) else {
+                continue;
+            };
+            let Some(bytes) = read_media_entry(&mut archive, entry, MAX_PICTURE_BYTES) else {
+                continue;
+            };
+            let Some(media_type) = assets::sniff(&bytes).filter(|kind| kind.is_picture()) else {
+                continue;
+            };
+            total += bytes.len() as u64;
+            if total > ANKI_PICTURES_MAX_BYTES {
+                break;
+            }
+            package.pictures.insert(
+                name,
+                AnkiPicture {
+                    bytes: bytes.into(),
+                    media_type,
+                },
+            );
+        }
+    }
+
+    let mut missing = 0;
+    for deck in &mut package.decks {
+        deck.notes.retain(|note| match &note.occlusion {
+            Some(occlusion) if !package.pictures.contains_key(&occlusion.picture) => {
+                missing += 1;
+                false
+            }
+            _ => true,
+        });
+    }
+    package.decks.retain(|deck| !deck.notes.is_empty());
+    package.skipped.image_occlusion += missing;
+    package
+}
+
 /// Copies the collection out of a package and reads it: both steps of
 /// reading, in a scratch folder removed afterwards. Writes nothing to Synapse.
 pub async fn read_package(package: &Path) -> Result<AnkiPackage, AnkiError> {
     let scratch = ScratchDir::new()?;
+    let package_path = package.to_path_buf();
     let package = package.to_path_buf();
     let folder = scratch.path().to_path_buf();
     let collection =
@@ -897,7 +1322,11 @@ pub async fn read_package(package: &Path) -> Result<AnkiPackage, AnkiError> {
             .map_err(|err| AnkiError::Unreadable(format!("unpacking stopped: {err}")))??;
     let read = read_collection(&collection).await;
     drop(scratch);
-    read
+    let package = read?;
+    let path = package_path;
+    tauri::async_runtime::spawn_blocking(move || Ok(attach_pictures(package, &path)))
+        .await
+        .map_err(|err| AnkiError::Unreadable(format!("reading pictures stopped: {err}")))?
 }
 
 /// A name of at most `max` characters: `text` cut at a character boundary,
@@ -970,6 +1399,7 @@ pub async fn planned_names(
 /// clashed with.
 pub async fn import_package(
     pool: &SqlitePool,
+    store: &AssetStore,
     package: &AnkiPackage,
     both_directions: bool,
     now: DateTime<Utc>,
@@ -985,7 +1415,10 @@ pub async fn import_package(
         return Err(AnkiError::TooManyDecks);
     }
 
+    let kept_at = now;
     let now = to_db_time(now);
+    // Each picture is kept once, whatever number of notes use it.
+    let mut kept: HashMap<&str, i64> = HashMap::new();
     let mut tx = pool
         .begin_with("BEGIN IMMEDIATE")
         .await
@@ -1020,10 +1453,14 @@ pub async fn import_package(
         // Every card the one way first (a cloze note's text with all its
         // cards), then the reversed ones, so a note's two cards aren't
         // studied one straight after the other.
-        let forward = deck.notes.iter().map(|note| match &note.cloze {
-            Some(text) => ToSave::Cloze(text),
-            None => ToSave::Card(&note.front, &note.back),
-        });
+        let forward = deck
+            .notes
+            .iter()
+            .map(|note| match (&note.cloze, &note.occlusion) {
+                (Some(text), _) => ToSave::Cloze(text),
+                (None, Some(occlusion)) => ToSave::Occlusion(occlusion),
+                (None, None) => ToSave::Card(&note.front, &note.back),
+            });
         let reversed = deck
             .notes
             .iter()
@@ -1046,6 +1483,33 @@ pub async fn import_package(
                         .await
                         .map_err(AuthoringError::from)?;
                 }
+                ToSave::Occlusion(note) => {
+                    let checked = &note.occlusion;
+                    let occlusion = validate_occlusion(&checked.header, checked.mode, &checked.boxes)
+                        .map_err(refused)?;
+                    let asset_id = match kept.get(note.picture.as_str()) {
+                        Some(&asset_id) => asset_id,
+                        None => {
+                            let picture = package.pictures.get(&note.picture).ok_or_else(|| {
+                                AuthoringError::Internal("an occlusion's picture wasn't read".into())
+                            })?;
+                            let asset = assets::put(
+                                &mut tx,
+                                store,
+                                &picture.bytes,
+                                picture.media_type,
+                                kept_at,
+                            )
+                            .await
+                            .map_err(AnkiError::Picture)?;
+                            kept.insert(&note.picture, asset.id);
+                            asset.id
+                        }
+                    };
+                    cards += insert_occlusion(&mut tx, id, asset_id, &occlusion, &now)
+                        .await
+                        .map_err(AuthoringError::from)?;
+                }
             }
         }
         imported.cards += cards;
@@ -1061,6 +1525,8 @@ enum ToSave<'a> {
     Card(&'a str, &'a str),
     /// A cloze text, with its cards.
     Cloze(&'a str),
+    /// An image occlusion, with its picture and cards.
+    Occlusion(&'a AnkiOcclusion),
 }
 
 /// A package read and waiting for the user to add or cancel it, under a
@@ -1374,6 +1840,15 @@ mod tests {
     const NEW_APKG: &[u8] = include_bytes!("../testdata/anki/new.apkg");
     const LEGACY_APKG: &[u8] = include_bytes!("../testdata/anki/legacy.apkg");
     const COLPKG: &[u8] = include_bytes!("../testdata/anki/all.colpkg");
+
+    /// A store folder of its own for each test that saves.
+    fn test_store() -> AssetStore {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        crate::assets::test_support::scratch_store(&format!(
+            "anki-{}",
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
 
     async fn seeded() -> SqlitePool {
         let pool = memory_pool().await;
@@ -1728,7 +2203,23 @@ mod tests {
                     "{{cloze:Occlusion}}"
                 )]
             )),
-            Shape::ImageOcclusion
+            Shape::ImageOcclusion(Some(OcclusionFields {
+                occlusion: 0,
+                shown: vec![1],
+                extras: BTreeSet::new(),
+            }))
+        );
+        // Laid out some other way: left out.
+        assert_eq!(
+            shape(&note_type(
+                true,
+                &["Occlusion", "Image"],
+                &[
+                    ("{{cloze:Occlusion}}{{Image}} image-occlusion", "{{Image}}"),
+                    ("{{Image}}", "{{cloze:Occlusion}} image-occlusion"),
+                ]
+            )),
+            Shape::ImageOcclusion(None)
         );
         // Two fields on the answer, two on the question, none at all, or a
         // second template that asks something else.
@@ -1867,7 +2358,7 @@ mod tests {
             // Planning wrote nothing.
             assert_eq!(count(&pool, "SELECT COUNT(*) FROM decks").await, 2);
 
-            let imported = import_package(&pool, &package, false, at(NOW))
+            let imported = import_package(&pool, &test_store(), &package, false, at(NOW))
                 .await
                 .unwrap();
             let summary: Vec<(&str, usize)> = imported
@@ -1948,7 +2439,7 @@ mod tests {
             assert_eq!(description.as_deref(), Some(IMPORTED_DESCRIPTION));
 
             // Importing again makes decks of their own.
-            let again = import_package(&pool, &package, false, at(NOW))
+            let again = import_package(&pool, &test_store(), &package, false, at(NOW))
                 .await
                 .unwrap();
             let names: Vec<&str> = again.decks.iter().map(|deck| deck.name.as_str()).collect();
@@ -1964,7 +2455,7 @@ mod tests {
         tauri::async_runtime::block_on(async {
             let pool = seeded().await;
             let package = read_async(NEW_APKG).await.unwrap();
-            let imported = import_package(&pool, &package, true, at(NOW))
+            let imported = import_package(&pool, &test_store(), &package, true, at(NOW))
                 .await
                 .unwrap();
             assert_eq!(imported.cards, 12);
@@ -1997,9 +2488,10 @@ mod tests {
                 back: "y".to_string(),
                 reversible: false,
                 cloze: None,
+                occlusion: None,
                 cards: 1,
             });
-            let refused = import_package(&pool, &package, false, at(NOW)).await;
+            let refused = import_package(&pool, &test_store(), &package, false, at(NOW)).await;
             assert!(matches!(
                 refused,
                 Err(AnkiError::Authoring(AuthoringError::InvalidCard(
@@ -2021,9 +2513,10 @@ mod tests {
                 back: "deletion".to_string(),
                 reversible: false,
                 cloze: Some("No deletion".to_string()),
+                occlusion: None,
                 cards: 1,
             });
-            let refused = import_package(&pool, &package, false, at(NOW)).await;
+            let refused = import_package(&pool, &test_store(), &package, false, at(NOW)).await;
             assert!(matches!(
                 refused,
                 Err(AnkiError::Authoring(AuthoringError::InvalidCard(
@@ -2045,9 +2538,11 @@ mod tests {
                 media_removed: 0,
                 extra_removed: 0,
                 reviewed: 0,
+                occlusion_approximated: 0,
+                pictures: HashMap::new(),
             };
             assert!(matches!(
-                import_package(&pool, &empty, true, at(NOW)).await,
+                import_package(&pool, &test_store(), &empty, true, at(NOW)).await,
                 Err(AnkiError::NothingToImport)
             ));
 
@@ -2056,6 +2551,7 @@ mod tests {
                 back: "a".to_string(),
                 reversible: true,
                 cloze: None,
+                occlusion: None,
                 cards: 1,
             };
             let many = AnkiPackage {
@@ -2065,9 +2561,9 @@ mod tests {
                 }],
                 ..empty
             };
-            assert!(import_package(&pool, &many, false, at(NOW)).await.is_ok());
+            assert!(import_package(&pool, &test_store(), &many, false, at(NOW)).await.is_ok());
             assert!(matches!(
-                import_package(&pool, &many, true, at(NOW)).await,
+                import_package(&pool, &test_store(), &many, true, at(NOW)).await,
                 Err(AnkiError::TooManyCards)
             ));
         });

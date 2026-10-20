@@ -455,6 +455,20 @@ pub async fn asset_by_hash(pool: &SqlitePool, sha256: &str) -> Result<Option<Ass
     row.map(asset_from_row).transpose()
 }
 
+/// The kept file with this id, if there is one, on a connection or inside a
+/// transaction.
+pub(crate) async fn asset_by_id(
+    conn: &mut SqliteConnection,
+    id: i64,
+) -> Result<Option<Asset>, DbError> {
+    let row: Option<AssetRow> =
+        sqlx::query_as("SELECT id, sha256, media_type, size, created_at FROM assets WHERE id = ?1")
+            .bind(id)
+            .fetch_optional(conn)
+            .await?;
+    row.map(asset_from_row).transpose()
+}
+
 /// The answer to a `synapse:` request for `path`, which must be `/<sha256>`
 /// of a kept picture or PDF. Anything else, or a file that is missing or the
 /// wrong size, is a plain 404 with no detail.

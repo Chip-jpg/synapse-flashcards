@@ -19,6 +19,7 @@ use crate::assets::{self, Asset, AssetError, AssetStore};
 use crate::authoring::{self, ArchivedDeck, AuthoringError, CardText, DeckDetail, InvalidInput};
 use crate::cards_csv::{self, CardsImported, CsvError, Delimiter, Duplicate, RowProblem};
 use crate::cloze::{self, ClozeChanges, RestoreBlock};
+use crate::occlusion::{self, Mode, OcclusionBox, OcclusionView};
 use crate::db::Database;
 use crate::export::{self, ExportError};
 use crate::extract::{self, ExtractError, ExtractedText, FileKind};
@@ -63,6 +64,10 @@ enum Field {
     Body,
     /// A cloze card's text.
     Text,
+    /// An image occlusion's header.
+    Header,
+    /// An image occlusion's boxes.
+    Boxes,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -138,6 +143,22 @@ impl CommandError {
                 "Each {{c1::…}} needs an answer, and a hint if it has :: after the answer.",
             ),
             InvalidInput::ClozeNumber => (Field::Text, "Number each {{c1::…}} from 1 to 999."),
+            InvalidInput::OcclusionHeaderTooLong => {
+                (Field::Header, "The header can be at most 500 characters.")
+            }
+            InvalidInput::OcclusionNoBoxes => {
+                (Field::Boxes, "Draw at least one box over the picture.")
+            }
+            InvalidInput::OcclusionTooManyBoxes => {
+                (Field::Boxes, "A picture can have at most 200 boxes.")
+            }
+            InvalidInput::OcclusionBox => (
+                Field::Boxes,
+                "Each box must be inside the picture and numbered from 1 to 999.",
+            ),
+            InvalidInput::OcclusionLabelTooLong => {
+                (Field::Boxes, "A box's label can be at most 200 characters.")
+            }
         };
         CommandError {
             kind: ErrorKind::Invalid,
@@ -271,6 +292,18 @@ fn authoring_error(err: AuthoringError, context: &str, failed: &'static str) -> 
         AuthoringError::ClozeSplit => CommandError::invalid(
             "Cards made from one cloze text move together: select all of them.",
         ),
+        AuthoringError::OcclusionNotRestorable(RestoreBlock::NumberGone) => CommandError::stale(
+            "This card's box is no longer on its picture, so it can't be restored.",
+        ),
+        AuthoringError::OcclusionNotRestorable(RestoreBlock::Elsewhere) => CommandError::stale(
+            "This card's picture has its cards in another deck now, so it can't be restored here.",
+        ),
+        AuthoringError::OcclusionSplit => CommandError::invalid(
+            "Cards made from one picture move together: select all of them.",
+        ),
+        AuthoringError::PictureMissing => {
+            CommandError::invalid("That picture isn't kept by Synapse. Choose it again.")
+        }
         AuthoringError::Internal(detail) => {
             eprintln!("[synapse] {context} failed: {detail}");
             CommandError::failed(failed)
@@ -656,6 +689,98 @@ pub async fn preview_cloze(
                 "Synapse couldn't check the text.",
             )
         })
+}
+
+/// Adds an image occlusion to a normal deck: a kept picture with boxes drawn
+/// over it, and one new card, due immediately, for each box number (see
+/// `occlusion.rs`).
+///
+/// Arguments: `{ deckId, assetId, header, mode, boxes }`, `mode` being
+/// `"hideAll"` or `"hideOne"` and each box `{ number, left, top, width,
+/// height, label }` with coordinates from 0 to 1. Returns the updated deck
+/// (same shape as `get_deck_detail`). A refused box rejects with kind
+/// "invalid" and field "boxes"; a refused header, field "header".
+#[tauri::command]
+pub async fn create_occlusion(
+    app: AppHandle,
+    database: State<'_, Database>,
+    deck_id: i64,
+    asset_id: i64,
+    header: String,
+    mode: Mode,
+    boxes: Vec<OcclusionBox>,
+) -> Result<DeckDetail, CommandError> {
+    if deck_id < 1 {
+        return Err(CommandError::invalid(DECK_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    occlusion::create_occlusion(&pool, deck_id, asset_id, &header, mode, &boxes, Utc::now())
+        .await
+        .map_err(|err| {
+            authoring_error(
+                err,
+                "adding image occlusion cards",
+                "Synapse couldn't save the cards.",
+            )
+        })
+}
+
+/// The picture and boxes an image occlusion card was made from, for its edit
+/// form: `{ id, picture, header, mode, boxes, nextNumber }`.
+///
+/// Arguments: `{ cardId }`, any active card of the occlusion.
+#[tauri::command]
+pub async fn get_occlusion(
+    app: AppHandle,
+    database: State<'_, Database>,
+    card_id: i64,
+) -> Result<OcclusionView, CommandError> {
+    if card_id < 1 {
+        return Err(CommandError::invalid(CARD_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    occlusion::get_occlusion(&pool, card_id)
+        .await
+        .map_err(|err| {
+            authoring_error(
+                err,
+                "opening image occlusion cards",
+                "Synapse couldn't open the picture's cards.",
+            )
+        })
+}
+
+/// Replaces an image occlusion's header, way of asking and boxes: numbers
+/// still drawn keep their cards and schedules, a number whose boxes are gone
+/// has its card deleted, and a new number gets a card (its deleted one back,
+/// if it had one in this deck).
+///
+/// Arguments: `{ cardId, header, mode, boxes }`, `cardId` being any active
+/// card of the occlusion. Returns `{ changes, deck }`, as `update_cloze` does.
+#[tauri::command]
+pub async fn update_occlusion(
+    app: AppHandle,
+    database: State<'_, Database>,
+    card_id: i64,
+    header: String,
+    mode: Mode,
+    boxes: Vec<OcclusionBox>,
+) -> Result<ClozeSaved, CommandError> {
+    if card_id < 1 {
+        return Err(CommandError::invalid(CARD_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    let (changes, deck) =
+        occlusion::update_occlusion(&pool, card_id, &header, mode, &boxes, Utc::now())
+            .await
+            .map_err(|err| {
+                authoring_error(
+                    err,
+                    "editing image occlusion cards",
+                    "Synapse couldn't save the cards.",
+                )
+            })?;
+    Ok(ClozeSaved { changes, deck })
 }
 
 /// Soft-deletes a card: it leaves lists, counts, and reviews, but its row and
@@ -2458,6 +2583,11 @@ pub enum AnkiFile {
         extra_removed: usize,
         /// Notes to add that had been reviewed in Anki; they start as new.
         reviewed: usize,
+        /// Image occlusion notes to add with their pictures.
+        occlusions: usize,
+        /// Of those, notes whose round or many-sided shapes became
+        /// rectangles, or whose text labels were left out.
+        occlusion_approximated: usize,
     },
     Cancelled,
 }
@@ -2495,6 +2625,11 @@ fn anki_error(err: AnkiError, context: &str, failed: &'static str) -> CommandErr
             CommandError::failed("Synapse couldn't unpack that file.")
         }
         AnkiError::Authoring(err) => authoring_error(err, context, failed),
+        AnkiError::Picture(AssetError::StoreFull) => CommandError::invalid(STORE_FULL),
+        AnkiError::Picture(err) => {
+            eprintln!("[synapse] {context} failed keeping a picture: {err:?}");
+            CommandError::failed(failed)
+        }
     }
 }
 
@@ -2572,13 +2707,20 @@ pub async fn read_anki_package(
                 .collect(),
         })
         .collect();
-    let (notes, skipped, media_removed, extra_removed, reviewed) = (
+    let (notes, skipped, media_removed, extra_removed, reviewed, occlusion_approximated) = (
         package.notes,
         package.skipped,
         package.media_removed,
         package.extra_removed,
         package.reviewed,
+        package.occlusion_approximated,
     );
+    let occlusions = package
+        .decks
+        .iter()
+        .flat_map(|deck| &deck.notes)
+        .filter(|note| note.occlusion.is_some())
+        .count();
     let token = imports.hold(package);
     Ok(AnkiFile::Read {
         token,
@@ -2589,6 +2731,8 @@ pub async fn read_anki_package(
         media_removed,
         extra_removed,
         reviewed,
+        occlusions,
+        occlusion_approximated,
     })
 }
 
@@ -2611,8 +2755,10 @@ pub async fn import_anki_package(
             "This preview is out of date. Choose the file again.",
         ));
     };
+    let failed = "Synapse couldn't save the cards. Nothing was added.";
     let pool = pool(&app, &database).await?;
-    let imported = anki::import_package(&pool, &package, both_directions, Utc::now())
+    let store = asset_store(&app, failed)?;
+    let imported = anki::import_package(&pool, &store, &package, both_directions, Utc::now())
         .await
         .map_err(|err| {
             anki_error(
@@ -3864,6 +4010,8 @@ mod tests {
             media_removed: 1,
             extra_removed: 3,
             reviewed: 2,
+            occlusions: 2,
+            occlusion_approximated: 1,
         };
         assert_eq!(
             serde_json::to_value(file).unwrap(),
@@ -3890,6 +4038,8 @@ mod tests {
                 "mediaRemoved": 1,
                 "extraRemoved": 3,
                 "reviewed": 2,
+                "occlusions": 2,
+                "occlusionApproximated": 1,
             })
         );
         assert_eq!(
