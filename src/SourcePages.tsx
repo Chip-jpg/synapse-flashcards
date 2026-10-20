@@ -37,7 +37,7 @@ export function PageText({ pieces, id }: { pieces: SnippetPiece[]; id?: string }
           </mark>
         ) : (
           piece.text
-        )
+        ),
       )}
     </p>
   );
@@ -80,7 +80,7 @@ export function QuotesFromSource({
           spots: new Map(unique.map((quote, index) => [quote, source.spots[index] ?? null])),
         });
       },
-      () => {}
+      () => {},
     );
     return () => {
       current = false;
@@ -175,15 +175,14 @@ export function SourcePageDialog({
       },
       (err) => {
         if (current) setState({ status: "error", message: toCommandError(err).message });
-      }
+      },
     );
     return () => {
       current = false;
     };
   }, [sourceId, page, quote]);
 
-  const empty =
-    state.status === "ready" && state.pieces.every((piece) => piece.text.trim() === "");
+  const empty = state.status === "ready" && state.pieces.every((piece) => piece.text.trim() === "");
 
   return (
     <dialog

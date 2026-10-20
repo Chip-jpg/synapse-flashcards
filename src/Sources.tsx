@@ -113,7 +113,11 @@ function describe(source: Source): string {
 }
 
 /** What takes focus when the library appears. */
-type LibraryFocus = { to: "screen" } | { to: "add" } | { to: "source"; sourceId: number } | { to: "notice" };
+type LibraryFocus =
+  | { to: "screen" }
+  | { to: "add" }
+  | { to: "source"; sourceId: number }
+  | { to: "notice" };
 
 /** Where in the sources area the user is. */
 type Place =
@@ -143,7 +147,7 @@ export function SourcesArea({
   const [place, setPlace] = useState<Place>(
     openSource
       ? { screen: "source", sourceId: openSource.sourceId, notice: openSource.notice }
-      : { screen: "library", focus: { to: "screen" }, notice: null }
+      : { screen: "library", focus: { to: "screen" }, notice: null },
   );
 
   if (place.screen === "source") {
@@ -305,7 +309,7 @@ function SourceList({
   const screenRef = useFocusOnMount<HTMLElement>(
     focus.to === "screen" ||
       (focus.to === "source" && focusSourceId === null) ||
-      (focus.to === "notice" && !focusNotice)
+      (focus.to === "notice" && !focusNotice),
   );
   const addRef = useFocusOnMount<HTMLButtonElement>(focus.to === "add");
   const noticeRef = useFocusOnMount<HTMLParagraphElement>(focusNotice);
@@ -634,10 +638,7 @@ function SourceScreen({
   const { source, pages, notes } = state;
 
   return (
-    <section
-      className="deck-detail note-detail source-detail"
-      aria-labelledby="source-heading"
-    >
+    <section className="deck-detail note-detail source-detail" aria-labelledby="source-heading">
       <button type="button" className="button button-quiet back-button" onClick={onBack}>
         <ArrowLeftIcon />
         Back to sources
@@ -749,7 +750,7 @@ function SourceHeader({
     run("delete", async () => {
       await deleteSource(source.id);
       onDeleted(
-        `${source.title} deleted. It's kept in Deleted sources, with its file, where you can restore it.`
+        `${source.title} deleted. It's kept in Deleted sources, with its file, where you can restore it.`,
       );
       return null;
     });
@@ -886,7 +887,7 @@ function RenameSource({
   const { saving, submit, fieldError, formError, edited } = useFormSave(
     () => renameSource(source.id, title),
     onSaved,
-    { title: "source-title" }
+    { title: "source-title" },
   );
 
   return (
