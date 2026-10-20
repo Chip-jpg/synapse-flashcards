@@ -472,20 +472,25 @@ pub(crate) async fn load_deck_detail(
     now: &str,
 ) -> Result<DeckDetail, AuthoringError> {
     // "Due" means the same as everywhere in `study.rs`: `due` is NULL (a new
-    // card) or not later than now.
-    let row = sqlx::query_as::<_, DeckRow>(
+    // card) or not later than now, and the card isn't a buried cloze sibling.
+    let since = study::bury_since(now)?;
+    let row = sqlx::query_as::<_, DeckRow>(concat!(
         "SELECT d.id, d.name, d.description, d.is_sample,
                 d.archived_at IS NOT NULL AS archived,
                 (SELECT COUNT(*) FROM flashcards f
                  WHERE f.deck_id = d.id AND f.deleted_at IS NULL) AS card_count,
                 (SELECT COUNT(*) FROM flashcards f
                  WHERE f.deck_id = d.id AND f.deleted_at IS NULL
-                   AND (f.due IS NULL OR f.due <= ?2)) AS due_count
+                   AND (f.due IS NULL OR f.due <= ?2)
+                   AND f.id NOT IN (",
+        study::buried_cards!("?3"),
+        ")) AS due_count
          FROM decks d
-         WHERE d.id = ?1",
-    )
+         WHERE d.id = ?1"
+    ))
     .bind(deck_id)
     .bind(now)
+    .bind(&since)
     .fetch_optional(&mut *conn)
     .await?;
 

@@ -2409,7 +2409,7 @@ pub struct AnkiDeckPreview {
 }
 
 /// What choosing an Anki package did:
-/// `{ "status": "read", token, fileName, decks, notes, skipped, mediaRemoved, reviewed }`
+/// `{ "status": "read", token, fileName, decks, notes, skipped, mediaRemoved, extraRemoved, reviewed }`
 /// or `{ "status": "cancelled" }`. Nothing has been saved; `token` names the
 /// package to `import_anki_package` and `cancel_anki_import`.
 #[derive(Debug, serde::Serialize)]
@@ -2429,6 +2429,8 @@ pub enum AnkiFile {
         skipped: Skipped,
         /// Notes to add that had a picture or sound, which is left out.
         media_removed: usize,
+        /// Cloze notes to add with text in another field, which is left out.
+        extra_removed: usize,
         /// Notes to add that had been reviewed in Anki; they start as new.
         reviewed: usize,
     },
@@ -2532,7 +2534,7 @@ pub async fn read_anki_package(
         .map(|(deck, name)| AnkiDeckPreview {
             anki_name: deck.anki_name.clone(),
             name,
-            cards: deck.notes.len(),
+            cards: deck.notes.iter().map(|note| note.cards).sum(),
             reversible: deck.notes.iter().filter(|note| note.reversible).count(),
             examples: deck
                 .notes
@@ -2545,10 +2547,11 @@ pub async fn read_anki_package(
                 .collect(),
         })
         .collect();
-    let (notes, skipped, media_removed, reviewed) = (
+    let (notes, skipped, media_removed, extra_removed, reviewed) = (
         package.notes,
         package.skipped,
         package.media_removed,
+        package.extra_removed,
         package.reviewed,
     );
     let token = imports.hold(package);
@@ -2559,6 +2562,7 @@ pub async fn read_anki_package(
         notes,
         skipped,
         media_removed,
+        extra_removed,
         reviewed,
     })
 }
@@ -3433,11 +3437,13 @@ mod tests {
             }],
             notes: 4,
             skipped: Skipped {
-                cloze: 1,
+                image_occlusion: 1,
+                bad_cloze: 2,
                 other_note_type: 1,
                 ..Skipped::default()
             },
             media_removed: 1,
+            extra_removed: 3,
             reviewed: 2,
         };
         assert_eq!(
@@ -3454,8 +3460,16 @@ mod tests {
                     "examples": [{ "front": "être", "back": "to be" }],
                 }],
                 "notes": 4,
-                "skipped": { "cloze": 1, "otherNoteType": 1, "empty": 0, "tooLong": 0, "noCard": 0 },
+                "skipped": {
+                    "imageOcclusion": 1,
+                    "badCloze": 2,
+                    "otherNoteType": 1,
+                    "empty": 0,
+                    "tooLong": 0,
+                    "noCard": 0,
+                },
                 "mediaRemoved": 1,
+                "extraRemoved": 3,
                 "reviewed": 2,
             })
         );

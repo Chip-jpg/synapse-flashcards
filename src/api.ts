@@ -630,7 +630,7 @@ export function exportCardsCsv(deckId: number): Promise<ExportOutcome> {
 /**
  * Mirrors `AnkiDeckPreview` in `src-tauri/src/commands.rs`: one Anki deck of
  * a package. `name` is the new deck's name in Synapse (made unique), `cards`
- * the cards it gets one way, `reversible` how many of those also have a
+ * the cards it gets one way (a cloze note gives one per deletion number), `reversible` how many of those also have a
  * reversed card in Anki, and `examples` its first few cards.
  */
 export type AnkiDeckPreview = {
@@ -643,7 +643,9 @@ export type AnkiDeckPreview = {
 
 /** Mirrors `Skipped` in `src-tauri/src/anki.rs`: notes left out, by why. */
 export type AnkiSkipped = {
-  cloze: number;
+  imageOcclusion: number;
+  /** Cloze notes whose text Synapse doesn't accept (nested deletions, say). */
+  badCloze: number;
   otherNoteType: number;
   empty: number;
   tooLong: number;
@@ -666,6 +668,8 @@ export type AnkiFile =
       skipped: AnkiSkipped;
       /** Notes to add that had a picture or sound, which is left out. */
       mediaRemoved: number;
+      /** Cloze notes to add with text in another field, which is left out. */
+      extraRemoved: number;
       /** Notes to add that had been reviewed in Anki; they start as new. */
       reviewed: number;
     }
@@ -681,7 +685,8 @@ export type AnkiImported = {
 };
 
 /**
- * Chooses an Anki package (.apkg or .colpkg) and reads its front/back notes.
+ * Chooses an Anki package (.apkg or .colpkg) and reads its front/back and
+ * cloze notes.
  * Rust opens the OS "open file" dialog; closing it resolves with
  * `{ status: "cancelled" }`. Nothing is saved.
  */
