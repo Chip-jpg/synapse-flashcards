@@ -486,9 +486,13 @@ pub async fn respond(pool: &SqlitePool, store: &AssetStore, path: &str) -> Respo
 
 /// A plain 404, with nothing about why.
 pub fn not_found() -> Response<Vec<u8>> {
-    let mut response = Response::new(Vec::new());
-    *response.status_mut() = StatusCode::NOT_FOUND;
-    response
+    // The page is another origin, so without this a fetch would see a
+    // network error rather than a 404.
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .body(Vec::new())
+        .expect("a fixed response is valid")
 }
 
 async fn lookup(
@@ -810,6 +814,8 @@ mod tests {
                 let response = respond(&pool, &store, &path).await;
                 assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
                 assert!(response.body().is_empty());
+                // So the page's fetch sees the 404, not a network error.
+                assert_eq!(response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
             }
 
             // A file that changed size on disk isn't served.

@@ -222,8 +222,11 @@ already had, no review session starts, and cards you deleted before archiving co
 deleted — you can restore them from the deck once it's back.
 
 **Export your data.** *Backup & restore* → *Export data*. Pick where to save the `.zip`.
-It contains exactly two files: `manifest.json` (format, format version, schema version, app version,
-and export time) and `db/synapse.sqlite`, a complete snapshot of your database.
+It contains `manifest.json` (format, format version, schema version, app version, and export time),
+`db/synapse.sqlite`, a complete snapshot of your database, and `assets/`, one entry for each file
+Synapse keeps (see *Files Synapse keeps* below), named by its SHA-256. Every kept file is checked
+against its hash as it's packed; a file that's missing or changed stops the export, with nothing
+saved. This is backup format 2; backups made by v0.7.3 and older (format 1) have no `assets/`.
 
 **Restore a backup.** *Backup & restore* → *Import data* → pick a `.zip` made by *Export data*. Synapse
 checks the whole file first — only its own export format is accepted, and anything else is refused
@@ -232,9 +235,24 @@ your current decks, cards, reviews, sessions, and notes with the backup's. *Keep
 changes nothing (export first if you want a copy). *Replace my data* swaps the database in one step,
 keeping a rollback copy until the restored database has opened and passed its checks; the Study
 Desk then reloads from the backup. A backup from an older version of Synapse is upgraded as it's
-restored; one from a newer version is refused. While a backup is being checked, waits for your
+restored; one from a newer version is refused. A backup's kept files are checked too: each must be
+listed in its database with the same size, hash, and kind of file, and every listed file must be
+there. They join Synapse's own files before the database is swapped, and a restore that fails takes
+back the ones it added. A v0.7.3 backup (format 1) still restores; v0.7.3 and older refuse a
+format 2 backup as too new. While a backup is being checked, waits for your
 answer, or is being restored — and while an export is being saved — the sidebar can't be used, so
 nothing else can start in the meantime.
+
+**Files Synapse keeps.** From migration 0016 Synapse can keep files, not just text: an imported
+document kept as a *source* (its original file and the text of each page or slide), and pictures.
+They live in an `assets` folder beside the database (with `SYNAPSE_DB_DIR`, inside that folder),
+each named by the SHA-256 of its bytes, so a file is stored once however often it's used. Every file
+is checked against its bytes, not its name: a picture must really be a PNG, JPEG, GIF or WebP (SVG
+is refused), a PDF must start as one, Word and PowerPoint files must be zip packages, and text must
+be none of those. A file is written before the database lists it and never changes afterwards; the
+app shows pictures and PDFs only through its own `synapse:` address, by hash. The screens that
+use them (sources, pictures in notes and on cards, image occlusion) are still to come; for now
+Synapse has the storage, the commands behind them, and backups that carry the files.
 
 **Import cards from a spreadsheet.** *Backup & restore* → *Cards in a spreadsheet* → choose a deck
 → *Choose a CSV file*. The front goes in the first column and the back in the second; other columns
@@ -408,6 +426,10 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   (the process killed mid-swap) can leave a rollback copy in Synapse's data folder
   (`import-workspace/rollback.sqlite`, later renamed `rollback-kept-<time>.sqlite`); these are never
   deleted automatically.
+- **Kept files only grow.** Files are never removed, even when what used them is deleted, and a
+  restore leaves files only the replaced data used in the `assets` folder, unused (they take space,
+  nothing else). Kept files are limited to 64 MiB each (20 MiB for a picture) and 2 GiB and 60,000
+  files in all, so a backup stays a plain zip.
 - **Restoring is per deck.** *Deleted cards* restores one card, or with *Restore all* every deleted
   card of that deck at once; there's no choosing several, no undo of a restore beyond deleting the
   cards again, and no way to move a card to a different deck on the way back.
@@ -526,6 +548,12 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   - `anki.rs` — reading an Anki package's collection (copied out to a temporary folder and opened
     read-only, never attached to Synapse's database) and adding its front/back notes as new decks.
     `testdata/anki/` holds packages exported by Anki itself, and the script that made them.
-  - `export.rs` / `import.rs` — writing a `.zip` backup, and checking and restoring one.
-- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0015`), embedded in the
+  - `assets.rs` — the files Synapse keeps, named by hash in `assets/` beside the database: telling
+    what a file is from its bytes, adding one, and serving pictures and PDFs on the `synapse:`
+    scheme.
+  - `sources.rs` — imported documents kept as sources, with the text of each page, and the note
+    saved from each.
+  - `export.rs` / `import.rs` — writing a `.zip` backup with every kept file, and checking and
+    restoring one (kept files included).
+- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0016`), embedded in the
   binary at compile time.

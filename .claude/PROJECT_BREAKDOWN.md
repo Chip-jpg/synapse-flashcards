@@ -556,6 +556,16 @@ Added on branch `claude/nightly-2026-10-20-markdown-notes` (not yet released). F
 - **Unchanged.** Editing is on the plain text; the stored body, search, card-from-note context, suggestions and quizzes (which quote the plain text) are untouched.
 - **Bounded.** Parsing is linear-ish on the 100,000-character limit: brackets and backtick runs are matched in one pass, link addresses are looked for at most 1,024 characters on, and nesting stops at 32 levels.
 
+## 4.13 Kept files and sources (foundation)
+
+Added on branch `claude/sources-foundation-yugkjq` (not yet released): phase 1 of "Sources and pictures", planned for v0.8.0. Storage, commands and backups only; no screen uses them yet. The contract for the phase 2 screens is in `/mnt/project-files/planning/sources-foundation-contract.md` (project files, not the repository).
+
+- **The store** (`assets.rs`). Files live in `<database folder>/assets/<sha256>`, lowercase hex of their bytes, so equal files are stored once. Migration 0016's `assets` table lists each (`sha256`, `media_type`, `size`); rows are never changed or removed. The type is checked against the bytes (`matches_type`): pictures and PDFs by their signature (a picture's type is read from it, `sniff`; SVG refused), Word/PowerPoint must be zip packages, text must be neither. A file is written whole (`.partial-…`, fsync, rename) before its row; a missing file is written again when the same bytes are added. Limits: 64 MiB a file (20 MiB a picture), 2 GiB and 60,000 files in all, so a backup stays under zip's 4 GiB / 65,535 entries without zip64.
+- **Showing a file.** `synapse://localhost/<sha256>` (Windows: `http://synapse.localhost/<sha256>`, through `keptFileUrl`) serves pictures and PDFs only, after checking the row and the file's size; anything else is a 404. Nothing is read by path.
+- **Sources** (`sources.rs`). An imported document kept: its file (`asset_id`), `kind` (as `extract::FileKind`), title, file name, and `source_pages` (the text of each PDF page or slide; one page for other kinds), written together. Only the title changes (rename); delete and restore are soft, as notes. `source_notes` records, once and for good, which source a note was saved from.
+- **Backups** (format 2, section 10.1). Export packs every listed file, checking size and hash as it reads. Restore checks the entries against the backup's own `assets` rows (name, size, hash, type; nothing missing or extra), stages them, adds them to the store before swapping the database, checks every listed file is present after opening, and takes back the files it added if anything fails.
+- **Not done.** No screen yet. Files are never removed, and a restore leaves files only the replaced data used (no clean-up). Not checked on Windows; the `synapse:` scheme was checked in the real app on Linux (a picture stored, shown 1×1, served as `image/png`, missing hash a 404).
+
 ______________________________________________________________________
 
 ## 5. FSRS and personalization
@@ -809,8 +819,10 @@ For example, hiding a Restore button is useful UX, but the Rust command must sti
 | `extract.rs` | Reading a file's text for import; the PDF helper process |
 | `cards_csv.rs` | Reading and checking CSV/TSV files of cards, saving them all together, and writing a deck as CSV (formula cells protected) |
 | `anki.rs` | Reading an Anki package's collection read-only and adding its front/back notes as new decks |
-| `export.rs` | Backup creation |
-| `import.rs` | Backup checking and replacement |
+| `assets.rs` | Files kept by hash in `assets/` beside the database, and the `synapse:` scheme that shows them |
+| `sources.rs` | Imported documents kept as sources, with each page's text, and the note saved from each |
+| `export.rs` | Backup creation (format 2: the database and every kept file) |
+| `import.rs` | Backup checking and replacement, kept files included |
 
 The original design also deliberately separates scheduling calculation from database access. That helps make it possible to test scheduling behavior without launching the desktop interface.
 
@@ -957,6 +969,7 @@ The project history gives this high-level progression:
 | `0013` | Full-text search index (FTS5) of cards and notes, kept by triggers |
 | `0014` | Desired retention, global and per deck (append-only) |
 | `0015` | Indexes on `review_logs` by card and by time (speed only; no rule or row changes) |
+| `0016` | Kept files (`assets`), sources with their pages, and the note saved from each (branch `claude/sources-foundation-yugkjq`; section 4.13) |
 
 The first seven are described in the original specification. The final three are established by your later feature reports and repository history.
 
@@ -1020,9 +1033,10 @@ A backup contains exactly:
 ```text
 manifest.json
 db/synapse.sqlite
+assets/<sha256>     (format 2: one per row of `assets`, none if there are none)
 ```
 
-The manifest identifies the format, schema/app versions, export time, and database entry.
+The manifest identifies the format, schema/app versions, export time, the database entry, and (format 2) the `assets/` folder. Format 2 comes with migration 0016 (section 4.13); format 1 backups (v0.7.3 and older) still restore, and v0.7.3 refuses format 2 as too new.
 
 The database snapshot carries the complete stored study state, including deleted and archived content.
 
