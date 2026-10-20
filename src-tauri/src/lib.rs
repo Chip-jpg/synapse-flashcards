@@ -11,6 +11,7 @@ mod export;
 pub mod extract;
 mod import;
 mod notes;
+mod occlusion;
 mod optimizer;
 mod pictures;
 mod quiz;
@@ -81,6 +82,9 @@ pub fn run() {
             commands::create_cloze,
             commands::update_cloze,
             commands::preview_cloze,
+            commands::create_occlusion,
+            commands::get_occlusion,
+            commands::update_occlusion,
             commands::delete_flashcard,
             commands::restore_flashcard,
             commands::restore_deleted_cards,

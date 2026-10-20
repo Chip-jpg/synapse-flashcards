@@ -10,6 +10,9 @@ beside a "please update Anki" collection.anki2), `legacy.apkg` (with "support
 older Anki versions": collection.anki21), and `all.colpkg` (a whole
 collection). Copy those three here. No media is included.
 
+It also writes `occlusion.apkg` and `occlusion-legacy.apkg` from a second
+collection, with media, for image occlusion (see the end of this file).
+
 What the collection holds, as `anki.rs`'s tests expect:
 - Biology: a Basic card with HTML, a Basic card with a 2,001-character back
   (too long), a cloze note with one deletion, one with two numbers (one used
@@ -23,7 +26,9 @@ What the collection holds, as `anki.rs`'s tests expect:
 """
 
 import os
+import struct
 import sys
+import zlib
 
 from anki.collection import Collection, ExportAnkiPackageOptions
 
@@ -105,4 +110,82 @@ col.export_anki_package(out_path=os.path.join(out, "new.apkg"), options=options,
 options.legacy = True
 col.export_anki_package(out_path=os.path.join(out, "legacy.apkg"), options=options, limit=None)
 col.export_collection_package(os.path.join(out, "all.colpkg"), include_media=False, legacy=False)
+col.close()
+
+
+# Image occlusion, with its pictures: a second collection, exported with
+# media, in the newer and the legacy format.
+#   Anatomy: "Heart" (a rectangle hiding all, an ellipse and a polygon sharing
+#   c2, a text label c3, and a Back Extra); a note on the same picture with
+#   two rectangles numbered c1 and c3 that hides one; a note whose picture is
+#   missing; one with pixel coordinates (early Anki); and a Basic card.
+def png(width, height):
+    rows = b"".join(b"\x00" + b"\xff\x00\x00" * width for _ in range(height))
+
+    def chunk(kind, data):
+        crc = zlib.crc32(kind + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", crc)
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(rows))
+        + chunk(b"IEND", b"")
+    )
+
+
+os.makedirs(os.path.join(out, "work2"))
+col = Collection(os.path.join(out, "work2", "collection.anki2"))
+models = col.models
+anatomy = col.decks.id("Anatomy")
+occlusion = models.by_name("Image Occlusion")
+heart = os.path.join(out, "work2", "heart.png")
+with open(heart, "wb") as file:
+    file.write(png(200, 100))
+
+
+def add_occlusion(occlusions, header, back_extra=""):
+    col.add_image_occlusion_note(
+        notetype_id=occlusion["id"],
+        image_path=heart,
+        occlusions=occlusions,
+        header=header,
+        back_extra=back_extra,
+        tags=[],
+    )
+    note = col.get_note(max(col.find_notes('"note:Image Occlusion"')))
+    col.set_deck([card.id for card in note.cards()], anatomy)
+    return note
+
+
+add_occlusion(
+    "{{c1::image-occlusion:rect:left=.1:top=.2:width=.3:height=.4:oi=1}}"
+    "{{c2::image-occlusion:ellipse:left=.5:top=.1:rx=.1:ry=.05:oi=1}}"
+    "{{c2::image-occlusion:polygon:points=.6,.6 .8,.7 .7,.9:oi=1}}"
+    "{{c3::image-occlusion:text:left=.1:top=.8:text=Aorta:scale=1:fs=.05}}",
+    "Heart",
+    "Some extra",
+)
+add_occlusion(
+    "{{c1::image-occlusion:rect:left=0:top=0:width=.5:height=.5}}"
+    "{{c3::image-occlusion:rect:left=.5:top=.5:width=.5:height=.5}}",
+    "",
+)
+gone = add_occlusion("{{c1::image-occlusion:rect:left=.1:top=.1:width=.2:height=.2:oi=1}}", "Gone")
+gone["Image"] = '<img src="gone.png">'
+col.update_note(gone)
+add_occlusion("{{c1::image-occlusion:rect:left=20:top=10:width=60:height=30:oi=1}}", "Pixels")
+note = col.new_note(models.by_name("Basic"))
+note["Front"], note["Back"] = "Pump", "Heart"
+col.add_note(note, anatomy)
+
+options = ExportAnkiPackageOptions(
+    with_scheduling=False, with_deck_configs=False, with_media=True, legacy=False
+)
+col.export_anki_package(out_path=os.path.join(out, "occlusion.apkg"), options=options, limit=None)
+options.legacy = True
+col.export_anki_package(
+    out_path=os.path.join(out, "occlusion-legacy.apkg"), options=options, limit=None
+)
 col.close()

@@ -87,6 +87,7 @@ use sqlx::{SqliteConnection, SqlitePool};
 
 use crate::cloze::{self, RestoreBlock};
 use crate::db::{to_db_time, DbError};
+use crate::occlusion;
 use crate::pictures::{self, CardPictureIds, CardPictures, PictureError, PictureProblem};
 use crate::study;
 
@@ -135,9 +136,10 @@ pub struct ArchivedDeck {
     pub archived_at: String,
 }
 
-/// One card in a deck's card list: `{ id, front, back, cloze, pictures }`,
-/// where `cloze` is `null` for a front/back card and `pictures` holds the
-/// pictures on each side (`{ front: [], back: [] }` for most cards).
+/// One card in a deck's card list: `{ id, front, back, cloze, occlusion,
+/// pictures }`, where `cloze` and `occlusion` are `null` for a front/back card
+/// and `pictures` holds the pictures on each side (`{ front: [], back: [] }`
+/// for most cards).
 #[derive(Debug, PartialEq, serde::Serialize)]
 pub struct DeckCard {
     pub id: i64,
@@ -145,6 +147,17 @@ pub struct DeckCard {
     pub back: String,
     pub cloze: Option<CardCloze>,
     pub pictures: CardPictures,
+    pub occlusion: Option<CardOcclusion>,
+}
+
+/// Which image occlusion a card was made from, and its box number:
+/// `{ occlusionId, number }`. The edit form loads the picture and boxes with
+/// `get_occlusion`.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CardOcclusion {
+    pub occlusion_id: i64,
+    pub number: i64,
 }
 
 /// Which cloze text a card was made from, and its number in it:
@@ -176,6 +189,8 @@ struct CardRow {
     cloze_text_id: Option<i64>,
     cloze_number: Option<i64>,
     cloze_text: Option<String>,
+    occlusion_id: Option<i64>,
+    occlusion_number: Option<i64>,
     deleted_at: Option<String>,
 }
 
@@ -195,14 +210,17 @@ pub struct DeletedCard {
     pub deleted_at: String,
     /// `null` for a front/back card.
     pub cloze: Option<DeletedCloze>,
+    /// An image occlusion card's box number, and why it can't be restored
+    /// now, if it can't (as for a cloze card); `null` for any other card.
+    pub occlusion: Option<DeletedCloze>,
 }
 
 impl DeletedCard {
     /// Whether *Restore card* (and *Restore all*) can bring it back now.
     pub fn restorable(&self) -> bool {
-        self.cloze
-            .as_ref()
-            .is_none_or(|cloze| cloze.blocked.is_none())
+        [&self.cloze, &self.occlusion]
+            .into_iter()
+            .all(|group| group.as_ref().is_none_or(|group| group.blocked.is_none()))
     }
 }
 
@@ -242,6 +260,18 @@ pub enum InvalidInput {
     FrontPictures(PictureProblem),
     /// The same, for the back's pictures.
     BackPictures(PictureProblem),
+    /// An image occlusion's header is over `occlusion::HEADER_MAX_CHARS`.
+    OcclusionHeaderTooLong,
+    /// An image occlusion has no box.
+    OcclusionNoBoxes,
+    /// More than `occlusion::BOXES_MAX` boxes.
+    OcclusionTooManyBoxes,
+    /// A box is outside the picture, too small, or numbered outside 1 to
+    /// `occlusion::NUMBER_MAX`.
+    OcclusionBox,
+    /// A box's label is over `occlusion::LABEL_MAX_CHARS`, or one number's
+    /// labels together are over a card's 2,000 characters.
+    OcclusionLabelTooLong,
 }
 
 /// Why an authoring operation didn't happen.
@@ -292,8 +322,16 @@ pub enum AuthoringError {
     WrongKind,
     /// A deleted cloze card can't be restored now (see `cloze.rs`).
     ClozeNotRestorable(RestoreBlock),
+    /// A deleted image occlusion card can't be restored now (see
+    /// `occlusion.rs`).
+    OcclusionNotRestorable(RestoreBlock),
     /// A move selected some, but not all, of a cloze text's active cards.
     ClozeSplit,
+    /// A move selected some, but not all, of an image occlusion's active
+    /// cards.
+    OcclusionSplit,
+    /// The picture for an image occlusion isn't a kept picture.
+    PictureMissing,
     /// Anything else (a database failure). Detail is for logs only.
     Internal(DbError),
 }
@@ -532,7 +570,7 @@ pub(crate) async fn load_deck_detail(
 
     let cards = sqlx::query_as::<_, CardRow>(
         "SELECT f.id, f.front, f.back, f.cloze_text_id, f.cloze_number,
-                t.text AS cloze_text, f.deleted_at
+                t.text AS cloze_text, f.occlusion_id, f.occlusion_number, f.deleted_at
          FROM flashcards f LEFT JOIN cloze_texts t ON t.id = f.cloze_text_id
          WHERE f.deck_id = ?1 AND f.deleted_at IS NULL
          ORDER BY f.id",
@@ -555,6 +593,13 @@ pub(crate) async fn load_deck_detail(
                 }),
                 _ => None,
             },
+            occlusion: match (row.occlusion_id, row.occlusion_number) {
+                (Some(occlusion_id), Some(number)) => Some(CardOcclusion {
+                    occlusion_id,
+                    number,
+                }),
+                _ => None,
+            },
             id: row.id,
             front: row.front,
             back: row.back,
@@ -565,7 +610,8 @@ pub(crate) async fn load_deck_detail(
     // histories are ordered: the card the user just deleted is the one they
     // are most likely to want back.
     let rows = sqlx::query_as::<_, CardRow>(
-        "SELECT id, front, back, cloze_text_id, cloze_number, NULL AS cloze_text, deleted_at
+        "SELECT id, front, back, cloze_text_id, cloze_number, NULL AS cloze_text,
+                occlusion_id, occlusion_number, deleted_at
          FROM flashcards
          WHERE deck_id = ?1 AND deleted_at IS NOT NULL
          ORDER BY deleted_at DESC, id DESC",
@@ -582,12 +628,20 @@ pub(crate) async fn load_deck_detail(
             }),
             None => None,
         };
+        let occlusion = match row.occlusion_number {
+            Some(number) => Some(DeletedCloze {
+                number,
+                blocked: occlusion::restore_block(conn, row.id).await?,
+            }),
+            None => None,
+        };
         deleted_cards.push(DeletedCard {
             id: row.id,
             front: row.front,
             back: row.back,
             deleted_at: row.deleted_at.unwrap_or_default(),
             cloze,
+            occlusion,
         });
     }
 
@@ -864,12 +918,15 @@ pub async fn update_flashcard_with_pictures(
 
     let deck_id = changeable_card_deck(&mut tx, card_id).await?;
     // A cloze card's front and back are written from its text, and only from
-    // it (`cloze::update_cloze`).
-    let kind: String = sqlx::query_scalar("SELECT kind FROM flashcards WHERE id = ?1")
-        .bind(card_id)
-        .fetch_one(&mut *tx)
-        .await?;
-    if kind != "basic" {
+    // it (`cloze::update_cloze`); an image occlusion card's from its boxes
+    // (`occlusion::update_occlusion`). Migration 0018 explains why such a card
+    // is still of kind 'basic'.
+    let (kind, occlusion_id): (String, Option<i64>) =
+        sqlx::query_as("SELECT kind, occlusion_id FROM flashcards WHERE id = ?1")
+            .bind(card_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    if kind != "basic" || occlusion_id.is_some() {
         return Err(AuthoringError::WrongKind);
     }
     let card_pictures = match picture_ids {
@@ -958,6 +1015,9 @@ pub async fn restore_flashcard(
     if let Some(block) = cloze::restore_block(&mut tx, card_id).await? {
         return Err(AuthoringError::ClozeNotRestorable(block));
     }
+    if let Some(block) = occlusion::restore_block(&mut tx, card_id).await? {
+        return Err(AuthoringError::OcclusionNotRestorable(block));
+    }
 
     // The statement repeats the card's own state check, as `update_flashcard`
     // and `delete_flashcard` repeat theirs, so it can only ever clear a
@@ -982,6 +1042,7 @@ pub async fn restore_flashcard(
     // Only now that it is active may a cloze card's front and back change:
     // its text may have been edited while it was deleted.
     cloze::refresh_restored(&mut tx, card_id, &now).await?;
+    occlusion::refresh_restored(&mut tx, card_id, &now).await?;
 
     let deck = load_deck_detail(&mut tx, deck_id, &now).await?;
     tx.commit().await?;
@@ -1053,6 +1114,7 @@ pub async fn restore_deleted_cards(
             return Err(AuthoringError::DeletedCardsChanged);
         }
         cloze::refresh_restored(&mut tx, card_id, &now).await?;
+        occlusion::refresh_restored(&mut tx, card_id, &now).await?;
     }
 
     let deck = load_deck_detail(&mut tx, deck_id, &now).await?;
@@ -1199,6 +1261,8 @@ pub async fn move_flashcards(
     check_selected_in(&deck, card_ids)?;
     // A cloze text's cards stay in one deck.
     cloze::check_whole_texts(&mut tx, card_ids).await?;
+    // So do an image occlusion's.
+    occlusion::check_whole_occlusions(&mut tx, card_ids).await?;
     match active_normal_deck(&mut tx, to_deck).await {
         Ok(_) => {}
         Err(
@@ -2215,6 +2279,7 @@ mod tests {
                     back: "New back".into(),
                     cloze: None,
                     pictures: CardPictures::default(),
+                    occlusion: None,
                 }
             );
             assert_eq!((detail.card_count, detail.due_count), (2, 1));
@@ -2480,6 +2545,7 @@ mod tests {
                     back: "a2".into(),
                     cloze: None,
                     pictures: CardPictures::default(),
+                    occlusion: None,
                 }]
             );
             assert_eq!(
@@ -2609,6 +2675,7 @@ mod tests {
                     back: "new back".into(),
                     cloze: None,
                     pictures: CardPictures::default(),
+                    occlusion: None,
                 }]
             );
             // The seed card plus both created cards, the deleted one included.
@@ -3817,6 +3884,7 @@ mod tests {
                     back: "b".into(),
                     deleted_at: "2026-09-15T12:00:00.000Z".into(),
                     cloze: None,
+                    occlusion: None,
                 }]
             );
             // It is in no count and in no active list.

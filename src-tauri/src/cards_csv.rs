@@ -541,7 +541,8 @@ enum Imported {
 
 /// A deck's name and its active cards, oldest first, for exporting. Any
 /// active deck can be exported, the sample deck included, since nothing
-/// changes; an archived deck is refused like every other use of it.
+/// changes; an archived deck is refused like every other use of it. Image
+/// occlusion cards are left out: their question is a picture.
 pub async fn deck_cards(
     pool: &SqlitePool,
     deck_id: i64,
@@ -560,6 +561,9 @@ pub async fn deck_cards(
         "SELECT f.front, f.back, f.cloze_text_id, t.text
          FROM flashcards f LEFT JOIN cloze_texts t ON t.id = f.cloze_text_id
          WHERE f.deck_id = ?1 AND f.deleted_at IS NULL
+           -- An image occlusion card's question is its picture, which a
+           -- cards file can't carry: it is left out.
+           AND f.occlusion_id IS NULL
          ORDER BY f.id",
     )
     .bind(deck_id)

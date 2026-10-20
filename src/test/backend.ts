@@ -1,4 +1,4 @@
-import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
+import { mockConvertFileSrc, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import type {
   CardText,
   CommandError,
@@ -210,6 +210,7 @@ export function fakeBackend(overrides: Record<string, Handler> = {}) {
   };
 
   mockWindows("main");
+  mockConvertFileSrc("linux");
   mockIPC(
     (cmd, args) => {
       const handler = handlers[cmd];
