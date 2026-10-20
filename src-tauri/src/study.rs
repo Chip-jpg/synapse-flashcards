@@ -119,7 +119,7 @@ pub enum SessionCard {
         cloze: Option<Vec<ClozePart>>,
         /// An image occlusion card's picture and boxes
         /// (`occlusion::session_view`); `null` for any other card.
-        occlusion: Option<SessionOcclusion>,
+        occlusion: Option<Box<SessionOcclusion>>,
     },
     Completed {
         cards_reviewed: i64,
@@ -427,7 +427,9 @@ pub async fn session_card(
             let remaining = count_due_cards(&mut tx, deck_id, &now).await?;
             let again_streak = aid::again_streak(&mut tx, card.id).await?;
             let cloze = cloze::session_parts(&mut tx, card.id).await?;
-            let occlusion = occlusion::session_view(&mut tx, card.id).await?;
+            let occlusion = occlusion::session_view(&mut tx, card.id)
+                .await?
+                .map(Box::new);
             tx.commit().await?;
             return Ok(SessionCard::Due {
                 card,

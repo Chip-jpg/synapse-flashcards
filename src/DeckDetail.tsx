@@ -28,6 +28,7 @@ import {
   RestoreIcon,
   TrashIcon,
 } from "./icons";
+import { OcclusionForm } from "./Occlusion";
 import { formatDateTime, Message, useFocusOnMount } from "./ui";
 import { useUnsavedChanges } from "./unsaved";
 import { useStartReview } from "./useStartReview";
@@ -321,14 +322,16 @@ function DeckView({
   const [selected, setSelected] = useState<ReadonlySet<number>>(new Set());
   // Kept between renders, so ticking a card doesn't search the deck again.
   const shown = useMemo(() => matchingCards(deck.cards, query), [deck.cards, query]);
-  // Each cloze text's cards, in the deck's order, worked out once per deck.
+  // Each cloze text's and each picture's cards, in the deck's order, worked
+  // out once per deck.
   const cardsOfText = useMemo(() => {
-    const byText = new Map<number, number[]>();
+    const byText = new Map<string, number[]>();
     for (const card of deck.cards) {
-      if (!card.cloze) continue;
-      const ids = byText.get(card.cloze.textId);
+      const group = siblingGroup(card);
+      if (group === null) continue;
+      const ids = byText.get(group);
       if (ids) ids.push(card.id);
-      else byText.set(card.cloze.textId, [card.id]);
+      else byText.set(group, [card.id]);
     }
     return byText;
   }, [deck.cards]);
@@ -339,11 +342,13 @@ function DeckView({
 
   /**
    * The cards that are selected together with `card`: the cards made from
-   * the same cloze text, which move only together, or the card alone.
+   * the same cloze text or picture, which move only together, or the card
+   * alone.
    */
   function withSiblings(card: DeckCard): number[] {
-    if (!card.cloze) return [card.id];
-    return cardsOfText.get(card.cloze.textId) ?? [card.id];
+    const group = siblingGroup(card);
+    if (group === null) return [card.id];
+    return cardsOfText.get(group) ?? [card.id];
   }
 
   function toggle(card: DeckCard) {
@@ -687,6 +692,13 @@ function RenameDeckForm({
   );
 }
 
+/** Which cards move together with `card`: its cloze text's, or its picture's. */
+function siblingGroup(card: DeckCard): string | null {
+  if (card.cloze) return `cloze:${card.cloze.textId}`;
+  if (card.occlusion) return `picture:${card.occlusion.occlusionId}`;
+  return null;
+}
+
 /**
  * A card's full front and back, each beside its label. `frontId` lets the
  * card's buttons name it.
@@ -696,16 +708,22 @@ function CardText({
   front,
   back,
   clozeNumber,
+  pictureNumber,
 }: {
   frontId: string;
   front: string;
   back: string;
   /** A cloze card's number, shown as a tag: the card hides that `{{cN::…}}`. */
   clozeNumber?: number;
+  /** A picture card's number, shown as a tag: the card hides that box. */
+  pictureNumber?: number;
 }) {
   return (
     <div className="card-sides">
       {clozeNumber !== undefined && <p className="card-kind-tag">{`Cloze ${clozeNumber}`}</p>}
+      {pictureNumber !== undefined && (
+        <p className="card-kind-tag">{`Picture, box ${pictureNumber}`}</p>
+      )}
       <p className="side-label">Front</p>
       <p id={frontId} className="card-item-text card-item-front">
         {front}
@@ -812,6 +830,7 @@ function CardItem({
         front={card.front}
         back={card.back}
         clozeNumber={card.cloze?.number}
+        pictureNumber={card.occlusion?.number}
       />
 
       {confirming ? (
@@ -821,6 +840,8 @@ function CardItem({
             review history are kept, and you can restore it from Deleted cards below.
             {card.cloze &&
               ` The other cards of its cloze text stay, and this one stays deleted while {{c${card.cloze.number}::…}} is in the text.`}
+            {card.occlusion &&
+              " The other cards of its picture stay, and this one stays deleted while its box is on the picture."}
           </p>
           <div className="deck-actions">
             <button
@@ -911,8 +932,9 @@ function DeletedCardList({
   onRestoredAll: (deck: Deck, restored: number) => void;
   onRestoreAllStale: () => void;
 }) {
-  // A cloze card whose number has left its text can't come back yet.
-  const restorable = cards.filter((card) => !card.cloze?.blocked).length;
+  // A cloze card whose number has left its text (or a picture card whose box
+  // was removed) can't come back yet.
+  const restorable = cards.filter((card) => !card.cloze?.blocked && !card.occlusion?.blocked).length;
   return (
     <section className="cards section-quiet" aria-labelledby="deleted-cards-heading">
       <div className="section-heading">
@@ -1129,6 +1151,7 @@ function DeletedCardItem({
         front={card.front}
         back={card.back}
         clozeNumber={card.cloze?.number}
+        pictureNumber={card.occlusion?.number}
       />
       <p className="item-meta">{`Deleted ${formatDateTime(card.deletedAt)}`}</p>
 
@@ -1137,6 +1160,12 @@ function DeletedCardItem({
           {card.cloze.blocked === "numberGone"
             ? `It can't be restored while {{c${card.cloze.number}::…}} isn't in its cloze text. Put it back in the text, and this card returns with its schedule.`
             : "It can't be restored here: the other cards of its cloze text are in another deck now."}
+        </p>
+      ) : card.occlusion?.blocked ? (
+        <p className="item-meta">
+          {card.occlusion.blocked === "numberGone"
+            ? "It can't be restored while its box isn't on the picture. Draw a box for it again (edit the picture's cards and choose its card), and this card returns with its schedule."
+            : "It can't be restored here: the other cards of its picture are in another deck now."}
         </p>
       ) : confirming ? (
         <div className="confirm confirm-calm">
@@ -1193,7 +1222,7 @@ function DeletedCardItem({
   );
 }
 
-type CardKind = "basic" | "cloze";
+type CardKind = "basic" | "cloze" | "picture";
 
 /** "a, b and c". */
 function listed(items: string[]): string {
@@ -1231,8 +1260,9 @@ type Preview =
 
 /**
  * Adding a card to `deck`, or editing `card` when one is given. A new card is
- * Basic (a front and a back) or Cloze (a text with hidden parts, one card per
- * number); a card is edited as the kind it is.
+ * Basic (a front and a back), Cloze (a text with hidden parts, one card per
+ * number) or Picture (boxes over a picture, one card per box, in
+ * `Occlusion.tsx`); a card is edited as the kind it is.
  */
 function CardForm({
   deck,
@@ -1247,9 +1277,10 @@ function CardForm({
   onSaved: (deck: Deck, notice: string) => void;
 }) {
   const cloze = card?.cloze ?? null;
-  const [kind, setKind] = useState<CardKind>(cloze ? "cloze" : "basic");
-  const initialFront = card && !cloze ? card.front : "";
-  const initialBack = card && !cloze ? card.back : "";
+  const occlusion = card?.occlusion ?? null;
+  const [kind, setKind] = useState<CardKind>(cloze ? "cloze" : occlusion ? "picture" : "basic");
+  const initialFront = card && !cloze && !occlusion ? card.front : "";
+  const initialBack = card && !cloze && !occlusion ? card.back : "";
   const initialText = cloze?.text ?? "";
   const [front, setFront] = useState(initialFront);
   const [back, setBack] = useState(initialBack);
@@ -1311,6 +1342,69 @@ function CardForm({
     };
   }, [kind, text, cardId]);
 
+  const kindChoice = (
+      <fieldset className="field kind-choice">
+        <legend className="field-label">Kind of card</legend>
+        <label className="kind-choice-option">
+          <input
+            type="radio"
+            name="card-kind"
+            value="basic"
+            checked={kind === "basic"}
+            onChange={() => {
+              setKind("basic");
+              setChosen(true);
+            }}
+          />
+          <span>
+            <strong>Basic</strong>: a front and a back.
+          </span>
+        </label>
+        <label className="kind-choice-option">
+          <input
+            type="radio"
+            name="card-kind"
+            value="cloze"
+            checked={kind === "cloze"}
+            onChange={() => {
+              setKind("cloze");
+              setChosen(true);
+            }}
+          />
+          <span>
+            <strong>Cloze</strong>: a text with parts hidden, one card for each part.
+          </span>
+        </label>
+        <label className="kind-choice-option">
+          <input
+            type="radio"
+            name="card-kind"
+            value="picture"
+            checked={kind === "picture"}
+            onChange={() => {
+              setKind("picture");
+              setChosen(true);
+            }}
+          />
+          <span>
+            <strong>Picture</strong>: boxes drawn over a picture, one card for each box.
+          </span>
+        </label>
+      </fieldset>
+  );
+
+  if (kind === "picture") {
+    return (
+      <OcclusionForm
+        deck={deck}
+        card={card}
+        kindChoice={card ? undefined : kindChoice}
+        onCancel={onCancel}
+        onSaved={onSaved}
+      />
+    );
+  }
+
   return (
     <form className="card" aria-labelledby="card-form-heading" noValidate onSubmit={submit}>
       <h2 id="card-form-heading" className="form-title">
@@ -1318,41 +1412,7 @@ function CardForm({
         {deck.name}
       </h2>
 
-      {!card && (
-        <fieldset className="field kind-choice">
-          <legend className="field-label">Kind of card</legend>
-          <label className="kind-choice-option">
-            <input
-              type="radio"
-              name="card-kind"
-              value="basic"
-              checked={kind === "basic"}
-              onChange={() => {
-                setKind("basic");
-                setChosen(true);
-              }}
-            />
-            <span>
-              <strong>Basic</strong>: a front and a back.
-            </span>
-          </label>
-          <label className="kind-choice-option">
-            <input
-              type="radio"
-              name="card-kind"
-              value="cloze"
-              checked={kind === "cloze"}
-              onChange={() => {
-                setKind("cloze");
-                setChosen(true);
-              }}
-            />
-            <span>
-              <strong>Cloze</strong>: a text with parts hidden, one card for each part.
-            </span>
-          </label>
-        </fieldset>
-      )}
+      {!card && kindChoice}
 
       {kind === "cloze" ? (
         <>

@@ -1,4 +1,4 @@
-import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
+import { mockConvertFileSrc, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import type { CardText, CommandError, Deck, DeckDetail, Note, NoteSummary } from "../api";
 
 export const CREATED = "2026-10-01T09:00:00Z";
@@ -160,6 +160,7 @@ export function fakeBackend(overrides: Record<string, Handler> = {}) {
   };
 
   mockWindows("main");
+  mockConvertFileSrc("linux");
   mockIPC(
     (cmd, args) => {
       const handler = handlers[cmd];

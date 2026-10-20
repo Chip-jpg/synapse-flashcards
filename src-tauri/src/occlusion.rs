@@ -808,7 +808,7 @@ mod tests {
             },
         ] {
             assert_eq!(
-                problem(&[bad.clone()]),
+                problem(std::slice::from_ref(&bad)),
                 Err(InvalidInput::OcclusionBox),
                 "{bad:?}"
             );

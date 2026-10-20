@@ -32,6 +32,8 @@ const FILE: ReadAnkiFile = {
   notes: 9,
   skipped: { imageOcclusion: 2, badCloze: 1, otherNoteType: 1, empty: 1, tooLong: 0, noCard: 0 },
   mediaRemoved: 1,
+  occlusions: 0,
+  occlusionApproximated: 0,
   extraRemoved: 2,
   reviewed: 3,
 };
@@ -84,12 +86,12 @@ describe("importing decks from Anki", () => {
     );
     expect(
       screen.getByText(
-        "Left out: 2 notes of image occlusion, 1 note with cloze deletions Synapse can't read (nested, or with an empty answer), 1 note of a type that isn't one front and one back, or cloze, 1 note with an empty side (perhaps only a picture).",
+        "Left out: 2 notes of image occlusion whose picture isn't in the file (export with media included) or whose boxes can't be read, 1 note with cloze deletions Synapse can't read (nested, or with an empty answer), 1 note of a type that isn't one front and one back, or cloze, 1 note with an empty side (perhaps only a picture).",
       ),
     ).toBeTruthy();
     expect(
       screen.getByText(
-        "2 cloze notes have text in another field, such as Back Extra, which is left out.",
+        "2 cloze or image occlusion notes have text in another field, such as Back Extra, which is left out.",
       ),
     ).toBeTruthy();
     expect(

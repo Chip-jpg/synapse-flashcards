@@ -262,7 +262,17 @@ export type Note = {
  * plus "deck", used only by the frontend's own check that a deck was chosen
  * before asking Rust to add a card to it.
  */
-export type Field = "name" | "description" | "front" | "back" | "title" | "body" | "text" | "deck";
+export type Field =
+  | "name"
+  | "description"
+  | "front"
+  | "back"
+  | "title"
+  | "body"
+  | "text"
+  | "deck"
+  | "header"
+  | "boxes";
 
 /** Mirrors `CommandError` in `src-tauri/src/commands.rs`. */
 export type CommandError = {
