@@ -3023,6 +3023,204 @@ pub async fn get_note_source(
     })
 }
 
+/// Saves a new note written from a source and records that it came from it,
+/// together: `{ sourceId, title, body }`. Returns the [`Note`]. A refused
+/// title or text points at its field, as `create_note` does; a deleted
+/// source rejects with kind "stale". Nothing is written either way.
+#[tauri::command]
+pub async fn create_note_from_source(
+    app: AppHandle,
+    database: State<'_, Database>,
+    source_id: i64,
+    title: String,
+    body: String,
+) -> Result<Note, CommandError> {
+    let pool = pool(&app, &database).await?;
+    sources::create_note(&pool, source_id, &title, &body, Utc::now())
+        .await
+        .map_err(|err| match err {
+            sources::NoteFromSourceError::Note(err) => note_error(
+                err,
+                "saving a note from a source",
+                "Synapse couldn't save the note.",
+            ),
+            sources::NoteFromSourceError::Source(err) => source_error(
+                err,
+                "saving a note from a source",
+                "Synapse couldn't save the note.",
+            ),
+        })
+}
+
+/// The active notes written from an active source, by `{ sourceId }`.
+/// Returns `[NoteSummary]`, most recently edited first.
+#[tauri::command]
+pub async fn get_source_notes(
+    app: AppHandle,
+    database: State<'_, Database>,
+    source_id: i64,
+) -> Result<Vec<NoteSummary>, CommandError> {
+    let pool = pool(&app, &database).await?;
+    sources::source_notes(&pool, source_id)
+        .await
+        .map_err(|err| {
+            source_error(
+                err,
+                "loading a source's notes",
+                "Synapse couldn't load the notes written from it.",
+            )
+        })
+}
+
+/// Where quotes from a note are in the source it was written from:
+/// `{ noteId, quotes }`. Returns [`sources::QuotedSource`], or null when the
+/// note didn't come from a source or its source is deleted.
+#[tauri::command]
+pub async fn locate_quotes(
+    app: AppHandle,
+    database: State<'_, Database>,
+    note_id: i64,
+    quotes: Vec<String>,
+) -> Result<Option<sources::QuotedSource>, CommandError> {
+    if quotes.len() > sources::MAX_QUOTES {
+        return Err(CommandError::invalid(
+            "That's more quotes than Synapse looks for at once.",
+        ));
+    }
+    let pool = pool(&app, &database).await?;
+    sources::locate_quotes(&pool, note_id, &quotes)
+        .await
+        .map_err(|err| {
+            source_error(
+                err,
+                "finding quotes in a source",
+                "Synapse couldn't find where those quotes came from.",
+            )
+        })
+}
+
+/// One page of an active source with a quote marked on it: `{ sourceId,
+/// number, quote }`. Returns `[{ text, hit }]`; an empty quote marks nothing.
+#[tauri::command]
+pub async fn get_quoted_page(
+    app: AppHandle,
+    database: State<'_, Database>,
+    source_id: i64,
+    number: u32,
+    quote: String,
+) -> Result<Vec<search::Piece>, CommandError> {
+    let pool = pool(&app, &database).await?;
+    sources::quoted_page(&pool, source_id, number, &quote)
+        .await
+        .map_err(|err| {
+            source_error(
+                err,
+                "loading a source's page",
+                "Synapse couldn't open that page.",
+            )
+        })?
+        .ok_or_else(|| CommandError::invalid("That source has no such page."))
+}
+
+/// The original file of an active source, checked, for a copy of it.
+async fn source_original(
+    app: &AppHandle,
+    database: &Database,
+    source_id: i64,
+) -> Result<(Source, Vec<u8>), CommandError> {
+    const UNREADABLE: &str = "Synapse couldn't read the kept file.";
+    let pool = pool(app, database).await?;
+    let store = asset_store(app, UNREADABLE)?;
+    sources::original(&pool, &store, source_id)
+        .await
+        .map_err(|err| source_error(err, "reading a source's file", UNREADABLE))
+}
+
+/// Saves a copy of a source's original file where the user chooses, by
+/// `{ sourceId }`. Opens the OS "save as" dialog; closing it returns
+/// `{ status: "cancelled" }` and writes nothing. Returns [`ExportOutcome`].
+#[tauri::command]
+pub async fn save_source_copy(
+    app: AppHandle,
+    database: State<'_, Database>,
+    source_id: i64,
+) -> Result<ExportOutcome, CommandError> {
+    let (source, bytes) = source_original(&app, &database, source_id).await?;
+
+    let (sender, mut receiver) = tauri::async_runtime::channel(1);
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Save a copy of the original")
+        .set_file_name(sources::copy_file_name(&source));
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.save_file(move |path| {
+        let _ = sender.try_send(path);
+    });
+    let Some(chosen) = receiver.recv().await else {
+        eprintln!("[synapse] the source copy save dialog closed without an answer");
+        return Err(CommandError::failed(
+            "Synapse couldn't open the save window.",
+        ));
+    };
+    let Some(chosen) = chosen else {
+        return Ok(ExportOutcome::Cancelled);
+    };
+    let destination = chosen.into_path().map_err(|err| {
+        eprintln!("[synapse] the chosen copy path was unusable: {err}");
+        CommandError::invalid("That save location can't be used.")
+    })?;
+    if database.is_database_file(&app, &destination) {
+        return Err(CommandError::invalid(
+            "That's Synapse's own data file. Choose another name.",
+        ));
+    }
+    std::fs::write(&destination, &bytes).map_err(|err| {
+        eprintln!("[synapse] writing a source copy failed: {err}");
+        CommandError::failed("Synapse couldn't save the copy there. Try another folder.")
+    })?;
+    let file_name = destination
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Ok(ExportOutcome::Saved { file_name })
+}
+
+/// Opens a source's original file in the program the computer uses for that
+/// kind of file, by `{ sourceId }`. The kept file has no name of its own, so
+/// a copy under the original name goes to a Synapse folder in the system's
+/// temporary folder first; the kept file itself is never handed out.
+#[tauri::command]
+pub async fn open_source_original(
+    app: AppHandle,
+    database: State<'_, Database>,
+    source_id: i64,
+) -> Result<(), CommandError> {
+    use tauri_plugin_opener::OpenerExt;
+    const NOT_OPENED: &str = "Synapse couldn't open the original.";
+    let (source, bytes) = source_original(&app, &database, source_id).await?;
+    let folder = std::env::temp_dir()
+        .join("synapse-originals")
+        .join(&source.asset.sha256[..16]);
+    let path = folder.join(sources::copy_file_name(&source));
+    std::fs::create_dir_all(&folder)
+        .and_then(|()| std::fs::write(&path, &bytes))
+        .map_err(|err| {
+            eprintln!("[synapse] writing a copy to open failed: {err}");
+            CommandError::failed(NOT_OPENED)
+        })?;
+    app.opener()
+        .open_path(path.to_string_lossy(), None::<&str>)
+        .map_err(|err| {
+            eprintln!("[synapse] opening a source's original failed: {err}");
+            CommandError::failed(
+                "Synapse couldn't open the original. Save a copy instead, and open that.",
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

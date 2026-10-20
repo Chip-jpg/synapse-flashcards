@@ -20,7 +20,9 @@ use crate::assets::{self, Asset, AssetError, AssetStore, MediaType};
 use crate::authoring::required_text;
 use crate::db::{to_db_time, DbError};
 use crate::extract::{Document, FileKind};
-use crate::notes::NOTE_TITLE_MAX_CHARS;
+use crate::notes::{self, Note, NoteError, NoteSummary, NOTE_TITLE_MAX_CHARS};
+use crate::search::Piece;
+use crate::suggest;
 
 /// The longest file name kept with a source, in characters.
 pub const FILE_NAME_MAX_CHARS: usize = 255;
@@ -397,6 +399,295 @@ pub async fn note_source(pool: &SqlitePool, note_id: i64) -> Result<Option<i64>,
     )
 }
 
+/// Why a note couldn't be saved from a source. Nothing was written.
+#[derive(Debug)]
+pub enum NoteFromSourceError {
+    /// The note itself was refused (its title or text).
+    Note(NoteError),
+    /// The source is missing or deleted.
+    Source(SourceError),
+}
+
+impl From<sqlx::Error> for NoteFromSourceError {
+    fn from(err: sqlx::Error) -> Self {
+        NoteFromSourceError::Source(err.into())
+    }
+}
+
+/// Saves a new note written from the active source `source_id` and records
+/// where it came from, in one transaction: the note is never saved without
+/// its link, or the link without the note.
+pub async fn create_note(
+    pool: &SqlitePool,
+    source_id: i64,
+    title: &str,
+    body: &str,
+    now: DateTime<Utc>,
+) -> Result<Note, NoteFromSourceError> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let source = load(&mut tx, source_id)
+        .await
+        .map_err(NoteFromSourceError::Source)?;
+    if source.deleted_at.is_some() {
+        return Err(NoteFromSourceError::Source(SourceError::Deleted));
+    }
+    let note = notes::insert_note(&mut tx, title, body, now)
+        .await
+        .map_err(NoteFromSourceError::Note)?;
+    sqlx::query("INSERT INTO source_notes (note_id, source_id, created_at) VALUES (?1, ?2, ?3)")
+        .bind(note.id)
+        .bind(source_id)
+        .bind(to_db_time(now))
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(note)
+}
+
+/// The active notes written from a source, most recently edited first (as
+/// the notes library orders them).
+pub async fn source_notes(pool: &SqlitePool, id: i64) -> Result<Vec<NoteSummary>, SourceError> {
+    source(pool, id).await?;
+    Ok(sqlx::query_as(
+        "SELECT n.id, n.title, n.created_at, n.updated_at
+         FROM source_notes l JOIN notes n ON n.id = l.note_id
+         WHERE l.source_id = ?1 AND n.deleted_at IS NULL
+         ORDER BY n.updated_at DESC, n.id DESC",
+    )
+    .bind(id)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// The original file of an active source, read back from the store and
+/// checked against its hash. A file that's missing or changed is an
+/// internal error: it was written before its row, and is never changed.
+pub async fn original(
+    pool: &SqlitePool,
+    store: &AssetStore,
+    id: i64,
+) -> Result<(Source, Vec<u8>), SourceError> {
+    let source = source(pool, id).await?;
+    let missing = || SourceError::Internal(format!("source {id}: its file is missing").into());
+    let path = store.path_of(&source.asset.sha256).ok_or_else(missing)?;
+    let bytes = std::fs::read(path).map_err(|_| missing())?;
+    if bytes.len() as u64 != source.asset.size || assets::sha256_hex(&bytes) != source.asset.sha256
+    {
+        return Err(missing());
+    }
+    Ok((source, bytes))
+}
+
+/// A name to give a copy of a source's original on disk: the kept name with
+/// anything a file system might refuse replaced, and the kind's extension
+/// added if the name lacks it, so the computer knows what opens it.
+pub fn copy_file_name(source: &Source) -> String {
+    let cleaned: String = source
+        .file_name
+        .chars()
+        .map(|c| {
+            if c.is_control() || "/\\:*?\"<>|".contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim_matches(|c: char| c == '.' || c.is_whitespace());
+    let mut name = if cleaned.is_empty() {
+        "document".to_string()
+    } else {
+        cleaned.to_string()
+    };
+    let extension = match source.kind {
+        FileKind::Pdf => "pdf",
+        FileKind::Text => "txt",
+        FileKind::Markdown => "md",
+        FileKind::Word => "docx",
+        FileKind::PowerPoint => "pptx",
+    };
+    let has_extension = std::path::Path::new(&name)
+        .extension()
+        .is_some_and(|found| {
+            let found = found.to_string_lossy().to_lowercase();
+            found == extension || (source.kind == FileKind::Markdown && found == "markdown")
+        });
+    if !has_extension {
+        name.push('.');
+        name.push_str(extension);
+    }
+    name
+}
+
+/// Where a quote is in a source: the page its first word is on, and the page
+/// its last word is on (the same page, unless the quote runs over a break).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuoteSpot {
+    pub page: u32,
+    pub last_page: u32,
+}
+
+/// The source a note came from, and where each of the quotes asked about is
+/// in it: `{ sourceId, title, spots }`, with a spot (or null, when that quote
+/// isn't in the source word for word) per quote, in the order asked.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotedSource {
+    pub source_id: i64,
+    pub title: String,
+    pub spots: Vec<Option<QuoteSpot>>,
+}
+
+/// One word of a source: its page, where it is in that page's text (bytes),
+/// and its comparable form (`suggest::words`).
+struct PageWord {
+    page: u32,
+    start: usize,
+    end: usize,
+}
+
+/// Every word of every page, in order, and their comparable forms.
+fn source_words(pages: &[SourcePage]) -> (Vec<PageWord>, Vec<String>) {
+    let mut found = Vec::new();
+    let mut words = Vec::new();
+    for page in pages {
+        let mut start = None;
+        for (at, c) in page.text.char_indices().chain([(page.text.len(), ' ')]) {
+            match (c.is_alphanumeric(), start) {
+                (true, None) => start = Some(at),
+                (false, Some(from)) => {
+                    found.push(PageWord {
+                        page: page.number,
+                        start: from,
+                        end: at,
+                    });
+                    words.push(page.text[from..at].to_lowercase());
+                    start = None;
+                }
+                _ => {}
+            }
+        }
+    }
+    (found, words)
+}
+
+/// Where `quote` is among `words`, by the rule suggested cards and quiz
+/// questions were checked with (`suggest::quoted_from`): its pieces (split
+/// at "..." or "…") word for word and in order, ignoring spacing,
+/// punctuation and case. Each piece's range of word indexes, or None.
+fn find_quote(words: &[String], quote: &str) -> Option<Vec<std::ops::Range<usize>>> {
+    let pieces: Vec<Vec<String>> = quote
+        .split("...")
+        .flat_map(|part| part.split('…'))
+        .map(suggest::words)
+        .filter(|piece| !piece.is_empty())
+        .collect();
+    if pieces.is_empty() {
+        return None;
+    }
+    let mut from = 0;
+    let mut ranges = Vec::with_capacity(pieces.len());
+    for piece in &pieces {
+        let at = words[from..]
+            .windows(piece.len())
+            .position(|window| window == piece.as_slice())?;
+        ranges.push(from + at..from + at + piece.len());
+        from += at + piece.len();
+    }
+    Some(ranges)
+}
+
+/// The most quotes looked for at once: more than a suggestion or quiz shows.
+pub const MAX_QUOTES: usize = 100;
+
+/// Where each of `quotes` is in the source the note `note_id` was written
+/// from. None when the note didn't come from a source, or its source is
+/// deleted: then there's no page to show. A quote the user's edits moved
+/// away from the source's wording has no spot.
+pub async fn locate_quotes(
+    pool: &SqlitePool,
+    note_id: i64,
+    quotes: &[String],
+) -> Result<Option<QuotedSource>, SourceError> {
+    let Some(source_id) = note_source(pool, note_id).await? else {
+        return Ok(None);
+    };
+    let found = match source(pool, source_id).await {
+        Ok(found) => found,
+        Err(SourceError::Deleted | SourceError::NotFound) => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    let pages = source_pages(pool, source_id).await?;
+    let (located, words) = source_words(&pages);
+    let spots = quotes
+        .iter()
+        .map(|quote| {
+            let ranges = find_quote(&words, quote)?;
+            let first = ranges.first()?.start;
+            let last = ranges.last()?.end - 1;
+            Some(QuoteSpot {
+                page: located[first].page,
+                last_page: located[last].page,
+            })
+        })
+        .collect();
+    Ok(Some(QuotedSource {
+        source_id,
+        title: found.title,
+        spots,
+    }))
+}
+
+/// The text of page `number` of an active source as pieces, with the part of
+/// `quote` that's on this page marked (`hit`), from its first word to its
+/// last, piece by piece. Unmarked when the quote isn't in the source, or is
+/// on other pages. None when the source has no such page.
+pub async fn quoted_page(
+    pool: &SqlitePool,
+    id: i64,
+    number: u32,
+    quote: &str,
+) -> Result<Option<Vec<Piece>>, SourceError> {
+    let pages = source_pages(pool, id).await?;
+    let Some(page) = pages.iter().find(|page| page.number == number) else {
+        return Ok(None);
+    };
+    let (located, words) = source_words(&pages);
+    let mut marks: Vec<(usize, usize)> = Vec::new();
+    for range in find_quote(&words, quote).unwrap_or_default() {
+        let on_page: Vec<&PageWord> = located[range]
+            .iter()
+            .filter(|word| word.page == number)
+            .collect();
+        if let (Some(first), Some(last)) = (on_page.first(), on_page.last()) {
+            marks.push((first.start, last.end));
+        }
+    }
+    let mut pieces = Vec::new();
+    let mut at = 0;
+    for (start, end) in marks {
+        if start > at {
+            pieces.push(Piece {
+                text: page.text[at..start].to_string(),
+                hit: false,
+            });
+        }
+        pieces.push(Piece {
+            text: page.text[start..end].to_string(),
+            hit: true,
+        });
+        at = end;
+    }
+    if at < page.text.len() || pieces.is_empty() {
+        pieces.push(Piece {
+            text: page.text[at..].to_string(),
+            hit: false,
+        });
+    }
+    Ok(Some(pieces))
+}
+
 #[cfg(test)]
 pub mod test_support {
     use super::*;
@@ -689,6 +980,247 @@ mod tests {
                 assert!(sqlx::query(sql).execute(&pool).await.is_err(), "{sql}");
             }
             assert_eq!(source.id, 1);
+            let _ = std::fs::remove_dir_all(store.dir());
+        });
+    }
+
+    #[test]
+    fn a_note_from_a_source_is_saved_with_its_link_or_not_at_all() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let store = scratch_store("sources-note-from");
+            let source = create_source(&pool, &store, &pdf_document("x"), at(NOW))
+                .await
+                .unwrap();
+
+            let note = create_note(&pool, source.id, " Biology ", "Cells", at(NOW))
+                .await
+                .unwrap();
+            assert_eq!(note.title, "Biology");
+            assert_eq!(note_source(&pool, note.id).await.unwrap(), Some(source.id));
+
+            // A refused note writes neither the note nor a link.
+            assert!(matches!(
+                create_note(&pool, source.id, "   ", "Cells", at(NOW)).await,
+                Err(NoteFromSourceError::Note(NoteError::Invalid(_)))
+            ));
+            assert!(matches!(
+                create_note(&pool, 999, "Title", "Cells", at(NOW)).await,
+                Err(NoteFromSourceError::Source(SourceError::NotFound))
+            ));
+            delete_source(&pool, source.id, at(LATER)).await.unwrap();
+            assert!(matches!(
+                create_note(&pool, source.id, "Title", "Cells", at(NOW)).await,
+                Err(NoteFromSourceError::Source(SourceError::Deleted))
+            ));
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM notes").await, 1);
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM source_notes").await, 1);
+            let _ = std::fs::remove_dir_all(store.dir());
+        });
+    }
+
+    #[test]
+    fn a_source_lists_the_active_notes_written_from_it() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let store = scratch_store("sources-notes");
+            let source = create_source(&pool, &store, &pdf_document("x"), at(NOW))
+                .await
+                .unwrap();
+            let other = create_source(&pool, &store, &text_document("other"), at(NOW))
+                .await
+                .unwrap();
+            let first = create_note(&pool, source.id, "First", "a", at(NOW))
+                .await
+                .unwrap();
+            let second = create_note(&pool, source.id, "Second", "b", at(LATER))
+                .await
+                .unwrap();
+            create_note(&pool, other.id, "Elsewhere", "c", at(NOW))
+                .await
+                .unwrap();
+            crate::notes::create_note(&pool, "Unlinked", "d", at(NOW))
+                .await
+                .unwrap();
+
+            let titles = |notes: Vec<NoteSummary>| -> Vec<String> {
+                notes.into_iter().map(|note| note.title).collect()
+            };
+            assert_eq!(
+                titles(source_notes(&pool, source.id).await.unwrap()),
+                ["Second", "First"]
+            );
+            crate::notes::delete_note(&pool, second.id, at(LATER))
+                .await
+                .unwrap();
+            assert_eq!(
+                titles(source_notes(&pool, source.id).await.unwrap()),
+                ["First"]
+            );
+            assert_eq!(first.title, "First");
+            delete_source(&pool, source.id, at(LATER)).await.unwrap();
+            assert!(matches!(
+                source_notes(&pool, source.id).await,
+                Err(SourceError::Deleted)
+            ));
+            let _ = std::fs::remove_dir_all(store.dir());
+        });
+    }
+
+    #[test]
+    fn quotes_are_found_on_the_pages_they_came_from() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let store = scratch_store("sources-quotes");
+            // Pages: "Cells are the unit of life. one", "", "Mitochondria make ATP."
+            let source = create_source(&pool, &store, &pdf_document("one"), at(NOW))
+                .await
+                .unwrap();
+            let note = create_note(&pool, source.id, "Biology", "Cells", at(NOW))
+                .await
+                .unwrap();
+            let quotes: Vec<String> = [
+                "the UNIT of life",
+                "life - one. Mitochondria make",
+                "Cells are … make ATP",
+                "Ribosomes make proteins",
+                "...",
+            ]
+            .map(String::from)
+            .to_vec();
+
+            let found = locate_quotes(&pool, note.id, &quotes)
+                .await
+                .unwrap()
+                .unwrap();
+            let spot = |page, last_page| Some(QuoteSpot { page, last_page });
+            assert_eq!(found.source_id, source.id);
+            assert_eq!(found.title, "Biology one");
+            assert_eq!(
+                found.spots,
+                vec![spot(1, 1), spot(1, 3), spot(1, 3), None, None]
+            );
+
+            // A note not written from a source has no pages to show.
+            let unlinked = crate::notes::create_note(&pool, "Typed", "Cells", at(NOW))
+                .await
+                .unwrap();
+            assert_eq!(
+                locate_quotes(&pool, unlinked.id, &quotes).await.unwrap(),
+                None
+            );
+
+            // The page with the quote marked, from its first word to its last.
+            let marked = |pieces: Vec<Piece>| -> Vec<(String, bool)> {
+                pieces.into_iter().map(|p| (p.text, p.hit)).collect()
+            };
+            let own = |text: &str, hit| (text.to_string(), hit);
+            assert_eq!(
+                marked(
+                    quoted_page(&pool, source.id, 1, "the UNIT of life")
+                        .await
+                        .unwrap()
+                        .unwrap()
+                ),
+                vec![
+                    own("Cells are ", false),
+                    own("the unit of life", true),
+                    own(". one", false)
+                ]
+            );
+            // A quote that runs over the break is marked on each page.
+            assert_eq!(
+                marked(
+                    quoted_page(&pool, source.id, 3, &quotes[1])
+                        .await
+                        .unwrap()
+                        .unwrap()
+                ),
+                vec![own("Mitochondria make", true), own(" ATP.", false)]
+            );
+            // Pieces of a quote with a gap are marked apart.
+            assert_eq!(
+                marked(
+                    quoted_page(&pool, source.id, 1, "Cells ... unit")
+                        .await
+                        .unwrap()
+                        .unwrap()
+                ),
+                vec![
+                    own("Cells", true),
+                    own(" are the ", false),
+                    own("unit", true),
+                    own(" of life. one", false)
+                ]
+            );
+            // Not in the source, or a page without text: nothing is marked.
+            assert_eq!(
+                marked(
+                    quoted_page(&pool, source.id, 1, "Ribosomes")
+                        .await
+                        .unwrap()
+                        .unwrap()
+                ),
+                vec![own("Cells are the unit of life. one", false)]
+            );
+            assert_eq!(
+                marked(quoted_page(&pool, source.id, 2, "").await.unwrap().unwrap()),
+                vec![own("", false)]
+            );
+            assert_eq!(quoted_page(&pool, source.id, 4, "").await.unwrap(), None);
+
+            // Once the source is deleted there's no page to show.
+            delete_source(&pool, source.id, at(LATER)).await.unwrap();
+            assert_eq!(locate_quotes(&pool, note.id, &quotes).await.unwrap(), None);
+            assert!(matches!(
+                quoted_page(&pool, source.id, 1, "").await,
+                Err(SourceError::Deleted)
+            ));
+            let _ = std::fs::remove_dir_all(store.dir());
+        });
+    }
+
+    #[test]
+    fn the_original_comes_back_checked_under_a_usable_name() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let store = scratch_store("sources-original");
+            let document = pdf_document("x");
+            let source = create_source(&pool, &store, &document, at(NOW))
+                .await
+                .unwrap();
+
+            let (found, bytes) = original(&pool, &store, source.id).await.unwrap();
+            assert_eq!((found.id, bytes), (source.id, document.bytes.clone()));
+            assert_eq!(copy_file_name(&source), "Biology x.pdf");
+
+            let named = |kind, file_name: &str| {
+                copy_file_name(&Source {
+                    kind,
+                    file_name: file_name.to_string(),
+                    ..source.clone()
+                })
+            };
+            assert_eq!(named(FileKind::Pdf, "../a/b:c.PDF"), "_a_b_c.PDF");
+            assert_eq!(named(FileKind::Word, "Lecture"), "Lecture.docx");
+            assert_eq!(
+                named(FileKind::Markdown, "notes.markdown"),
+                "notes.markdown"
+            );
+            assert_eq!(named(FileKind::Text, " .. "), "document.txt");
+
+            // A kept file that changed on disk isn't handed out.
+            let path = store.path_of(&source.asset.sha256).unwrap();
+            std::fs::write(&path, b"%PDF-changed").unwrap();
+            assert!(matches!(
+                original(&pool, &store, source.id).await,
+                Err(SourceError::Internal(_))
+            ));
+            std::fs::remove_file(&path).unwrap();
+            assert!(matches!(
+                original(&pool, &store, source.id).await,
+                Err(SourceError::Internal(_))
+            ));
             let _ = std::fs::remove_dir_all(store.dir());
         });
     }
