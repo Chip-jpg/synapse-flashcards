@@ -9,6 +9,11 @@
 //! 3. `record_review` saves a rating and counts it towards the session.
 //! 4. When no due cards remain, the session gets its `ended_at`, exactly once.
 //!
+//! Cloze siblings (cards of one cloze text) are kept apart, as Anki buries
+//! siblings: once one of them is rated, the others aren't due for the rest of
+//! that local day (see `buried_cards!`). Nothing is stored for this; it is
+//! worked out from today's `review_logs`, so their schedules never change.
+//!
 //! Soft-deleted cards (`deleted_at` set) are invisible here: every card query
 //! filters on `deleted_at IS NULL`, so they're never counted, offered, or rated.
 //!
@@ -144,23 +149,75 @@ impl From<DbError> for StudyError {
     }
 }
 
-/// Every active (not archived) deck with how many of its cards are due at `now`.
+/// SQL selecting the ids of the cards buried right now, with `$since` the
+/// placeholder bound to [`bury_since`]: cloze cards one of whose siblings
+/// (another card of the same cloze text, in any state) was rated since the
+/// day began, while the card itself wasn't.
+///
+/// The card that was rated isn't buried by its own rating, so a card rated
+/// Again still comes back when it is due again; only its siblings wait. Should
+/// two siblings both have been rated today (a session left open across
+/// midnight), each buries the other only if it wasn't rated itself, so
+/// neither is held back. The subqueries don't depend on the outer row, so
+/// SQLite works the list out once per query.
+macro_rules! buried_cards {
+    ($since:literal) => {
+        concat!(
+            "SELECT buried.id FROM flashcards buried
+             JOIN flashcards sibling
+               ON sibling.cloze_text_id = buried.cloze_text_id AND sibling.id <> buried.id
+             WHERE sibling.id IN (SELECT card_id FROM review_logs WHERE reviewed_at >= ",
+            $since,
+            ")
+               AND buried.id NOT IN (SELECT card_id FROM review_logs WHERE reviewed_at >= ",
+            $since,
+            ")"
+        )
+    };
+}
+pub(crate) use buried_cards;
+
+/// Every active (not archived) deck with how many of its cards are due at
+/// `now`: the cards a session would hand out, so buried siblings don't count.
 pub async fn decks(pool: &SqlitePool, now: DateTime<Utc>) -> Result<Vec<DeckSummary>, sqlx::Error> {
-    sqlx::query_as::<_, DeckSummary>(
+    let now = to_db_time(now);
+    let since = bury_since(&now)?;
+    sqlx::query_as::<_, DeckSummary>(concat!(
         "SELECT d.id, d.name, d.description, d.is_sample,
                 (SELECT COUNT(*) FROM flashcards f
                  WHERE f.deck_id = d.id AND f.deleted_at IS NULL
-                   AND (f.due IS NULL OR f.due <= ?1)) AS due_count
+                   AND (f.due IS NULL OR f.due <= ?1)
+                   AND f.id NOT IN (",
+        buried_cards!("?2"),
+        ")) AS due_count
          FROM decks d
          WHERE d.archived_at IS NULL
-         ORDER BY d.id",
-    )
-    .bind(to_db_time(now))
+         ORDER BY d.id"
+    ))
+    .bind(&now)
+    .bind(&since)
     .fetch_all(pool)
     .await
 }
 
-/// The deck's next due card at `now`, if any.
+/// When the local day that `now` (a [`to_db_time`] string) falls on began, as
+/// a [`to_db_time`] string: the start of the window in which a rating buries
+/// its siblings. The day is the computer's calendar day ([`day_bounds`]), so
+/// siblings come back at local midnight. Tests use UTC days instead, so they
+/// don't depend on the zone of the machine running them.
+pub(crate) fn bury_since(now: &str) -> Result<String, sqlx::Error> {
+    let now = DateTime::parse_from_rfc3339(now)
+        .map_err(|err| sqlx::Error::Decode(Box::new(err)))?
+        .with_timezone(&Utc);
+    #[cfg(not(test))]
+    let zone = chrono::Local;
+    #[cfg(test)]
+    let zone = Utc;
+    Ok(to_db_time(day_bounds(now, &zone).0))
+}
+
+/// The deck's next due card at `now`, if any. Buried cloze siblings
+/// (`buried_cards!`) aren't due.
 ///
 /// Order: cards already in review (earliest `due` first), then new cards
 /// (`due` is NULL); ties are broken by `id`, so the choice is deterministic.
@@ -169,14 +226,19 @@ async fn next_due_card(
     deck_id: i64,
     now: &str,
 ) -> Result<Option<Flashcard>, sqlx::Error> {
-    sqlx::query_as::<_, Flashcard>(
+    let since = bury_since(now)?;
+    sqlx::query_as::<_, Flashcard>(concat!(
         "SELECT id, front, back, reps FROM flashcards
          WHERE deck_id = ?1 AND deleted_at IS NULL AND (due IS NULL OR due <= ?2)
+           AND id NOT IN (",
+        buried_cards!("?3"),
+        ")
          ORDER BY due IS NULL, due, id
-         LIMIT 1",
-    )
+         LIMIT 1"
+    ))
     .bind(deck_id)
     .bind(now)
+    .bind(&since)
     .fetch_optional(conn)
     .await
 }
@@ -189,12 +251,17 @@ async fn count_due_cards(
     deck_id: i64,
     now: &str,
 ) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar(
+    let since = bury_since(now)?;
+    sqlx::query_scalar(concat!(
         "SELECT COUNT(*) FROM flashcards
-         WHERE deck_id = ?1 AND deleted_at IS NULL AND (due IS NULL OR due <= ?2)",
-    )
+         WHERE deck_id = ?1 AND deleted_at IS NULL AND (due IS NULL OR due <= ?2)
+           AND id NOT IN (",
+        buried_cards!("?3"),
+        ")"
+    ))
     .bind(deck_id)
     .bind(now)
+    .bind(&since)
     .fetch_one(conn)
     .await
 }
@@ -415,16 +482,23 @@ pub async fn record_review(
         return Err(StudyError::Stale);
     }
 
-    let row = sqlx::query_as::<_, ScheduleRow>(
+    // A buried sibling isn't due, so rating one is refused like any card
+    // that isn't due.
+    let since = bury_since(&now)?;
+    let row = sqlx::query_as::<_, ScheduleRow>(concat!(
         "SELECT fsrs_state, fsrs_stability, fsrs_difficulty, last_review, reps, lapses
          FROM flashcards
          WHERE id = ?1 AND deck_id = ?2 AND reps = ?3 AND deleted_at IS NULL
-           AND (due IS NULL OR due <= ?4)",
-    )
+           AND (due IS NULL OR due <= ?4)
+           AND id NOT IN (",
+        buried_cards!("?5"),
+        ")"
+    ))
     .bind(card_id)
     .bind(deck_id)
     .bind(expected_reps)
     .bind(&now)
+    .bind(&since)
     .fetch_optional(&mut *tx)
     .await?;
     let Some(row) = row else {
