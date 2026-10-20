@@ -221,6 +221,10 @@ pub(crate) fn bury_since(now: &str) -> Result<String, sqlx::Error> {
 ///
 /// Order: cards already in review (earliest `due` first), then new cards
 /// (`due` is NULL); ties are broken by `id`, so the choice is deterministic.
+///
+/// The two kinds are looked for separately, each in the order the
+/// `flashcards_deck_due` index already keeps, so SQLite reads one row of each
+/// instead of sorting every due card of the deck on every rating.
 async fn next_due_card(
     conn: &mut SqliteConnection,
     deck_id: i64,
@@ -228,12 +232,25 @@ async fn next_due_card(
 ) -> Result<Option<Flashcard>, sqlx::Error> {
     let since = bury_since(now)?;
     sqlx::query_as::<_, Flashcard>(concat!(
-        "SELECT id, front, back, reps FROM flashcards
-         WHERE deck_id = ?1 AND deleted_at IS NULL AND (due IS NULL OR due <= ?2)
-           AND id NOT IN (",
+        "SELECT id, front, back, reps FROM (
+             SELECT * FROM (
+                 SELECT id, front, back, reps, 0 AS is_new FROM flashcards
+                 WHERE deck_id = ?1 AND deleted_at IS NULL AND due <= ?2
+                   AND id NOT IN (",
         buried_cards!("?3"),
         ")
-         ORDER BY due IS NULL, due, id
+                 ORDER BY due, id
+                 LIMIT 1)
+             UNION ALL
+             SELECT * FROM (
+                 SELECT id, front, back, reps, 1 AS is_new FROM flashcards
+                 WHERE deck_id = ?1 AND deleted_at IS NULL AND due IS NULL
+                   AND id NOT IN (",
+        buried_cards!("?3"),
+        ")
+                 ORDER BY id
+                 LIMIT 1))
+         ORDER BY is_new
          LIMIT 1"
     ))
     .bind(deck_id)
@@ -1392,6 +1409,80 @@ mod tests {
                 .unwrap();
 
             assert_eq!(today(&pool, now, &Utc).await.unwrap(), summary(3, 3));
+        });
+    }
+
+    #[test]
+    fn due_cards_come_earliest_first_then_new_cards_oldest_first() {
+        tauri::async_runtime::block_on(async {
+            let (pool, _) = seeded().await;
+            let now = at(NOW);
+            let deck = add_deck(&pool, "Order").await;
+            let new_first = add_card(&pool, deck, None).await;
+            let later = add_card(&pool, deck, Some(now - TimeDelta::hours(1))).await;
+            let earliest = add_card(&pool, deck, Some(now - TimeDelta::days(2))).await;
+            let earliest_tie = add_card(&pool, deck, Some(now - TimeDelta::days(2))).await;
+            let new_second = add_card(&pool, deck, None).await;
+            add_card(&pool, deck, Some(now + TimeDelta::hours(1))).await;
+
+            let mut order = Vec::new();
+            let mut conn = pool.acquire().await.unwrap();
+            while let Some(card) = next_due_card(&mut conn, deck, &to_db_time(now))
+                .await
+                .unwrap()
+            {
+                order.push(card.id);
+                sqlx::query("UPDATE flashcards SET deleted_at = ?1 WHERE id = ?2")
+                    .bind(to_db_time(now))
+                    .bind(card.id)
+                    .execute(&mut *conn)
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(
+                order,
+                [earliest, earliest_tie, later, new_first, new_second]
+            );
+        });
+    }
+
+    /// The plan SQLite picks for `sql`, one step per line.
+    async fn query_plan(pool: &SqlitePool, sql: &str) -> String {
+        let steps: Vec<(i64, i64, i64, String)> =
+            sqlx::query_as(sqlx::AssertSqlSafe(format!("EXPLAIN QUERY PLAN {sql}")))
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        steps
+            .into_iter()
+            .map(|(.., detail)| detail)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn questions_about_ratings_read_review_logs_through_its_indexes() {
+        tauri::async_runtime::block_on(async {
+            let (pool, _) = seeded().await;
+            // Today's ratings (buried siblings, today's count) and one card's
+            // ratings (its Again streak) are asked on every card a session
+            // shows; reading the whole table each time grows with the history.
+            for sql in [
+                concat!(
+                    "SELECT COUNT(*) FROM flashcards WHERE deck_id = 1 AND id NOT IN (",
+                    buried_cards!("'2026-09-15T00:00:00.000Z'"),
+                    ")"
+                ),
+                "SELECT COUNT(*), COUNT(DISTINCT card_id) FROM review_logs
+                 WHERE reviewed_at >= '2026-09-15' AND reviewed_at < '2026-09-16'",
+                "SELECT COUNT(*) FROM review_logs WHERE card_id = 1 AND rating = 1
+                   AND id > COALESCE(
+                       (SELECT MAX(id) FROM review_logs WHERE card_id = 1 AND rating <> 1), 0)",
+            ] {
+                let plan = query_plan(&pool, sql).await;
+                assert!(plan.contains("review_logs USING"), "{plan}");
+                assert!(!plan.contains("SCAN review_logs"), "{plan}");
+            }
         });
     }
 }

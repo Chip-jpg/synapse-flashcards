@@ -527,5 +527,5 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
     read-only, never attached to Synapse's database) and adding its front/back notes as new decks.
     `testdata/anki/` holds packages exported by Anki itself, and the script that made them.
   - `export.rs` / `import.rs` — writing a `.zip` backup, and checking and restoring one.
-- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0014`), embedded in the
+- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0015`), embedded in the
   binary at compile time.
