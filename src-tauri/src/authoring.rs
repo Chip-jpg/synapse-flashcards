@@ -86,8 +86,8 @@ use chrono::{DateTime, Utc};
 use sqlx::{SqliteConnection, SqlitePool};
 
 use crate::cloze::{self, RestoreBlock};
-use crate::occlusion;
 use crate::db::{to_db_time, DbError};
+use crate::occlusion;
 use crate::study;
 
 pub const DECK_NAME_MAX_CHARS: usize = 100;

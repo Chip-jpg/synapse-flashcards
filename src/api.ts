@@ -52,6 +52,58 @@ export type DeckCard = {
   back: string;
   /** For a cloze card, the text it was made from; `null` (or absent) for a front/back card. */
   cloze?: CardCloze | null;
+  /** For an image occlusion card, its picture's boxes; `null` (or absent) otherwise. */
+  occlusion?: CardOcclusion | null;
+};
+
+/**
+ * Mirrors `CardOcclusion` in `src-tauri/src/authoring.rs`: the image
+ * occlusion a card was made from (every card of one picture carries the same
+ * `occlusionId`), and its own box number. `getOcclusion` loads the rest.
+ */
+export type CardOcclusion = { occlusionId: number; number: number };
+
+/** Mirrors `Mode` in `src-tauri/src/occlusion.rs`: every box covered on the question, or only the card's own. */
+export type OcclusionMode = "hideAll" | "hideOne";
+
+/**
+ * Mirrors `OcclusionBox` in `src-tauri/src/occlusion.rs`: one box over a
+ * picture, with coordinates from 0 to 1 of its width and height. Boxes with
+ * one `number` are one card. `label` (may be empty) is the card's answer.
+ */
+export type OcclusionBox = {
+  number: number;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  label: string;
+};
+
+/**
+ * Mirrors `OcclusionView` in `src-tauri/src/occlusion.rs`: an image
+ * occlusion as its edit form opens it. `nextNumber` is above every number
+ * its boxes and cards ever had, so a new box never takes an old card.
+ */
+export type OcclusionView = {
+  id: number;
+  picture: Asset;
+  header: string;
+  mode: OcclusionMode;
+  boxes: OcclusionBox[];
+  nextNumber: number;
+};
+
+/**
+ * Mirrors `SessionOcclusion` in `src-tauri/src/occlusion.rs`: an image
+ * occlusion card in review. The boxes numbered `number` are the card's own.
+ */
+export type SessionOcclusion = {
+  picture: Asset;
+  header: string;
+  mode: OcclusionMode;
+  number: number;
+  boxes: OcclusionBox[];
 };
 
 /**
@@ -105,6 +157,8 @@ export type DeletedCard = {
   deletedAt: string;
   /** For a cloze card; `null` (or absent) for a front/back card. */
   cloze?: DeletedCloze | null;
+  /** For an image occlusion card (its box number); `null` (or absent) otherwise. */
+  occlusion?: DeletedCloze | null;
 };
 
 /** Mirrors `Flashcard` in `src-tauri/src/study.rs`. */
@@ -145,6 +199,8 @@ export type SessionCard =
       offerHelp: boolean;
       /** A cloze card as pieces of its text; `null` (or absent) for a front/back card. */
       cloze?: ClozePart[] | null;
+      /** An image occlusion card's picture and boxes; `null` (or absent) otherwise. */
+      occlusion?: SessionOcclusion | null;
     }
   | { status: "completed"; cardsReviewed: number };
 
@@ -376,6 +432,42 @@ export function updateCloze(cardId: number, text: string): Promise<ClozeSaved> {
  */
 export function previewCloze(text: string, cardId: number | null): Promise<ClozeChanges> {
   return invoke<ClozeChanges>("preview_cloze", { text, cardId });
+}
+
+/**
+ * Adds an image occlusion to a normal deck: a kept picture (`assetId`) with
+ * boxes over it, and one new, immediately due card per box number. Resolves
+ * with the updated deck. A refused box rejects with field "boxes"; a refused
+ * header, field "header".
+ */
+export function createOcclusion(
+  deckId: number,
+  assetId: number,
+  header: string,
+  mode: OcclusionMode,
+  boxes: OcclusionBox[],
+): Promise<DeckDetail> {
+  return invoke<DeckDetail>("create_occlusion", { deckId, assetId, header, mode, boxes });
+}
+
+/** The picture and boxes an image occlusion card was made from, for its edit form. */
+export function getOcclusion(cardId: number): Promise<OcclusionView> {
+  return invoke<OcclusionView>("get_occlusion", { cardId });
+}
+
+/**
+ * Replaces an image occlusion's header, way of asking and boxes. Numbers
+ * still drawn keep their cards and schedules; a number whose boxes are gone
+ * has its card deleted; a new number gets a card (its deleted one back, if it
+ * had one in this deck). The picture never changes.
+ */
+export function updateOcclusion(
+  cardId: number,
+  header: string,
+  mode: OcclusionMode,
+  boxes: OcclusionBox[],
+): Promise<ClozeSaved> {
+  return invoke<ClozeSaved>("update_occlusion", { cardId, header, mode, boxes });
 }
 
 /** Replaces a card's text, keeping its schedule and history; resolves with its deck. */
@@ -644,6 +736,7 @@ export type AnkiDeckPreview = {
 
 /** Mirrors `Skipped` in `src-tauri/src/anki.rs`: notes left out, by why. */
 export type AnkiSkipped = {
+  /** Image occlusion notes whose picture is missing or unusable, or whose shapes can't be read. */
   imageOcclusion: number;
   /** Cloze notes whose text Synapse doesn't accept (nested deletions, say). */
   badCloze: number;
@@ -673,6 +766,10 @@ export type AnkiFile =
       extraRemoved: number;
       /** Notes to add that had been reviewed in Anki; they start as new. */
       reviewed: number;
+      /** Image occlusion notes to add, with their pictures. */
+      occlusions: number;
+      /** Of those, notes whose ellipses or polygons became rectangles, or whose text labels were left out. */
+      occlusionApproximated: number;
     }
   | { status: "cancelled" };
 
@@ -686,8 +783,8 @@ export type AnkiImported = {
 };
 
 /**
- * Chooses an Anki package (.apkg or .colpkg) and reads its front/back and
- * cloze notes.
+ * Chooses an Anki package (.apkg or .colpkg) and reads its front/back,
+ * cloze and image occlusion notes.
  * Rust opens the OS "open file" dialog; closing it resolves with
  * `{ status: "cancelled" }`. Nothing is saved.
  */

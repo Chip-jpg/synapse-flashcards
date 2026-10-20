@@ -237,8 +237,8 @@ async fn stored(conn: &mut SqliteConnection, occlusion_id: i64) -> Result<Stored
     };
     let mode = Mode::parse(&mode).ok_or_else(|| broken("mode"))?;
     let boxes: Vec<OcclusionBox> = serde_json::from_str(&boxes).map_err(|_| broken("boxes"))?;
-    let occlusion =
-        validate_occlusion(&header, mode, &boxes).map_err(|problem| broken(&format!("{problem:?}")))?;
+    let occlusion = validate_occlusion(&header, mode, &boxes)
+        .map_err(|problem| broken(&format!("{problem:?}")))?;
     Ok(Stored {
         asset_id,
         occlusion,
@@ -411,7 +411,10 @@ pub struct OcclusionView {
 }
 
 /// The occlusion an active card was made from, for its edit form.
-pub async fn get_occlusion(pool: &SqlitePool, card_id: i64) -> Result<OcclusionView, AuthoringError> {
+pub async fn get_occlusion(
+    pool: &SqlitePool,
+    card_id: i64,
+) -> Result<OcclusionView, AuthoringError> {
     let mut conn = pool.acquire().await?;
     changeable_card_deck(&mut conn, card_id).await?;
     let (occlusion_id, _) = occlusion_of(&mut conn, card_id)
@@ -690,5 +693,596 @@ pub(crate) fn renumber(boxes: &mut [OcclusionBox]) {
     }
     for shape in boxes.iter_mut() {
         shape.number = numbers[&shape.number];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::assets::test_support::{png, scratch_store};
+    use crate::assets::{add_picture, put, MediaType};
+    use crate::authoring::{
+        create_deck, create_flashcard, delete_flashcard, move_flashcards, restore_deleted_cards,
+        restore_flashcard, update_flashcard, DeckCard,
+    };
+    use crate::db::migrate_and_seed;
+    use crate::db::test_support::*;
+    use crate::scheduler::Rating;
+    use crate::study::{SessionCard, StartedSession};
+
+    const NOW: &str = "2026-10-20T12:00:00Z";
+
+    async fn seeded() -> SqlitePool {
+        let pool = memory_pool().await;
+        migrate_and_seed(&pool).await.unwrap();
+        pool
+    }
+
+    fn rect(number: u32, left: f64, top: f64, label: &str) -> OcclusionBox {
+        OcclusionBox {
+            number,
+            left,
+            top,
+            width: 0.2,
+            height: 0.1,
+            label: label.to_string(),
+        }
+    }
+
+    async fn picture_in(pool: &SqlitePool, name: &str) -> Asset {
+        add_picture(pool, &scratch_store(name), &png(0), at(NOW))
+            .await
+            .unwrap()
+    }
+
+    async fn deck(pool: &SqlitePool, name: &str) -> i64 {
+        create_deck(pool, name, None, at(NOW)).await.unwrap().id
+    }
+
+    /// The deck's occlusion cards as `(number, front, back)`, by number.
+    fn occlusion_cards(cards: &[DeckCard]) -> Vec<(i64, String, String)> {
+        let mut found: Vec<_> = cards
+            .iter()
+            .filter_map(|card| {
+                let occlusion = card.occlusion.as_ref()?;
+                Some((occlusion.number, card.front.clone(), card.back.clone()))
+            })
+            .collect();
+        found.sort();
+        found
+    }
+
+    fn card_of(cards: &[DeckCard], number: i64) -> i64 {
+        cards
+            .iter()
+            .find(|card| card.occlusion.as_ref().is_some_and(|o| o.number == number))
+            .unwrap()
+            .id
+    }
+
+    #[test]
+    fn boxes_are_checked_pulled_inside_and_rounded() {
+        let checked = validate_occlusion(
+            "  Heart  ",
+            Mode::HideAll,
+            &[OcclusionBox {
+                number: 2,
+                left: -0.0004,
+                top: 0.123456,
+                width: 1.0,
+                height: 0.5,
+                label: " Aorta ".to_string(),
+            }],
+        )
+        .unwrap();
+        assert_eq!(checked.header, "Heart");
+        assert_eq!(
+            checked.boxes,
+            vec![OcclusionBox {
+                number: 2,
+                left: 0.0,
+                top: 0.1235,
+                width: 1.0,
+                height: 0.5,
+                label: "Aorta".to_string(),
+            }]
+        );
+
+        let problem = |boxes: &[OcclusionBox]| validate_occlusion("", Mode::HideOne, boxes);
+        assert_eq!(problem(&[]), Err(InvalidInput::OcclusionNoBoxes));
+        let many = vec![rect(1, 0.1, 0.1, ""); BOXES_MAX + 1];
+        assert_eq!(problem(&many), Err(InvalidInput::OcclusionTooManyBoxes));
+        for bad in [
+            rect(0, 0.1, 0.1, ""),
+            rect(NUMBER_MAX + 1, 0.1, 0.1, ""),
+            rect(1, 0.9, 0.1, ""),
+            rect(1, -0.1, 0.1, ""),
+            rect(1, f64::NAN, 0.1, ""),
+            OcclusionBox {
+                width: 0.001,
+                ..rect(1, 0.1, 0.1, "")
+            },
+            OcclusionBox {
+                height: -0.1,
+                ..rect(1, 0.1, 0.1, "")
+            },
+        ] {
+            assert_eq!(
+                problem(&[bad.clone()]),
+                Err(InvalidInput::OcclusionBox),
+                "{bad:?}"
+            );
+        }
+        let long = "x".repeat(LABEL_MAX_CHARS + 1);
+        assert_eq!(
+            problem(&[rect(1, 0.1, 0.1, &long)]),
+            Err(InvalidInput::OcclusionLabelTooLong)
+        );
+        // Each label fits, but one number's labels together don't fit a card.
+        let label = "y".repeat(LABEL_MAX_CHARS);
+        let boxes: Vec<_> = (0..11)
+            .map(|index| rect(1, 0.1, 0.1, &format!("{index}{}", &label[1..])))
+            .collect();
+        assert_eq!(problem(&boxes), Err(InvalidInput::OcclusionLabelTooLong));
+        assert_eq!(
+            validate_occlusion(
+                &"h".repeat(HEADER_MAX_CHARS + 1),
+                Mode::HideAll,
+                &[rect(1, 0.1, 0.1, "")]
+            ),
+            Err(InvalidInput::OcclusionHeaderTooLong)
+        );
+        // Unknown fields are refused when read from JSON.
+        assert!(serde_json::from_str::<OcclusionBox>(
+            r#"{"number":1,"left":0,"top":0,"width":0.5,"height":0.5,"extra":1}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn a_card_s_front_names_its_box_and_its_back_is_its_labels() {
+        let occlusion = validate_occlusion(
+            "Heart",
+            Mode::HideAll,
+            &[
+                rect(1, 0.1, 0.1, "Aorta"),
+                rect(2, 0.4, 0.4, ""),
+                rect(1, 0.6, 0.6, "Aorta"),
+                rect(1, 0.7, 0.2, "Arch"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(occlusion.numbers().into_iter().collect::<Vec<_>>(), [1, 2]);
+        assert_eq!(occlusion.front(1), "Heart\n[picture: box 1]");
+        assert_eq!(occlusion.back(1), "Aorta; Arch");
+        assert_eq!(occlusion.back(2), "[box 2]");
+        let plain = Occlusion {
+            header: String::new(),
+            ..occlusion
+        };
+        assert_eq!(plain.front(2), "[picture: box 2]");
+    }
+
+    #[test]
+    fn an_occlusion_makes_one_card_per_number_and_shows_its_picture_in_review() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let picture = picture_in(&pool, "occlusion-review").await;
+            let deck_id = deck(&pool, "Anatomy").await;
+            let boxes = [
+                rect(1, 0.1, 0.1, "Aorta"),
+                rect(2, 0.5, 0.5, "Ventricle"),
+                rect(2, 0.5, 0.7, "Ventricle"),
+            ];
+            let deck = create_occlusion(
+                &pool,
+                deck_id,
+                picture.id,
+                "Heart",
+                Mode::HideOne,
+                &boxes,
+                at(NOW),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                occlusion_cards(&deck.cards),
+                vec![
+                    (
+                        1,
+                        "Heart\n[picture: box 1]".to_string(),
+                        "Aorta".to_string()
+                    ),
+                    (
+                        2,
+                        "Heart\n[picture: box 2]".to_string(),
+                        "Ventricle".to_string()
+                    ),
+                ]
+            );
+            assert_eq!(deck.due_count, 2);
+
+            let StartedSession::Started { session_id } =
+                study::start_session(&pool, deck_id, at(NOW)).await.unwrap()
+            else {
+                panic!("expected a session");
+            };
+            let SessionCard::Due {
+                card,
+                occlusion,
+                cloze,
+                offer_help,
+                ..
+            } = study::session_card(&pool, session_id, at(NOW))
+                .await
+                .unwrap()
+            else {
+                panic!("expected a card");
+            };
+            assert_eq!(cloze, None);
+            assert!(!offer_help);
+            let occlusion = occlusion.unwrap();
+            assert_eq!(occlusion.picture, picture);
+            assert_eq!(occlusion.header, "Heart");
+            assert_eq!(occlusion.mode, Mode::HideOne);
+            assert_eq!(occlusion.number, 1);
+            assert_eq!(occlusion.boxes.len(), 3);
+            assert_eq!(
+                serde_json::to_value(&occlusion).unwrap()["boxes"][1],
+                serde_json::json!({
+                    "number": 2, "left": 0.5, "top": 0.5, "width": 0.2, "height": 0.1,
+                    "label": "Ventricle"
+                })
+            );
+
+            // Once one card is rated, its sibling waits until tomorrow.
+            study::record_review(&pool, session_id, card.id, card.reps, Rating::Good, at(NOW))
+                .await
+                .unwrap();
+            assert!(matches!(
+                study::session_card(&pool, session_id, at(NOW))
+                    .await
+                    .unwrap(),
+                SessionCard::Completed { .. }
+            ));
+            let tomorrow = at("2026-10-21T12:00:00Z");
+            let deck = crate::authoring::deck_detail(&pool, deck_id, tomorrow)
+                .await
+                .unwrap();
+            assert_eq!(deck.due_count, 1);
+        });
+    }
+
+    #[test]
+    fn only_a_kept_picture_in_a_normal_deck_can_be_occluded() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let deck_id = deck(&pool, "Anatomy").await;
+            let boxes = [rect(1, 0.1, 0.1, "")];
+            let create = |asset_id, deck_id| {
+                create_occlusion(&pool, deck_id, asset_id, "", Mode::HideAll, &boxes, at(NOW))
+            };
+            assert!(matches!(
+                create(99, deck_id).await,
+                Err(AuthoringError::PictureMissing)
+            ));
+            // A kept file that isn't a picture.
+            let store = scratch_store("occlusion-not-picture");
+            let mut conn = pool.acquire().await.unwrap();
+            let text = put(&mut conn, &store, b"hello", MediaType::Text, at(NOW))
+                .await
+                .unwrap();
+            drop(conn);
+            assert!(matches!(
+                create(text.id, deck_id).await,
+                Err(AuthoringError::PictureMissing)
+            ));
+            let picture = picture_in(&pool, "occlusion-sample").await;
+            assert!(matches!(
+                create(picture.id, 1).await,
+                Err(AuthoringError::SampleDeck)
+            ));
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM occlusions").await, 0);
+
+            // SQLite refuses the same, and an occlusion card of the wrong
+            // shape, whatever Rust would do.
+            let refused = sqlx::query(
+                "INSERT INTO occlusions (asset_id, header, mode, boxes, created_at, updated_at)
+                 VALUES (?1, '', 'hideAll', '[{}]', 'now', 'now')",
+            )
+            .bind(text.id)
+            .execute(&pool)
+            .await;
+            assert!(refused.is_err());
+            create(picture.id, deck_id).await.unwrap();
+            for sql in [
+                "INSERT INTO flashcards (deck_id, front, back, occlusion_id) VALUES (2, 'a', 'b', 1)",
+                "INSERT INTO flashcards (deck_id, front, back, occlusion_number) VALUES (2, 'a', 'b', 1)",
+                "INSERT INTO flashcards (deck_id, front, back, occlusion_id, occlusion_number)
+                 VALUES (2, 'a', 'b', 1, 1)",
+                "UPDATE flashcards SET occlusion_number = 2 WHERE occlusion_id = 1",
+                "UPDATE occlusions SET asset_id = asset_id + 1",
+                "DELETE FROM occlusions",
+                "UPDATE occlusions SET boxes = 'not json'",
+            ] {
+                assert!(sqlx::query(sql).execute(&pool).await.is_err(), "{sql}");
+            }
+        });
+    }
+
+    #[test]
+    fn editing_boxes_keeps_schedules_and_deletes_or_brings_back_cards_by_number() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let picture = picture_in(&pool, "occlusion-edit").await;
+            let deck_id = deck(&pool, "Anatomy").await;
+            let deck = create_occlusion(
+                &pool,
+                deck_id,
+                picture.id,
+                "",
+                Mode::HideAll,
+                &[rect(1, 0.1, 0.1, "A"), rect(2, 0.4, 0.4, "B")],
+                at(NOW),
+            )
+            .await
+            .unwrap();
+            let first = card_of(&deck.cards, 1);
+            let second = card_of(&deck.cards, 2);
+            let schedule = |card| {
+                let pool = pool.clone();
+                async move {
+                    sqlx::query_as::<_, (String, Option<String>, i64)>(
+                        "SELECT fsrs_state, due, reps FROM flashcards WHERE id = ?1",
+                    )
+                    .bind(card)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+                }
+            };
+            let StartedSession::Started { session_id } =
+                study::start_session(&pool, deck_id, at(NOW)).await.unwrap()
+            else {
+                panic!("expected a session");
+            };
+            study::record_review(&pool, session_id, first, 0, Rating::Good, at(NOW))
+                .await
+                .unwrap();
+            let rated = schedule(first).await;
+
+            // Box 2 is gone, box 1 is relabelled, box 3 is new.
+            let view = get_occlusion(&pool, first).await.unwrap();
+            assert_eq!((view.picture.id, view.next_number), (picture.id, 3));
+            let (changes, deck) = update_occlusion(
+                &pool,
+                first,
+                "Heart",
+                Mode::HideOne,
+                &[rect(1, 0.1, 0.1, "Aorta"), rect(3, 0.6, 0.6, "")],
+                at(NOW),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                changes,
+                ClozeChanges {
+                    cards: 2,
+                    kept: 1,
+                    restored: 0,
+                    added: 1,
+                    deleted: 1,
+                }
+            );
+            assert_eq!(schedule(first).await, rated);
+            assert_eq!(
+                occlusion_cards(&deck.cards),
+                vec![
+                    (
+                        1,
+                        "Heart\n[picture: box 1]".to_string(),
+                        "Aorta".to_string()
+                    ),
+                    (
+                        3,
+                        "Heart\n[picture: box 3]".to_string(),
+                        "[box 3]".to_string()
+                    ),
+                ]
+            );
+            let deleted = &deck.deleted_cards[0];
+            assert_eq!(deleted.id, second);
+            assert_eq!(
+                deleted.occlusion,
+                Some(crate::authoring::DeletedCloze {
+                    number: 2,
+                    blocked: Some(RestoreBlock::NumberGone),
+                })
+            );
+            assert!(!deleted.restorable());
+            assert!(matches!(
+                restore_flashcard(&pool, second, at(NOW)).await,
+                Err(AuthoringError::OcclusionNotRestorable(
+                    RestoreBlock::NumberGone
+                ))
+            ));
+            // The next number is above every number ever used.
+            assert_eq!(get_occlusion(&pool, first).await.unwrap().next_number, 4);
+
+            // Box 2 drawn again brings its card back, with its schedule.
+            let (changes, deck) = update_occlusion(
+                &pool,
+                first,
+                "Heart",
+                Mode::HideOne,
+                &[
+                    rect(1, 0.1, 0.1, "Aorta"),
+                    rect(2, 0.4, 0.4, "B"),
+                    rect(3, 0.6, 0.6, ""),
+                ],
+                at(NOW),
+            )
+            .await
+            .unwrap();
+            assert_eq!((changes.restored, changes.cards), (1, 3));
+            assert_eq!(card_of(&deck.cards, 2), second);
+
+            // A card deleted by itself can come back while its box is drawn,
+            // with its front and back as the boxes are now.
+            delete_flashcard(&pool, second, at(NOW)).await.unwrap();
+            update_occlusion(
+                &pool,
+                first,
+                "Lungs",
+                Mode::HideOne,
+                &[
+                    rect(1, 0.1, 0.1, "Aorta"),
+                    rect(2, 0.4, 0.4, "Bronchus"),
+                    rect(3, 0.6, 0.6, ""),
+                ],
+                at(NOW),
+            )
+            .await
+            .unwrap();
+            let restored = restore_deleted_cards(&pool, deck_id, 1, at(NOW))
+                .await
+                .unwrap();
+            assert_eq!(restored.restored, 1);
+            let back: (String, String) =
+                sqlx::query_as("SELECT front, back FROM flashcards WHERE id = ?1")
+                    .bind(second)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                back,
+                (
+                    "Lungs\n[picture: box 2]".to_string(),
+                    "Bronchus".to_string()
+                )
+            );
+
+            // Never edited as a front and back.
+            assert!(matches!(
+                update_flashcard(&pool, first, "a", "b", at(NOW)).await,
+                Err(AuthoringError::WrongKind)
+            ));
+            let basic = create_flashcard(&pool, deck_id, "a", "b", at(NOW))
+                .await
+                .unwrap()
+                .cards
+                .iter()
+                .find(|card| card.occlusion.is_none())
+                .unwrap()
+                .id;
+            assert!(matches!(
+                get_occlusion(&pool, basic).await,
+                Err(AuthoringError::WrongKind)
+            ));
+            assert!(matches!(
+                update_occlusion(
+                    &pool,
+                    basic,
+                    "",
+                    Mode::HideAll,
+                    &[rect(1, 0.1, 0.1, "")],
+                    at(NOW)
+                )
+                .await,
+                Err(AuthoringError::WrongKind)
+            ));
+        });
+    }
+
+    #[test]
+    fn an_occlusion_s_cards_move_together_and_come_back_only_beside_them() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let picture = picture_in(&pool, "occlusion-move").await;
+            let from = deck(&pool, "Anatomy").await;
+            let to = deck(&pool, "Biology").await;
+            let deck = create_occlusion(
+                &pool,
+                from,
+                picture.id,
+                "",
+                Mode::HideAll,
+                &[
+                    rect(1, 0.1, 0.1, ""),
+                    rect(2, 0.4, 0.4, ""),
+                    rect(3, 0.6, 0.6, ""),
+                ],
+                at(NOW),
+            )
+            .await
+            .unwrap();
+            let (one, two, three) = (
+                card_of(&deck.cards, 1),
+                card_of(&deck.cards, 2),
+                card_of(&deck.cards, 3),
+            );
+            assert!(matches!(
+                move_flashcards(&pool, from, &[one, two, three][..2], to, at(NOW)).await,
+                Err(AuthoringError::OcclusionSplit)
+            ));
+            delete_flashcard(&pool, three, at(NOW)).await.unwrap();
+            let moved = move_flashcards(&pool, from, &[one, two], to, at(NOW))
+                .await
+                .unwrap();
+            assert_eq!(moved.changed, 2);
+            // Its deleted card stayed behind, and can't come back there.
+            assert_eq!(
+                moved.deck.deleted_cards[0]
+                    .occlusion
+                    .as_ref()
+                    .unwrap()
+                    .blocked,
+                Some(RestoreBlock::Elsewhere)
+            );
+            assert!(matches!(
+                restore_flashcard(&pool, three, at(NOW)).await,
+                Err(AuthoringError::OcclusionNotRestorable(
+                    RestoreBlock::Elsewhere
+                ))
+            ));
+        });
+    }
+
+    #[test]
+    fn a_cards_file_leaves_occlusion_cards_out() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let picture = picture_in(&pool, "occlusion-csv").await;
+            let deck_id = deck(&pool, "Anatomy").await;
+            create_flashcard(&pool, deck_id, "Pump", "Heart", at(NOW))
+                .await
+                .unwrap();
+            create_occlusion(
+                &pool,
+                deck_id,
+                picture.id,
+                "",
+                Mode::HideAll,
+                &[rect(1, 0.1, 0.1, "")],
+                at(NOW),
+            )
+            .await
+            .unwrap();
+            let (_, cards) = crate::cards_csv::deck_cards(&pool, deck_id).await.unwrap();
+            assert_eq!(cards.len(), 1);
+            assert_eq!(cards[0].front, "Pump");
+        });
+    }
+
+    #[test]
+    fn renumbering_keeps_shared_numbers_together_in_order() {
+        let mut boxes = vec![
+            rect(1500, 0.1, 0.1, ""),
+            rect(7, 0.2, 0.1, ""),
+            rect(1500, 0.3, 0.1, ""),
+        ];
+        renumber(&mut boxes);
+        let numbers: Vec<u32> = boxes.iter().map(|shape| shape.number).collect();
+        assert_eq!(numbers, [1, 2, 1]);
     }
 }

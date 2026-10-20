@@ -28,8 +28,8 @@ use sqlx::{SqliteConnection, SqlitePool};
 
 use crate::aid;
 use crate::cloze::{self, ClozePart};
-use crate::occlusion::{self, SessionOcclusion};
 use crate::db::{to_db_time, DbError};
+use crate::occlusion::{self, SessionOcclusion};
 use crate::optimizer;
 use crate::retention;
 use crate::scheduler::{self, CardState, Rating, Schedule};

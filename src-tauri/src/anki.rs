@@ -77,10 +77,10 @@ use chrono::{DateTime, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection};
 use sqlx::{ConnectOptions, SqlitePool};
 
+use crate::assets::{self, AssetError, AssetStore, MediaType, MAX_PICTURE_BYTES};
 use crate::authoring::{
     insert_new_card, validate_card, AuthoringError, InvalidInput, DECK_NAME_MAX_CHARS,
 };
-use crate::assets::{self, AssetError, AssetStore, MediaType, MAX_PICTURE_BYTES};
 use crate::cloze::{insert_cloze, validate_cloze};
 use crate::db::to_db_time;
 use crate::occlusion::{
@@ -1050,7 +1050,11 @@ fn read_image_occlusion<'a>(
     if boxes.iter().any(|shape| shape.number > NUMBER_MAX) {
         renumber(&mut boxes);
     }
-    let mode = if hide_all { Mode::HideAll } else { Mode::HideOne };
+    let mode = if hide_all {
+        Mode::HideAll
+    } else {
+        Mode::HideOne
+    };
     let occlusion = validate_occlusion(&header, mode, &boxes).map_err(|problem| match problem {
         InvalidInput::OcclusionHeaderTooLong | InvalidInput::OcclusionLabelTooLong => {
             OcclusionProblem::TooLong
@@ -1078,7 +1082,10 @@ fn picture_name(html: &str) -> Option<String> {
         let Some(src) = lower_tag
             .match_indices("src")
             .map(|(at, _)| at)
-            .find(|&at| tag[at + 3..].trim_start().starts_with('=') && tag[..at].ends_with(char::is_whitespace))
+            .find(|&at| {
+                tag[at + 3..].trim_start().starts_with('=')
+                    && tag[..at].ends_with(char::is_whitespace)
+            })
         else {
             continue;
         };
@@ -1114,7 +1121,9 @@ fn read_shapes(html: &str) -> Option<(Vec<OcclusionBox>, bool, bool)> {
         let body_start = after[digits..].strip_prefix("::")?;
         let number: u32 = after[..digits].parse().ok().filter(|&n| n >= 1)?;
         let end = body_start.find("}}")?;
-        let body = body_start[..end].strip_prefix(IMAGE_OCCLUSION)?.strip_prefix(':')?;
+        let body = body_start[..end]
+            .strip_prefix(IMAGE_OCCLUSION)?
+            .strip_prefix(':')?;
         rest = &body_start[end + 2..];
 
         let mut parts = body.split(':');
@@ -1205,7 +1214,11 @@ fn read_limited(source: impl Read, limit: u64) -> io::Result<Option<Vec<u8>>> {
 
 /// An entry of the package, decompressed if newer Anki compressed it,
 /// within `limit` bytes; `None` if it is missing, larger, or unreadable.
-fn read_media_entry(archive: &mut zip::ZipArchive<File>, name: &str, limit: u64) -> Option<Vec<u8>> {
+fn read_media_entry(
+    archive: &mut zip::ZipArchive<File>,
+    name: &str,
+    limit: u64,
+) -> Option<Vec<u8>> {
     let entry = archive.by_name(name).ok()?;
     // zstd adds a little to bytes it can't make smaller.
     let raw = read_limited(entry, limit + limit / 64 + 1024).ok()??;
@@ -1226,7 +1239,10 @@ fn media_index(archive: &mut zip::ZipArchive<File>) -> HashMap<String, String> {
         return HashMap::new();
     };
     if let Ok(names) = serde_json::from_slice::<HashMap<String, String>>(&bytes) {
-        return names.into_iter().map(|(entry, name)| (name, entry)).collect();
+        return names
+            .into_iter()
+            .map(|(entry, name)| (name, entry))
+            .collect();
     }
     let Some(entries) = protobuf_entries(&bytes) else {
         return HashMap::new();
@@ -1485,13 +1501,16 @@ pub async fn import_package(
                 }
                 ToSave::Occlusion(note) => {
                     let checked = &note.occlusion;
-                    let occlusion = validate_occlusion(&checked.header, checked.mode, &checked.boxes)
-                        .map_err(refused)?;
+                    let occlusion =
+                        validate_occlusion(&checked.header, checked.mode, &checked.boxes)
+                            .map_err(refused)?;
                     let asset_id = match kept.get(note.picture.as_str()) {
                         Some(&asset_id) => asset_id,
                         None => {
                             let picture = package.pictures.get(&note.picture).ok_or_else(|| {
-                                AuthoringError::Internal("an occlusion's picture wasn't read".into())
+                                AuthoringError::Internal(
+                                    "an occlusion's picture wasn't read".into(),
+                                )
                             })?;
                             let asset = assets::put(
                                 &mut tx,
@@ -1840,6 +1859,10 @@ mod tests {
     const NEW_APKG: &[u8] = include_bytes!("../testdata/anki/new.apkg");
     const LEGACY_APKG: &[u8] = include_bytes!("../testdata/anki/legacy.apkg");
     const COLPKG: &[u8] = include_bytes!("../testdata/anki/all.colpkg");
+    /// Image occlusion notes with their pictures (the second collection in
+    /// `make_fixtures.py`), in the newer and the legacy format.
+    const OCCLUSION_APKG: &[u8] = include_bytes!("../testdata/anki/occlusion.apkg");
+    const OCCLUSION_LEGACY_APKG: &[u8] = include_bytes!("../testdata/anki/occlusion-legacy.apkg");
 
     /// A store folder of its own for each test that saves.
     fn test_store() -> AssetStore {
@@ -2561,7 +2584,9 @@ mod tests {
                 }],
                 ..empty
             };
-            assert!(import_package(&pool, &test_store(), &many, false, at(NOW)).await.is_ok());
+            assert!(import_package(&pool, &test_store(), &many, false, at(NOW))
+                .await
+                .is_ok());
             assert!(matches!(
                 import_package(&pool, &test_store(), &many, true, at(NOW)).await,
                 Err(AnkiError::TooManyCards)
@@ -2581,5 +2606,209 @@ mod tests {
         assert!(imports.get(second).is_some());
         imports.forget(second);
         assert!(imports.get(second).is_none());
+    }
+
+    #[test]
+    fn image_occlusion_notes_are_read_with_their_pictures() {
+        for bytes in [OCCLUSION_APKG, OCCLUSION_LEGACY_APKG] {
+            let package = read_bytes(bytes).unwrap();
+            assert_eq!(package.notes, 5);
+            // The note whose picture isn't in the package, and the one with
+            // pixel coordinates.
+            assert_eq!(
+                package.skipped,
+                Skipped {
+                    image_occlusion: 2,
+                    ..Skipped::default()
+                }
+            );
+            assert_eq!(package.extra_removed, 1);
+            assert_eq!(package.media_removed, 0);
+            assert_eq!(package.occlusion_approximated, 1);
+            let [deck] = &package.decks[..] else {
+                panic!("one deck");
+            };
+            assert_eq!(deck.anki_name, "Anatomy");
+            assert_eq!(deck.notes.len(), 3);
+            assert_eq!(package.card_count(false), 2 + 2 + 1);
+
+            let (_, heart) = note(&package, "Heart\n[picture: box 1]");
+            let occlusion = heart.occlusion.as_ref().unwrap();
+            assert_eq!(occlusion.picture, "heart.png");
+            assert_eq!(heart.cards, 2);
+            let checked = &occlusion.occlusion;
+            assert_eq!(checked.mode, Mode::HideAll);
+            let boxes: Vec<(u32, f64, f64, f64, f64)> = checked
+                .boxes
+                .iter()
+                .map(|shape| {
+                    (
+                        shape.number,
+                        shape.left,
+                        shape.top,
+                        shape.width,
+                        shape.height,
+                    )
+                })
+                .collect();
+            // The ellipse and polygon as the rectangles around them; the
+            // text label left out.
+            assert_eq!(
+                boxes,
+                vec![
+                    (1, 0.1, 0.2, 0.3, 0.4),
+                    (2, 0.5, 0.1, 0.2, 0.1),
+                    (2, 0.6, 0.6, 0.2, 0.3),
+                ]
+            );
+
+            let (_, plain) = note(&package, "[picture: box 1]");
+            let checked = &plain.occlusion.as_ref().unwrap().occlusion;
+            assert_eq!(checked.mode, Mode::HideOne);
+            assert_eq!(checked.numbers().into_iter().collect::<Vec<_>>(), [1, 3]);
+            assert_eq!(note(&package, "Pump").1.occlusion, None);
+
+            let [(name, picture)] = &package.pictures.iter().collect::<Vec<_>>()[..] else {
+                panic!("one picture");
+            };
+            assert_eq!(name.as_str(), "heart.png");
+            assert_eq!(picture.media_type, MediaType::Png);
+            assert!(picture.bytes.starts_with(b"\x89PNG"));
+        }
+    }
+
+    #[test]
+    fn image_occlusion_notes_are_saved_with_their_picture_kept_once() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let store = test_store();
+            let package = read_async(OCCLUSION_APKG).await.unwrap();
+            let imported = import_package(&pool, &store, &package, false, at(NOW))
+                .await
+                .unwrap();
+            assert_eq!(imported.cards, 5);
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM assets").await, 1);
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM occlusions").await, 2);
+            assert_eq!(
+                count(
+                    &pool,
+                    "SELECT COUNT(*) FROM flashcards WHERE occlusion_id IS NOT NULL"
+                )
+                .await,
+                4
+            );
+            let sha: String = sqlx::query_scalar("SELECT sha256 FROM assets")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert!(store.verify(&sha, package.pictures["heart.png"].bytes.len() as u64));
+
+            // Reviewed like one drawn in Synapse.
+            let deck = imported.decks[0].id;
+            let detail = crate::authoring::deck_detail(&pool, deck, at(NOW))
+                .await
+                .unwrap();
+            let card = detail
+                .cards
+                .iter()
+                .find(|card| card.front == "Heart\n[picture: box 2]")
+                .unwrap();
+            assert_eq!(card.back, "[box 2]");
+            let view = crate::occlusion::get_occlusion(&pool, card.id)
+                .await
+                .unwrap();
+            assert_eq!(view.picture.sha256, sha);
+            assert_eq!(view.boxes.len(), 3);
+
+            // Importing again reuses the kept picture.
+            import_package(&pool, &store, &package, false, at(NOW))
+                .await
+                .unwrap();
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM assets").await, 1);
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM occlusions").await, 4);
+        });
+    }
+
+    #[test]
+    fn image_occlusion_shapes_and_pictures_are_read_carefully() {
+        assert_eq!(
+            picture_name(r#"<div><IMG alt="x" SRC='a&amp;b.png'></div>"#),
+            Some("a&b.png".to_string())
+        );
+        assert_eq!(
+            picture_name("<img src=heart.png>"),
+            Some("heart.png".to_string())
+        );
+        assert_eq!(
+            picture_name(r#"<img srcset="x.png"><img src="y.png">"#),
+            Some("y.png".to_string())
+        );
+        assert_eq!(
+            picture_name(r#"<img src="https://example.com/a.png">"#),
+            None
+        );
+        assert_eq!(picture_name(r#"<img src="../a.png">"#), None);
+        assert_eq!(picture_name("no picture"), None);
+
+        // Not a shape, or an unknown one: the note is left out.
+        assert_eq!(read_shapes("{{c1::Mitosis}}"), None);
+        assert_eq!(read_shapes("{{c1::image-occlusion:star:left=.1}}"), None);
+        assert_eq!(
+            read_shapes("{{c1::image-occlusion:rect:left=.1:top=.1}}"),
+            None
+        );
+        // Only labels: nothing to hide.
+        assert_eq!(
+            read_shapes("{{c1::image-occlusion:text:left=.1:top=.1:text=A}}"),
+            None
+        );
+        // A shape partly off the picture is cut to it, and a rotated one
+        // counts as approximated.
+        let (boxes, hide_all, approximated) = read_shapes(
+            "{{c2::image-occlusion:rect:left=-.1:top=.9:width=.3:height=.3:angle=10}}<br>",
+        )
+        .unwrap();
+        assert!(!hide_all && approximated);
+        assert_eq!(
+            boxes
+                .iter()
+                .map(|b| (b.number, b.left, b.top))
+                .collect::<Vec<_>>(),
+            [(2, 0.0, 0.9)]
+        );
+        assert!((boxes[0].width - 0.2).abs() < 1e-9 && (boxes[0].height - 0.1).abs() < 1e-9);
+    }
+
+    #[test]
+    fn media_lists_of_both_formats_are_read() {
+        let scratch = ScratchDir::new().unwrap();
+        let png = crate::assets::test_support::png(0);
+        let mut compressed = Vec::new();
+        // A stored zstd frame, as newer Anki writes: magic, a frame header
+        // with a single segment, then one raw block.
+        compressed.extend_from_slice(&ZSTD_MAGIC);
+        compressed.push(0x20);
+        compressed.push(png.len() as u8);
+        let block = ((png.len() as u32) << 3) | 1;
+        compressed.extend_from_slice(&block.to_le_bytes()[..3]);
+        compressed.extend_from_slice(&png);
+        // MediaEntries { entries: [{ name: "a.png" }, { name: "b.png", legacy_zip_filename: 7 }] }
+        let mut index = vec![0x0a, 7, 0x0a, 5];
+        index.extend_from_slice(b"a.png");
+        index.extend_from_slice(&[0x0a, 10, 0x0a, 5]);
+        index.extend_from_slice(b"b.png");
+        index.extend_from_slice(&[0xf8, 0x0f, 7]);
+        let bytes = zip_of(&[("media", &index), ("0", &compressed), ("7", &png)]);
+        let path = scratch.path().join("media.zip");
+        std::fs::write(&path, bytes).unwrap();
+        let mut archive = zip::ZipArchive::new(File::open(&path).unwrap()).unwrap();
+        let found = media_index(&mut archive);
+        assert_eq!(found.get("a.png").map(String::as_str), Some("0"));
+        assert_eq!(found.get("b.png").map(String::as_str), Some("7"));
+        assert_eq!(read_media_entry(&mut archive, "0", 1024), Some(png.clone()));
+        assert_eq!(read_media_entry(&mut archive, "7", 1024), Some(png.clone()));
+        // Over the limit, or missing: nothing.
+        assert_eq!(read_media_entry(&mut archive, "7", 10), None);
+        assert_eq!(read_media_entry(&mut archive, "8", 1024), None);
     }
 }
