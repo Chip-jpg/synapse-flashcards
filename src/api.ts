@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 /** Mirrors `DeckSummary` in `src-tauri/src/study.rs`. */
@@ -52,7 +52,72 @@ export type DeckCard = {
   back: string;
   /** For a cloze card, the text it was made from; `null` (or absent) for a front/back card. */
   cloze?: CardCloze | null;
+  /** The pictures on each side (absent from older test data: no pictures). */
+  pictures?: CardPictures;
+  /** For an image occlusion card, its picture's boxes; `null` (or absent) otherwise. */
+  occlusion?: CardOcclusion | null;
 };
+
+/**
+ * Mirrors `CardOcclusion` in `src-tauri/src/authoring.rs`: the image
+ * occlusion a card was made from (every card of one picture carries the same
+ * `occlusionId`), and its own box number. `getOcclusion` loads the rest.
+ */
+export type CardOcclusion = { occlusionId: number; number: number };
+
+/** Mirrors `Mode` in `src-tauri/src/occlusion.rs`: every box covered on the question, or only the card's own. */
+export type OcclusionMode = "hideAll" | "hideOne";
+
+/**
+ * Mirrors `OcclusionBox` in `src-tauri/src/occlusion.rs`: one box over a
+ * picture, with coordinates from 0 to 1 of its width and height. Boxes with
+ * one `number` are one card. `label` (may be empty) is the card's answer.
+ */
+export type OcclusionBox = {
+  number: number;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  label: string;
+};
+
+/**
+ * Mirrors `OcclusionView` in `src-tauri/src/occlusion.rs`: an image
+ * occlusion as its edit form opens it. `nextNumber` is above every number
+ * its boxes and cards ever had, so a new box never takes an old card.
+ */
+export type OcclusionView = {
+  id: number;
+  picture: Asset;
+  header: string;
+  mode: OcclusionMode;
+  boxes: OcclusionBox[];
+  nextNumber: number;
+};
+
+/**
+ * Mirrors `SessionOcclusion` in `src-tauri/src/occlusion.rs`: an image
+ * occlusion card in review. The boxes numbered `number` are the card's own.
+ */
+export type SessionOcclusion = {
+  picture: Asset;
+  header: string;
+  mode: OcclusionMode;
+  number: number;
+  boxes: OcclusionBox[];
+};
+
+/** Mirrors `CardPictures` in `src-tauri/src/pictures.rs`: each side's pictures, in order. */
+export type CardPictures = { front: Asset[]; back: Asset[] };
+
+/** The pictures to save on each side of a card, by asset id, in order. */
+export type CardPictureIds = { front: number[]; back: number[] };
+
+/** The most pictures a note shows: `NOTE_PICTURES_MAX` in `pictures.rs`. */
+export const NOTE_PICTURES_MAX = 20;
+/** The most pictures one side of a card shows: `CARD_SIDE_PICTURES_MAX` in `pictures.rs`. */
+export const CARD_SIDE_PICTURES_MAX = 4;
 
 /**
  * Mirrors `CardCloze` in `src-tauri/src/authoring.rs`: the cloze text a card
@@ -105,6 +170,8 @@ export type DeletedCard = {
   deletedAt: string;
   /** For a cloze card; `null` (or absent) for a front/back card. */
   cloze?: DeletedCloze | null;
+  /** For an image occlusion card (its box number); `null` (or absent) otherwise. */
+  occlusion?: DeletedCloze | null;
 };
 
 /** Mirrors `Flashcard` in `src-tauri/src/study.rs`. */
@@ -145,6 +212,10 @@ export type SessionCard =
       offerHelp: boolean;
       /** A cloze card as pieces of its text; `null` (or absent) for a front/back card. */
       cloze?: ClozePart[] | null;
+      /** The pictures on each side of a front/back card (absent from older test data: none). */
+      pictures?: CardPictures;
+      /** An image occlusion card's picture and boxes; `null` (or absent) otherwise. */
+      occlusion?: SessionOcclusion | null;
     }
   | { status: "completed"; cardsReviewed: number };
 
@@ -161,10 +232,11 @@ export type ExportOutcome = { status: "saved"; fileName: string } | { status: "c
  * Mirrors `ImportCheck` in `src-tauri/src/commands.rs`. A "ready" backup has
  * passed every check but has replaced nothing yet; `token` identifies it to
  * `confirmImport` and `cancelImport`. `fileName` is the name only, never the
- * folder, and `exportedAt` is ISO-8601 UTC.
+ * folder, and `exportedAt` is ISO-8601 UTC. `keptFiles` counts the files
+ * (sources, pictures) it holds: 0 for a backup made before Synapse kept files.
  */
 export type ImportCheck =
-  | { status: "ready"; token: number; fileName: string; exportedAt: string }
+  | { status: "ready"; token: number; fileName: string; exportedAt: string; keptFiles: number }
   | { status: "cancelled" };
 
 /** Mirrors `NoteSummary` in `src-tauri/src/notes.rs`: one note in the library. */
@@ -198,6 +270,8 @@ export type Note = {
   body: string;
   createdAt: string;
   updatedAt: string;
+  /** The pictures shown under the text, in order (absent from older test data: none). */
+  pictures?: Asset[];
 };
 
 /**
@@ -205,7 +279,20 @@ export type Note = {
  * plus "deck", used only by the frontend's own check that a deck was chosen
  * before asking Rust to add a card to it.
  */
-export type Field = "name" | "description" | "front" | "back" | "title" | "body" | "text" | "deck";
+export type Field =
+  | "name"
+  | "description"
+  | "front"
+  | "back"
+  | "title"
+  | "body"
+  | "text"
+  | "deck"
+  | "pictures"
+  | "frontPictures"
+  | "backPictures"
+  | "header"
+  | "boxes";
 
 /** Mirrors `CommandError` in `src-tauri/src/commands.rs`. */
 export type CommandError = {
@@ -334,8 +421,13 @@ export function getDeckDetail(deckId: number): Promise<DeckDetail> {
 }
 
 /** Adds a new, immediately due card to a normal deck; resolves with the updated deck. */
-export function createFlashcard(deckId: number, front: string, back: string): Promise<DeckDetail> {
-  return invoke<DeckDetail>("create_flashcard", { deckId, front, back });
+export function createFlashcard(
+  deckId: number,
+  front: string,
+  back: string,
+  pictures?: CardPictureIds
+): Promise<DeckDetail> {
+  return invoke<DeckDetail>("create_flashcard", { deckId, front, back, pictures });
 }
 
 /**
@@ -377,9 +469,50 @@ export function previewCloze(text: string, cardId: number | null): Promise<Cloze
   return invoke<ClozeChanges>("preview_cloze", { text, cardId });
 }
 
+/**
+ * Adds an image occlusion to a normal deck: a kept picture (`assetId`) with
+ * boxes over it, and one new, immediately due card per box number. Resolves
+ * with the updated deck. A refused box rejects with field "boxes"; a refused
+ * header, field "header".
+ */
+export function createOcclusion(
+  deckId: number,
+  assetId: number,
+  header: string,
+  mode: OcclusionMode,
+  boxes: OcclusionBox[],
+): Promise<DeckDetail> {
+  return invoke<DeckDetail>("create_occlusion", { deckId, assetId, header, mode, boxes });
+}
+
+/** The picture and boxes an image occlusion card was made from, for its edit form. */
+export function getOcclusion(cardId: number): Promise<OcclusionView> {
+  return invoke<OcclusionView>("get_occlusion", { cardId });
+}
+
+/**
+ * Replaces an image occlusion's header, way of asking and boxes. Numbers
+ * still drawn keep their cards and schedules; a number whose boxes are gone
+ * has its card deleted; a new number gets a card (its deleted one back, if it
+ * had one in this deck). The picture never changes.
+ */
+export function updateOcclusion(
+  cardId: number,
+  header: string,
+  mode: OcclusionMode,
+  boxes: OcclusionBox[],
+): Promise<ClozeSaved> {
+  return invoke<ClozeSaved>("update_occlusion", { cardId, header, mode, boxes });
+}
+
 /** Replaces a card's text, keeping its schedule and history; resolves with its deck. */
-export function updateFlashcard(cardId: number, front: string, back: string): Promise<DeckDetail> {
-  return invoke<DeckDetail>("update_flashcard", { cardId, front, back });
+export function updateFlashcard(
+  cardId: number,
+  front: string,
+  back: string,
+  pictures?: CardPictureIds
+): Promise<DeckDetail> {
+  return invoke<DeckDetail>("update_flashcard", { cardId, front, back, pictures });
 }
 
 /**
@@ -643,6 +776,7 @@ export type AnkiDeckPreview = {
 
 /** Mirrors `Skipped` in `src-tauri/src/anki.rs`: notes left out, by why. */
 export type AnkiSkipped = {
+  /** Image occlusion notes whose picture is missing or unusable, or whose shapes can't be read. */
   imageOcclusion: number;
   /** Cloze notes whose text Synapse doesn't accept (nested deletions, say). */
   badCloze: number;
@@ -672,6 +806,10 @@ export type AnkiFile =
       extraRemoved: number;
       /** Notes to add that had been reviewed in Anki; they start as new. */
       reviewed: number;
+      /** Image occlusion notes to add, with their pictures. */
+      occlusions: number;
+      /** Of those, notes whose ellipses or polygons became rectangles, or whose text labels were left out. */
+      occlusionApproximated: number;
     }
   | { status: "cancelled" };
 
@@ -685,8 +823,8 @@ export type AnkiImported = {
 };
 
 /**
- * Chooses an Anki package (.apkg or .colpkg) and reads its front/back and
- * cloze notes.
+ * Chooses an Anki package (.apkg or .colpkg) and reads its front/back,
+ * cloze and image occlusion notes.
  * Rust opens the OS "open file" dialog; closing it resolves with
  * `{ status: "cancelled" }`. Nothing is saved.
  */
@@ -774,13 +912,21 @@ export function getNote(noteId: number): Promise<Note> {
 }
 
 /** Saves a new note. Rust trims and validates both fields; errors name the field to fix. */
-export function createNote(title: string, body: string): Promise<Note> {
-  return invoke<Note>("create_note", { title, body });
+export function createNote(title: string, body: string, pictures?: number[]): Promise<Note> {
+  return invoke<Note>("create_note", { title, body, pictures });
 }
 
-/** Replaces a note's title and body (same rules as creating); resolves with the saved note. */
-export function updateNote(noteId: number, title: string, body: string): Promise<Note> {
-  return invoke<Note>("update_note", { noteId, title, body });
+/**
+ * Replaces a note's title and body (same rules as creating), and its pictures
+ * when `pictures` (asset ids, in order) is given; resolves with the saved note.
+ */
+export function updateNote(
+  noteId: number,
+  title: string,
+  body: string,
+  pictures?: number[]
+): Promise<Note> {
+  return invoke<Note>("update_note", { noteId, title, body, pictures });
 }
 
 /**
@@ -1084,4 +1230,235 @@ export function toCommandError(err: unknown): CommandError {
     return err as CommandError;
   }
   return { kind: "failed", message: "Something went wrong." };
+}
+
+/**
+ * Mirrors `MediaType` in `src-tauri/src/assets.rs`: what a kept file is,
+ * worked out by Rust from its bytes.
+ */
+export type MediaType =
+  | "image/png"
+  | "image/jpeg"
+  | "image/gif"
+  | "image/webp"
+  | "application/pdf"
+  | "text/plain"
+  | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  | "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+
+/**
+ * Mirrors `Asset` in `src-tauri/src/assets.rs`: one file Synapse keeps (a
+ * picture, or a source's original). `sha256` names it and never changes;
+ * refer to it by `id` in anything stored, and show it with `keptFileUrl`.
+ */
+export type Asset = {
+  id: number;
+  sha256: string;
+  mediaType: MediaType;
+  /** Bytes. */
+  size: number;
+  /** ISO-8601 UTC. */
+  createdAt: string;
+};
+
+/**
+ * The address the webview loads a kept picture or PDF from, by its hash
+ * (Rust's `synapse:` scheme, `assets::respond`). Only kept pictures and PDFs
+ * load; anything else is a 404. Never build an address from text in a note.
+ */
+export function keptFileUrl(sha256: string): string {
+  return convertFileSrc(sha256, "synapse");
+}
+
+/** Mirrors `PictureChoice` in `src-tauri/src/commands.rs`. */
+export type PictureChoice = { status: "added"; asset: Asset } | { status: "cancelled" };
+
+/**
+ * Chooses a picture file (PNG, JPEG, GIF, or WebP, up to 20 MB) and keeps it.
+ * Rust opens the OS "open file" dialog; closing it resolves with
+ * `{ status: "cancelled" }`. The same picture is kept once however often it's
+ * added. Nothing refers to it yet: the caller stores its `id` where it's used.
+ */
+export function choosePicture(): Promise<PictureChoice> {
+  return invoke<PictureChoice>("choose_picture");
+}
+
+/**
+ * Keeps a pasted or dropped picture from its bytes. Rust checks the bytes are
+ * a PNG, JPEG, GIF, or WebP up to 20 MB, whatever the clipboard said.
+ */
+export function storePicture(bytes: Uint8Array): Promise<Asset> {
+  return invoke<Asset>("store_picture", bytes);
+}
+
+/**
+ * Mirrors `Source` in `src-tauri/src/sources.rs`: an imported document kept
+ * with its original file. `deletedAt` is null while it's active.
+ */
+export type Source = {
+  id: number;
+  title: string;
+  kind: FileKind;
+  /** The file's name when it was imported, never its folder. */
+  fileName: string;
+  /** Pages of a PDF or slides of a presentation; 1 for other documents. */
+  pageCount: number;
+  asset: Asset;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+};
+
+/** Mirrors `SourcePage` in `src-tauri/src/sources.rs`; `text` is empty for a page without text. */
+export type SourcePage = { number: number; text: string };
+
+/**
+ * Mirrors `SourceImport` in `src-tauri/src/commands.rs`: the kept source and
+ * the text `importFile` would give, for a note written from it.
+ */
+export type SourceImport =
+  | {
+      status: "imported";
+      source: Source;
+      text: {
+        kind: FileKind;
+        title: string;
+        body: string;
+        pages: number | null;
+        pagesWithoutText: number[];
+      };
+    }
+  | { status: "cancelled" };
+
+/**
+ * Chooses a document (PDF, text, Markdown, Word, or PowerPoint) and keeps it
+ * as a source: the original file and each page's text. Closing the file
+ * window resolves with `{ status: "cancelled" }`.
+ */
+export function importSource(): Promise<SourceImport> {
+  return invoke<SourceImport>("import_source");
+}
+
+/** Every active source, most recently changed first. */
+export function getSources(): Promise<Source[]> {
+  return invoke<Source[]>("get_sources");
+}
+
+/** Every deleted source, most recently deleted first. */
+export function getDeletedSources(): Promise<Source[]> {
+  return invoke<Source[]>("get_deleted_sources");
+}
+
+/** One active source; a deleted one rejects with kind "stale". */
+export function getSource(sourceId: number): Promise<Source> {
+  return invoke<Source>("get_source", { sourceId });
+}
+
+/** The text of every page of an active source, numbered from 1. */
+export function getSourcePages(sourceId: number): Promise<SourcePage[]> {
+  return invoke<SourcePage[]>("get_source_pages", { sourceId });
+}
+
+/** Renames an active source; a refused title rejects with field "title". */
+export function renameSource(sourceId: number, title: string): Promise<Source> {
+  return invoke<Source>("rename_source", { sourceId, title });
+}
+
+/** Deletes a source softly; its file and pages are kept. */
+export function deleteSource(sourceId: number): Promise<void> {
+  return invoke<void>("delete_source", { sourceId });
+}
+
+/** Restores a deleted source exactly as it was. */
+export function restoreSource(sourceId: number): Promise<void> {
+  return invoke<void>("restore_source", { sourceId });
+}
+
+/** Records, once and for good, that a note was written from a source. */
+export function linkNoteToSource(noteId: number, sourceId: number): Promise<void> {
+  return invoke<void>("link_note_to_source", { noteId, sourceId });
+}
+
+/** The id of the source a note was written from, or null. */
+export function getNoteSource(noteId: number): Promise<number | null> {
+  return invoke<number | null>("get_note_source", { noteId });
+}
+
+/**
+ * Saves a new note written from an active source and records that it came
+ * from it, both at once: the note is never saved without its link. A refused
+ * title or text rejects with its field, as `createNote` does; a deleted
+ * source rejects with kind "stale".
+ */
+export function createNoteFromSource(
+  sourceId: number,
+  title: string,
+  body: string,
+  pictures?: number[]
+): Promise<Note> {
+  return invoke<Note>("create_note_from_source", { sourceId, title, body, pictures });
+}
+
+/** The active notes written from an active source, most recently edited first. */
+export function getSourceNotes(sourceId: number): Promise<NoteSummary[]> {
+  return invoke<NoteSummary[]>("get_source_notes", { sourceId });
+}
+
+/**
+ * Mirrors `QuoteSpot` in `src-tauri/src/sources.rs`: the page a quote starts
+ * on and the page it ends on (the same, unless it runs over a page break).
+ */
+export type QuoteSpot = { page: number; lastPage: number };
+
+/**
+ * Mirrors `QuotedSource` in `src-tauri/src/sources.rs`: the source a note
+ * was written from, and a spot for each quote asked about, in order (null
+ * when that quote isn't in the source word for word, e.g. after edits).
+ */
+export type QuotedSource = {
+  sourceId: number;
+  title: string;
+  kind: FileKind;
+  pageCount: number;
+  spots: (QuoteSpot | null)[];
+};
+
+/**
+ * Where quotes from a note (a suggested card's or a quiz question's) are in
+ * the source the note was written from, found by Rust with the same
+ * word-for-word rule that checked them. Null when the note didn't come from
+ * a source, or its source is deleted. At most 100 quotes.
+ */
+export function locateQuotes(noteId: number, quotes: string[]): Promise<QuotedSource | null> {
+  return invoke<QuotedSource | null>("locate_quotes", { noteId, quotes });
+}
+
+/**
+ * One page of an active source as pieces of text, with the part of `quote`
+ * on that page marked (`hit`). An empty quote marks nothing. Render the
+ * pieces as text, with `<mark>`, never as HTML.
+ */
+export function getQuotedPage(
+  sourceId: number,
+  number: number,
+  quote: string,
+): Promise<SnippetPiece[]> {
+  return invoke<SnippetPiece[]>("get_quoted_page", { sourceId, number, quote });
+}
+
+/**
+ * Saves a copy of a source's original file where the user chooses, through
+ * the OS "save as" dialog. Closing it resolves with `{ status: "cancelled" }`.
+ */
+export function saveSourceCopy(sourceId: number): Promise<ExportOutcome> {
+  return invoke<ExportOutcome>("save_source_copy", { sourceId });
+}
+
+/**
+ * Opens a source's original in the program the computer uses for that kind
+ * of file. Rust hands that program a copy, in a Synapse folder in the
+ * system's temporary folder, never the kept file itself.
+ */
+export function openSourceOriginal(sourceId: number): Promise<void> {
+  return invoke<void>("open_source_original", { sourceId });
 }

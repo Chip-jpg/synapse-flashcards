@@ -139,7 +139,7 @@ describe("editing a cloze text", () => {
       preview_cloze: () => changes({ cards: 1, kept: 1, deleted: 1 }),
       update_cloze: () => ({
         changes: changes({ cards: 1, kept: 1, deleted: 1 }),
-        deck: deck([CLOZE_CARDS[0]], [{ ...CLOZE_CARDS[1], deletedAt: CREATED, cloze: null }]),
+        deck: deck([CLOZE_CARDS[0]], [{ ...CLOZE_CARDS[1], deletedAt: CREATED, cloze: null, occlusion: null }]),
       }),
     });
     const user = userEvent.setup();
@@ -193,8 +193,9 @@ describe("cloze cards in the deck's lists", () => {
             ...CLOZE_CARDS[1],
             deletedAt: CREATED,
             cloze: { number: 2, blocked: "numberGone" },
+            occlusion: null,
           },
-          { ...BASIC, deletedAt: CREATED, cloze: null },
+          { ...BASIC, deletedAt: CREATED, cloze: null, occlusion: null },
           { id: 11, front: "B", back: "b", deletedAt: CREATED },
         ],
       ),

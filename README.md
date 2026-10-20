@@ -49,11 +49,19 @@ migrations, validation, scheduling, and every business rule; React only calls ty
   prefer; it's stored and edited as plain text either way.
 - **Cards from a spreadsheet** — add front/back cards to a deck from a CSV or TSV file, after
   checking every row, and save a deck's cards as a CSV file.
-- **Decks from Anki** — add the front/back and cloze notes of an Anki package (`.apkg` or `.colpkg`) as new
-  decks of new cards, after a preview of what comes across and what's left out.
+- **Picture cards (image occlusion)** — draw boxes over a picture (a diagram, a map, a labelled
+  figure); each box is a card that asks what's under it.
+- **Decks from Anki** — add the front/back, cloze and image occlusion notes of an Anki package
+  (`.apkg` or `.colpkg`) as new decks of new cards, after a preview of what comes across and what's
+  left out.
 - **Import files as notes** — make a note from the text of a PDF, text (`.txt`), Markdown (`.md`),
-  Word (`.docx`), or PowerPoint (`.pptx`) file. You check and edit the text before it's saved; the
-  file itself isn't kept.
+  Word (`.docx`), or PowerPoint (`.pptx`) file. You check and edit the text before it's saved, and
+  the original is kept under *Sources*.
+- **Sources** — the documents you imported, kept as they were: read them page by page, open or save
+  the original, and see the notes written from each. Suggested cards and quiz questions from such a
+  note say which page they came from, and open it with the quote marked.
+- **Pictures in notes and on cards** — up to 20 pictures under a note, and up to 4 on each side of a
+  card, shown in review with the question or the answer.
 - **Cards from notes** — with a note on screen, write a card yourself and add it to one of your
   decks. The card is an ordinary card; it isn't linked to the note.
 - **Suggested cards (optional)** — have a model in Ollama, on your own computer, suggest up to ten
@@ -144,6 +152,18 @@ as a draft: if you discard, what you typed is gone.
 optional) → *Open deck* → *Add card* → fill in front and back. Names must be unique ignoring case;
 line breaks inside a card are kept as you typed them.
 
+**Pictures in notes and on cards.** A note can show up to 20 pictures under its text, and each side
+of a front/back card up to 4 under that side's text. In the note or card form, *Add picture* opens
+the system's file window (PNG, JPEG, GIF or WebP, up to 20 MB); a picture pasted while writing is
+added too, where the system lets the app read it (see *Current limitations*). Each picture has
+*Move earlier* and *Remove*, and the list is saved with the text, in that order, when you save;
+changing the pictures counts as an unsaved change. A note shows its pictures under the text; the
+deck's card list shows small ones under each side; in review the front's pictures come with the
+question and the back's with the answer. A picture is always shown from Synapse's own copy, never
+from a path or address in the text (Markdown's `![…](…)` is still only described). Removing a
+picture from a note or card doesn't delete the file Synapse keeps, so a deleted note or card, or a
+restored backup, still has its pictures. Cloze cards don't take pictures.
+
 **Cloze cards.** In *Add card*, choose *Cloze* and write a text with the parts to hide marked as
 `{{c1::answer}}`, or `{{c1::answer::hint}}` to show the hint in its place. Each distinct number is
 its own card with its own schedule and review history; the same number used twice hides both parts
@@ -173,6 +193,27 @@ them, the others wait until the next day (local midnight), so the same text does
 in a row. The card you rated still comes back the same day if it falls due again. Their schedules
 aren't changed, and the due counts on the Study Desk and the deck screen leave them out, so they
 match what a review will show; if nothing else is due, the review ends.
+
+**Picture cards (image occlusion).** *Add card* → *Picture* → *Choose a picture* (PNG, JPEG, GIF
+or WebP, up to 20 MB), or paste one into the form. Drag over the picture to draw a box, drag a box
+to move it, or its corner to resize it; with a box focused, the arrow keys move it, Shift with the
+arrow keys resizes it, and Delete removes it. Each box is its own card with its own schedule; set
+two boxes to the same card (*Card 1*, *Card 2*, … beside each box) to hide them together. A box
+can have a label, what's under it, shown as the answer. An optional header is shown above the
+picture on every card. *Hide all* covers every box on the question and marks the one asked about;
+*Hide one* covers only that one. The picture is kept by Synapse (see *Files Synapse keeps*) and
+travels in backups. In the deck's lists a picture card shows its header and label and is tagged
+*Picture, box 1*, ….
+
+In review the picture is shown with the card's box covered by a `?`; revealing uncovers it, with
+its label. *Edit card* on any picture card opens the picture with all its boxes, and saving follows
+the cloze rules above: a card whose boxes are all still there keeps its schedule, a card whose
+boxes were all removed is deleted (history kept), and a new card is due straight away unless that
+card had been deleted in this deck, which comes back instead. The picture itself can't be changed;
+add a new picture card instead. Restoring, *Restore all*, moving together and keeping siblings
+apart for the day work as for cloze cards. Help with a card isn't offered for picture cards (a
+local model can't see the picture), and *Export CSV* leaves them out (a spreadsheet can't carry
+the picture).
 
 **Study.** Press *Start review* on any deck with cards due. Reveal the answer, then rate it. The
 session ends when nothing in that deck is due. Closing the app or leaving through the sidebar
@@ -222,8 +263,11 @@ already had, no review session starts, and cards you deleted before archiving co
 deleted — you can restore them from the deck once it's back.
 
 **Export your data.** *Backup & restore* → *Export data*. Pick where to save the `.zip`.
-It contains exactly two files: `manifest.json` (format, format version, schema version, app version,
-and export time) and `db/synapse.sqlite`, a complete snapshot of your database.
+It contains `manifest.json` (format, format version, schema version, app version, and export time),
+`db/synapse.sqlite`, a complete snapshot of your database, and `assets/`, one entry for each file
+Synapse keeps (see *Files Synapse keeps* below), named by its SHA-256. Every kept file is checked
+against its hash as it's packed; a file that's missing or changed stops the export, with nothing
+saved. This is backup format 2; backups made by v0.7.3 and older (format 1) have no `assets/`.
 
 **Restore a backup.** *Backup & restore* → *Import data* → pick a `.zip` made by *Export data*. Synapse
 checks the whole file first — only its own export format is accepted, and anything else is refused
@@ -232,9 +276,37 @@ your current decks, cards, reviews, sessions, and notes with the backup's. *Keep
 changes nothing (export first if you want a copy). *Replace my data* swaps the database in one step,
 keeping a rollback copy until the restored database has opened and passed its checks; the Study
 Desk then reloads from the backup. A backup from an older version of Synapse is upgraded as it's
-restored; one from a newer version is refused. While a backup is being checked, waits for your
+restored; one from a newer version is refused. A backup's kept files are checked too: each must be
+listed in its database with the same size, hash, and kind of file, and every listed file must be
+there. They join Synapse's own files before the database is swapped, and a restore that fails takes
+back the ones it added. A v0.7.3 backup (format 1) still restores; v0.7.3 and older refuse a
+format 2 backup as too new. While a backup is being checked, waits for your
 answer, or is being restored — and while an export is being saved — the sidebar can't be used, so
 nothing else can start in the meantime.
+
+**Files Synapse keeps.** From migration 0016 Synapse can keep files, not just text: an imported
+document kept as a *source* (its original file and the text of each page or slide), and pictures.
+They live in an `assets` folder beside the database (with `SYNAPSE_DB_DIR`, inside that folder),
+each named by the SHA-256 of its bytes, so a file is stored once however often it's used. Every file
+is checked against its bytes, not its name: a picture must really be a PNG, JPEG, GIF or WebP (SVG
+is refused), a PDF must start as one, Word and PowerPoint files must be zip packages, and text must
+be none of those. A file is written before the database lists it and never changes afterwards; the
+app shows pictures and PDFs only through its own `synapse:` address, by hash. Pictures in notes
+and on cards (migration 0017) and picture cards (image occlusion, migration 0018) keep their
+pictures here, and the Sources screen keeps imported documents.
+
+**Sources.** *Sources* in the sidebar lists the documents Synapse keeps (kind, pages or slides,
+size, and date), newest first, with deleted ones underneath and *Restore*. *Add source* keeps a file
+without writing a note. Opening one shows its text a page (or slide) at a time, with previous, next
+and a page to jump to, and the notes written from it. *Make a note* starts a note from its text;
+*Open original* opens a copy in your computer's own program for that kind of file (the kept file is
+never handed out, only a copy in a temporary folder); *Save a copy* saves it where you choose;
+*Rename* changes its title; *Delete* asks first, keeps the file and pages, and can be undone with
+*Restore*. A note written from a source says so under its title and links back to it, or says the
+source was deleted. Suggested cards and quiz questions from such a note show "From page 7 of …"
+(or the slide) under their quote: it opens that page over the screen with the quote marked, and
+you can move to the pages around it. Cards still don't remember where they came from once saved:
+the page link is there while you check the drafts or take the quiz.
 
 **Import cards from a spreadsheet.** *Backup & restore* → *Cards in a spreadsheet* → choose a deck
 → *Choose a CSV file*. The front goes in the first column and the back in the second; other columns
@@ -267,8 +339,12 @@ your own types built the same way. A note becomes one card; tick the box to also
 card for notes that have one in Anki. Cloze notes (Anki's *Cloze*, or your own cloze types that ask
 with one cloze field) become cloze texts, one card per deletion number, checked as a typed cloze
 text is; their *Back Extra* (or any other field on the answer) is left out, and the preview says
-how many had one. Formatting becomes plain text with its line breaks. Left out: image-occlusion
-notes, cloze notes Synapse can't read (nested deletions, an empty answer, a number over 999), other
+how many had one. Image occlusion notes (Anki's *Image Occlusion*) become picture cards, one card
+per box number, with their picture kept by Synapse, when the package was exported with media
+included; rectangles come across as drawn, ellipses and polygons as the box around them, rotated
+shapes unrotated, and text shapes not at all (the preview counts notes with any of these).
+Formatting becomes plain text with its line breaks. Left out: image occlusion notes whose picture
+isn't in the file or whose shapes can't be read, cloze notes Synapse can't read (nested deletions, an empty answer, a number over 999), other
 note types, notes with an empty side or text, and sides or texts over 2,000 characters. *Add* creates every deck and card together, or nothing. Up to 50,000 cards and 1,000
 decks at a time.
 
@@ -291,9 +367,10 @@ in it is shown as plain text, with no choice to make.
 **Import a file as a note.** *Notes* → *Import file* → pick a PDF, text (`.txt`), Markdown (`.md`),
 Word (`.docx`), or PowerPoint (`.pptx`) file. Synapse reads its text and opens it in the new-note form,
 titled after the document (its own title if it has one, else the file name), with a line saying
-what was read. Check the text, edit it as you like, and *Save note*; nothing is saved before that,
-and leaving or closing first asks whether to discard it. The note is an ordinary note: Synapse
-doesn't keep the file, link to it, or remember where it was.
+what was read. Check the text, edit it as you like, and *Save note*; leaving or closing first asks
+whether to discard it. Choosing the file keeps it as a *source* (see *Sources* below), whether or
+not you save the note; saving the note records, with it, that it was written from that source. The
+note itself is still an ordinary note you can change freely; the source keeps what the file said.
 
 What's taken from each kind of file:
 
@@ -408,6 +485,15 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   (the process killed mid-swap) can leave a rollback copy in Synapse's data folder
   (`import-workspace/rollback.sqlite`, later renamed `rollback-kept-<time>.sqlite`); these are never
   deleted automatically.
+- **Kept files only grow.** Files are never removed, even when what used them is deleted, and a
+  restore leaves files only the replaced data used in the `assets` folder, unused (they take space,
+  nothing else). Kept files are limited to 64 MiB each (20 MiB for a picture) and 2 GiB and 60,000
+  files in all, so a backup stays a plain zip.
+- **Pictures can't be dropped in, and pasting one depends on the system.** Tauri's window takes
+  dropped files itself, so the forms offer *Add picture* and pasting only. Pasting a picture was
+  tried only on Linux (WebKitGTK), where the page is handed no picture at all, so there only *Add
+  picture* works; on Windows (WebView2) it is expected to work but hasn't been tried. Pictures
+  aren't exported to CSV or brought in from Anki.
 - **Restoring is per deck.** *Deleted cards* restores one card, or with *Restore all* every deleted
   card of that deck at once; there's no choosing several, no undo of a restore beyond deleting the
   cards again, and no way to move a card to a different deck on the way back.
@@ -416,8 +502,8 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   links can't be opened from a note. No attachments, audio, web clips, tags, or folders. Search
   is exact text only (no fuzzy matching, no search inside deleted notes) and has no index, so each
   search reads every note.
-  Importing a file takes only its text: the file isn't kept, layout and images are lost, and there's
-  no OCR for scanned pages. A card doesn't remember the note it was written or suggested from — so
+  Importing a file makes a note from its text only: layout and images are left out of the note (the
+  original is kept under *Sources*), and there's no OCR for scanned pages. A card doesn't remember the note it was written or suggested from — so
   deleting a note leaves its cards exactly where they are. A deleted note is listed by title and
   dates only; there's no way to read its text again without restoring it.
 - **No sync, accounts, cloud, or collaboration.** By design.
@@ -430,8 +516,10 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   use and how often you choose each rating (FSRS's averages until there are 50 of each kind),
   assuming you review everything due and add no new cards; same-day repeats after *Again* aren't
   counted. The sample deck and archived decks always follow the value for all decks.
-- **Two card types, both text.** Basic front/back and cloze: no images, audio, or tags, and a
-  card can't change type. Anki's cloze notes are imported without their *Back Extra*.
+- **Three card types.** Basic front/back, cloze, and picture cards (image occlusion, boxes only:
+  no freehand or polygon shapes). Front/back and cloze cards are text only: no images, audio, or
+  tags. A card can't change type, and a picture card's picture can't be swapped. Anki's cloze and
+  image occlusion notes are imported without their *Back Extra*.
 - **Search matches words, not meanings.** *Search* finds words by their start (no fuzzy matching,
   no matching inside a word, no synonyms), never searches deleted cards or notes, and shows at most
   50 results. Words are split on anything that isn't a letter or digit, so text in scripts written
@@ -453,8 +541,8 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   own exports need.
 - **Anki imports bring text, not history.** Every imported card starts as new: Anki's schedule,
   review history, tags, flags, suspended state and note links aren't imported, and neither are
-  pictures, sounds, LaTeX images or styling (text beside them is kept). Cloze and image-occlusion
-  notes, and note types with more than one field on either side, are left out and counted.
+  pictures, sounds, LaTeX images or styling (text beside them is kept), except the picture of an
+  image occlusion note. Note types with more than one field on either side, are left out and counted.
   Subdecks become separate decks named like `Parent::Child`. Importing the same file twice makes
   a second set of decks; nothing is merged or deduplicated.
 - **Suggestions are a first step.** They come only from Ollama on this computer, from one note
@@ -483,11 +571,15 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
 - **`src/`** — the React UI. `api.ts` is the only file that calls Rust, through typed Tauri
   commands (and the window, to hold it open while something is unsaved). `Shell.tsx` is the
   sidebar and the bar above each screen. The screens are `Dashboard.tsx` (the Study Desk),
-  `DeckDetail.tsx`, `ReviewSession.tsx`, `Notes.tsx`, `Search.tsx`, `Statistics.tsx`, `ArchivedDecks.tsx`,
-  `Backup.tsx`, and `Settings.tsx`;
+  `DeckDetail.tsx`, `ReviewSession.tsx`, `Notes.tsx`, `Sources.tsx`, `Search.tsx`, `Statistics.tsx`,
+  `ArchivedDecks.tsx`, `Backup.tsx`, and `Settings.tsx`;
+  `SourcePages.tsx` shows a source's page with a quote marked, and the "From page 7 of …" links;
+  `Occlusion.tsx` draws a picture card's boxes, for the deck screen's form and for review;
   `CardHelp.tsx` is the review screen's *Get help with this card*,
   `SuggestCards.tsx` is the note screen's *Suggest cards*, `Quiz.tsx` its *Quiz me*, and
   `noteParts.ts` splits a note too long to suggest from whole into parts.
+  `pictures.tsx` shows kept pictures and is the forms' picture field (`KeptPicture`,
+  `PictureGallery`, `PictureField`, `usePictureAdder`).
   `CardsCsv.tsx` and `AnkiImport.tsx` are *Backup & restore*'s *Cards in a spreadsheet* and
   *Decks from Anki*.
   `unsaved.tsx` tracks which form holds unsaved text and asks before it's discarded. Tests sit
@@ -511,6 +603,8 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
     deleting, and restoring cards.
   - `cloze.rs` — cloze cards: reading a cloze text, writing its cards' fronts and backs, and the
     rules for adding, editing, and restoring them.
+  - `occlusion.rs` — picture cards (image occlusion): checking boxes, writing each card's front
+    and back, and the same add/edit/restore rules as cloze cards, by box number.
   - `notes.rs` — typed notes: writing, editing, searching, soft-deleting, and restoring them.
   - `suggest.rs` — asking Ollama, on this computer, to suggest cards from a note, and checking
     its answer. It writes nothing; suggested cards are saved through `authoring.rs`.
@@ -524,8 +618,18 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
     the helper.
   - `cards_csv.rs` — reading CSV/TSV files of cards and writing a deck's cards as CSV.
   - `anki.rs` — reading an Anki package's collection (copied out to a temporary folder and opened
-    read-only, never attached to Synapse's database) and adding its front/back notes as new decks.
+    read-only, never attached to Synapse's database) and adding its front/back, cloze and image
+    occlusion notes (with their pictures) as new decks.
     `testdata/anki/` holds packages exported by Anki itself, and the script that made them.
-  - `export.rs` / `import.rs` — writing a `.zip` backup, and checking and restoring one.
-- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0015`), embedded in the
+  - `assets.rs` — the files Synapse keeps, named by hash in `assets/` beside the database: telling
+    what a file is from its bytes, adding one, and serving pictures and PDFs on the `synapse:`
+    scheme.
+  - `pictures.rs` — the pictures a note, or a side of a card, shows: checking a list of them and
+    saving it with the note or card (`note_pictures`, `card_pictures`).
+  - `sources.rs` — imported documents kept as sources, with the text of each page; the notes
+    written from each (saved with their link in one transaction); finding a quote on its pages;
+    and copies of the original to open or save.
+  - `export.rs` / `import.rs` — writing a `.zip` backup with every kept file, and checking and
+    restoring one (kept files included).
+- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0018`), embedded in the
   binary at compile time.

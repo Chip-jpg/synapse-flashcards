@@ -1,6 +1,6 @@
 [package]
 name = "synapse-scaffold"
-version = "0.7.3"
+version = "0.8.0"
 description = "Local-first desktop flashcard app with FSRS spaced repetition."
 authors = ["you"]
 edition = "2021"
@@ -51,6 +51,10 @@ quick-xml = "0.42"
 # Reading Anki packages: newer Anki compresses the collection inside an
 # `.apkg`/`.colpkg` with zstd. A pure-Rust decoder, so no C library is built.
 ruzstd = "0.9"
+# Naming each file Synapse keeps by the SHA-256 of its bytes (`assets.rs`),
+# and checking a restored backup's files against those names. Already in the
+# tree through Tauri, so it adds nothing to the build.
+sha2 = "0.10"
 
 
 [dev-dependencies]

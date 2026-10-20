@@ -3,12 +3,16 @@ import {
   getSessionCard,
   reviewCard,
   toCommandError,
+  type CardPictures,
   type ClozePart,
   type Flashcard,
   type Rating,
+  type SessionOcclusion,
   type SessionProgress,
 } from "./api";
 import { CardHelp } from "./CardHelp";
+import { PictureGallery } from "./pictures";
+import { OcclusionPicture } from "./Occlusion";
 import { Message, useFocusOnMount } from "./ui";
 
 type SessionState =
@@ -21,6 +25,8 @@ type SessionState =
       againStreak: number;
       offerHelp: boolean;
       cloze?: ClozePart[] | null;
+      pictures?: CardPictures;
+      occlusion?: SessionOcclusion | null;
     }
   | { status: "completed"; cardsReviewed: number };
 
@@ -124,6 +130,8 @@ export function ReviewSession({
             againStreak={state.againStreak ?? 0}
             offerHelp={state.offerHelp === true}
             cloze={state.cloze ?? null}
+            pictures={state.pictures}
+            occlusion={state.occlusion ?? null}
             onReviewed={reload}
           />
         </>
@@ -185,6 +193,8 @@ function Card({
   againStreak,
   offerHelp,
   cloze,
+  pictures,
+  occlusion,
   onReviewed,
 }: {
   sessionId: number;
@@ -193,6 +203,10 @@ function Card({
   offerHelp: boolean;
   /** A cloze card as pieces of its text, or null for a front/back card. */
   cloze: ClozePart[] | null;
+  /** The pictures on each side of a front/back card. */
+  pictures: CardPictures | undefined;
+  /** A picture card's picture and boxes, or null for any other card. */
+  occlusion: SessionOcclusion | null;
   onReviewed: () => void;
 }) {
   const [revealed, setRevealed] = useState(false);
@@ -288,9 +302,20 @@ function Card({
           <h3 id="card-front-label" className="side-label">
             Question
           </h3>
-          <p className="card-text">
-            {cloze ? <ClozeText parts={cloze} revealed={false} /> : card.front}
-          </p>
+          {occlusion ? (
+            <OcclusionSide occlusion={occlusion} revealed={false} />
+          ) : (
+            <>
+              <p className="card-text">
+                {cloze ? <ClozeText parts={cloze} revealed={false} /> : card.front}
+              </p>
+              <PictureGallery
+                pictures={pictures?.front}
+                label="Picture with the question"
+                listLabel="Pictures with the question"
+              />
+            </>
+          )}
         </section>
 
         {revealed && (
@@ -303,9 +328,20 @@ function Card({
             <h3 id="card-back-label" className="side-label">
               Answer
             </h3>
-            <p className="card-text">
-              {cloze ? <ClozeText parts={cloze} revealed /> : card.back}
-            </p>
+            {occlusion ? (
+              <OcclusionSide occlusion={occlusion} revealed />
+            ) : (
+              <>
+                <p className="card-text">
+                  {cloze ? <ClozeText parts={cloze} revealed /> : card.back}
+                </p>
+                <PictureGallery
+                  pictures={pictures?.back}
+                  label="Picture with the answer"
+                  listLabel="Pictures with the answer"
+                />
+              </>
+            )}
           </section>
         )}
       </div>
@@ -367,8 +403,12 @@ function Card({
         </div>
       )}
 
-      {/* After the answer, since the help repeats it. Rating never waits on it. */}
-      {revealed && <CardHelp card={card} offered={offerHelp} againStreak={againStreak} />}
+      {/* After the answer, since the help repeats it. Rating never waits on it.
+          Help is written from a card's text, and a picture card's answer is in
+          its picture, so it has none. */}
+      {revealed && !occlusion && (
+        <CardHelp card={card} offered={offerHelp} againStreak={againStreak} />
+      )}
     </article>
   );
 }
@@ -390,6 +430,43 @@ function ClozeText({ parts, revealed }: { parts: ClozePart[]; revealed: boolean 
         ) : (
           <span key={index} className="cloze-gap">{`[${part.hint ?? "..."}]`}</span>
         ),
+      )}
+    </>
+  );
+}
+
+/**
+ * A picture card's side: its header, then the picture with the card's boxes
+ * covered (question) or uncovered (answer), and on the answer their labels.
+ */
+function OcclusionSide({
+  occlusion,
+  revealed,
+}: {
+  occlusion: SessionOcclusion;
+  revealed: boolean;
+}) {
+  const labels = [
+    ...new Set(
+      occlusion.boxes
+        .filter((shape) => shape.number === occlusion.number && shape.label !== "")
+        .map((shape) => shape.label),
+    ),
+  ];
+  return (
+    <>
+      {occlusion.header !== "" && <p className="card-text">{occlusion.header}</p>}
+      <OcclusionPicture
+        picture={occlusion.picture}
+        boxes={occlusion.boxes}
+        asked={occlusion.number}
+        mode={occlusion.mode}
+        revealed={revealed}
+      />
+      {revealed && labels.length > 0 && (
+        <p className="card-text">
+          <mark className="cloze-answer">{labels.join("; ")}</mark>
+        </p>
       )}
     </>
   );

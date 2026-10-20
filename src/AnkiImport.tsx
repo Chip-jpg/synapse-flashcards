@@ -29,7 +29,8 @@ function cardTotal(file: ReadAnkiFile, bothDirections: boolean): number {
 /** Why notes were left out, as one sentence, or null when none were. */
 function leftOut(skipped: AnkiSkipped): string | null {
   const reasons = [
-    skipped.imageOcclusion > 0 && `${notes(skipped.imageOcclusion)} of image occlusion`,
+    skipped.imageOcclusion > 0 &&
+      `${notes(skipped.imageOcclusion)} of image occlusion whose picture isn't in the file (export with media included) or whose boxes can't be read`,
     skipped.badCloze > 0 &&
       `${notes(skipped.badCloze)} with cloze deletions Synapse can't read (nested, or with an empty answer)`,
     skipped.otherNoteType > 0 &&
@@ -48,8 +49,9 @@ type ImportState =
   | { kind: "preview"; file: ReadAnkiFile; bothDirections: boolean; saving: boolean };
 
 /**
- * Decks from Anki, on the Backup & restore screen: adding the front/back and
- * cloze notes of an Anki package as new decks of new cards. Rust opens the file
+ * Decks from Anki, on the Backup & restore screen: adding the front/back,
+ * cloze and image occlusion notes of an Anki package as new decks of new
+ * cards. Rust opens the file
  * window, reads the package and holds it; this shows what it found and asks
  * before anything is added. A preview on screen counts as unsaved changes.
  */
@@ -167,8 +169,9 @@ export function AnkiImport({
       </div>
       <p className="field-hint">
         Add the cards of an Anki package (.apkg or .colpkg) as new decks. Notes with one front
-        and one back, and cloze notes, come across as text. Anki's schedule, review history,
-        pictures and sounds aren't imported, so every card starts as new.
+        and one back, and cloze notes, come across as text; image occlusion notes come with their
+        picture when the package includes media. Anki's schedule, review history, other pictures
+        and sounds aren't imported, so every card starts as new.
       </p>
 
       {state.kind === "preview" ? (
@@ -258,7 +261,14 @@ function AnkiPreview({
       )}
       {file.extraRemoved > 0 && (
         <p className="field-hint">
-          {`${count(file.extraRemoved, "cloze note has", "cloze notes have")} text in another field, such as Back Extra, which is left out.`}
+          {`${count(file.extraRemoved, "cloze or image occlusion note has", "cloze or image occlusion notes have")} text in another field, such as Back Extra, which is left out.`}
+        </p>
+      )}
+      {(file.occlusions ?? 0) > 0 && (
+        <p className="field-hint">
+          {`${count(file.occlusions, "image occlusion note comes", "image occlusion notes come")} with its picture, as picture cards with one card for each box.`}
+          {(file.occlusionApproximated ?? 0) > 0 &&
+            ` In ${count(file.occlusionApproximated, "of them", "of them")}, round or many-sided shapes become rectangles around them, and text written on the picture is left out.`}
         </p>
       )}
       {file.reviewed > 0 && (

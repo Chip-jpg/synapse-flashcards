@@ -2,20 +2,24 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createFlashcard,
   createNote,
+  createNoteFromSource,
   deleteNote,
   getDeletedNotes,
   getNote,
+  getNoteSource,
   getNotes,
-  importFile,
+  getSource,
+  importSource,
   restoreNote,
   searchNotes,
   toCommandError,
   updateNote,
+  NOTE_PICTURES_MAX,
   type CommandError,
   type Deck,
   type DeckDetail,
   type DeletedNote,
-  type ImportedFile,
+  type Asset,
   type Note,
   type NoteSummary,
 } from "./api";
@@ -37,8 +41,10 @@ import {
 import { Quiz } from "./Quiz";
 import { SuggestCards } from "./SuggestCards";
 import { SUGGESTION_NOTE_MAX_CHARS } from "./noteParts";
+import { draftFromImport, type SourceNoteDraft } from "./Sources";
 import { formatDateTime, Message, useFocusOnMount } from "./ui";
 import { useUnsavedChanges } from "./unsaved";
+import { PictureField, PictureGallery, samePictures, usePictureAdder } from "./pictures";
 
 /** What takes focus when the library appears. */
 type LibraryFocus =
@@ -51,7 +57,7 @@ type LibraryFocus =
 /** Where in the notes area the user is. */
 type Place =
   | { screen: "library"; focus: LibraryFocus; notice: string | null }
-  | { screen: "new"; imported?: ImportedFile }
+  | { screen: "new"; imported?: SourceNoteDraft }
   | { screen: "note"; noteId: number; justCreated: boolean };
 
 /**
@@ -63,21 +69,32 @@ type Place =
 export function NotesArea({
   onBack,
   onOpenDeck,
+  onOpenSource,
   openNote,
+  newFromSource,
 }: {
   onBack: () => void;
   /** Leaves notes for the deck screen, e.g. to see a card just written. */
   onOpenDeck: (deckId: number) => void;
+  /** Leaves notes for the source a note was written from. */
+  onOpenSource: (sourceId: number) => void;
   /**
    * Opens straight at one note, e.g. from a search, and goes back there
    * instead of to the library.
    */
   openNote?: { noteId: number; backLabel: string; onBack: () => void };
+  /**
+   * Opens straight at a new note written from a source, and goes back there
+   * if it's cancelled.
+   */
+  newFromSource?: { draft: SourceNoteDraft; onCancel: () => void };
 }) {
   const [place, setPlace] = useState<Place>(
-    openNote
-      ? { screen: "note", noteId: openNote.noteId, justCreated: false }
-      : { screen: "library", focus: { to: "screen" }, notice: null },
+    newFromSource
+      ? { screen: "new", imported: newFromSource.draft }
+      : openNote
+        ? { screen: "note", noteId: openNote.noteId, justCreated: false }
+        : { screen: "library", focus: { to: "screen" }, notice: null },
   );
 
   if (place.screen === "new") {
@@ -86,11 +103,13 @@ export function NotesArea({
       <NoteForm
         imported={imported}
         onCancel={() =>
-          setPlace({
-            screen: "library",
-            focus: { to: imported ? "import" : "new" },
-            notice: null,
-          })
+          newFromSource && imported === newFromSource.draft
+            ? newFromSource.onCancel()
+            : setPlace({
+                screen: "library",
+                focus: { to: imported ? "import" : "new" },
+                notice: null,
+              })
         }
         onSaved={(note) => setPlace({ screen: "note", noteId: note.id, justCreated: true })}
       />
@@ -120,6 +139,7 @@ export function NotesArea({
           })
         }
         onOpenDeck={onOpenDeck}
+        onOpenSource={onOpenSource}
       />
     );
   }
@@ -169,8 +189,8 @@ function NoteLibrary({
   /** A confirmation to announce when the library appears (e.g. after deleting). */
   notice: string | null;
   onNew: () => void;
-  /** A file's text was read, to become a new note. */
-  onImported: (imported: ImportedFile) => void;
+  /** A file was kept as a source and its text read, to become a new note. */
+  onImported: (imported: SourceNoteDraft) => void;
   onOpen: (noteId: number) => void;
   onBack: () => void;
 }) {
@@ -266,7 +286,7 @@ function NoteList({
   notice: string | null;
   focus: LibraryFocus;
   onNew: () => void;
-  onImported: (imported: ImportedFile) => void;
+  onImported: (imported: SourceNoteDraft) => void;
   onOpen: (noteId: number) => void;
   onBack: () => void;
   onRestored: (title: string) => void;
@@ -295,7 +315,10 @@ function NoteList({
   // doesn't flash empty between keystrokes.
   const shown = searching ? (search.found?.notes ?? notes) : notes;
 
-  /** Chooses a file and reads it; its text opens as a new note to check. */
+  /**
+   * Chooses a file, keeps it as a source and reads it; its text opens as a
+   * new note to check.
+   */
   async function chooseFile() {
     if (importingRef.current) return;
     importingRef.current = true;
@@ -303,9 +326,9 @@ function NoteList({
     setImportError(null);
 
     try {
-      const result = await importFile();
-      if (result.status === "read") {
-        onImported(result);
+      const result = await importSource();
+      if (result.status === "imported") {
+        onImported(draftFromImport(result));
         return; // This screen is replaced.
       }
     } catch (err) {
@@ -353,7 +376,8 @@ function NoteList({
       </div>
       <p id="import-hint" className="field-hint">
         Import a PDF, text, Markdown, Word, or PowerPoint file to make a note from its text. You
-        check the text before it's saved, and the file itself isn't kept.
+        check the text before it's saved. The file itself is kept under Sources, so cards and
+        quizzes from the note can show the page they came from.
       </p>
       <p className="form-status" role="status">
         {importing ? "Choose a file. Synapse then reads its text…" : ""}
@@ -723,6 +747,7 @@ function NoteScreen({
   onBack,
   onDeleted,
   onOpenDeck,
+  onOpenSource,
 }: {
   noteId: number;
   justCreated: boolean;
@@ -731,6 +756,7 @@ function NoteScreen({
   /** The note was deleted, so this screen can't show it any more. */
   onDeleted: () => void;
   onOpenDeck: (deckId: number) => void;
+  onOpenSource: (sourceId: number) => void;
 }) {
   const [state, setState] = useState<NoteState>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
@@ -870,6 +896,7 @@ function NoteScreen({
       onQuiz={() => setMode("quiz")}
       onDeleted={onDeleted}
       onOpenDeck={onOpenDeck}
+      onOpenSource={onOpenSource}
       backLabel={backLabel}
       onBack={onBack}
     />
@@ -887,6 +914,7 @@ function NoteView({
   onQuiz,
   onDeleted,
   onOpenDeck,
+  onOpenSource,
   backLabel,
   onBack,
 }: {
@@ -900,6 +928,7 @@ function NoteView({
   onQuiz: () => void;
   onDeleted: () => void;
   onOpenDeck: (deckId: number) => void;
+  onOpenSource: (sourceId: number) => void;
   backLabel: string;
   onBack: () => void;
 }) {
@@ -977,6 +1006,7 @@ function NoteView({
             {`Created ${formatDateTime(note.createdAt)}`}
             {edited && ` · Edited ${formatDateTime(note.updatedAt)}`}
           </p>
+          <NoteSourceLine noteId={note.id} onOpenSource={onOpenSource} />
         </div>
 
         {notice && (
@@ -1094,8 +1124,73 @@ function NoteView({
         )}
 
         <NoteReading body={note.body} />
+        <PictureGallery
+          pictures={note.pictures}
+          label="Picture in the note"
+          listLabel="Pictures in the note"
+        />
       </article>
     </section>
+  );
+}
+
+/**
+ * Which source a note was written from, with the way to it: nothing for a
+ * typed note, or while Rust looks, and a word about a source since deleted.
+ */
+function NoteSourceLine({
+  noteId,
+  onOpenSource,
+}: {
+  noteId: number;
+  onOpenSource: (sourceId: number) => void;
+}) {
+  const [found, setFound] = useState<
+    { status: "active"; sourceId: number; title: string } | { status: "deleted" } | null
+  >(null);
+
+  useEffect(() => {
+    let current = true;
+    (async () => {
+      const sourceId = await getNoteSource(noteId);
+      if (sourceId === null) return null;
+      try {
+        const source = await getSource(sourceId);
+        return { status: "active" as const, sourceId, title: source.title };
+      } catch (err) {
+        if (toCommandError(err).kind === "stale") return { status: "deleted" as const };
+        throw err;
+      }
+    })().then(
+      (next) => {
+        if (current) setFound(next);
+      },
+      () => {}
+    );
+    return () => {
+      current = false;
+    };
+  }, [noteId]);
+
+  if (found === null) return null;
+  if (found.status === "deleted") {
+    return (
+      <p className="item-meta note-source">
+        Written from a source that's been deleted. Restore it under Sources to see its pages again.
+      </p>
+    );
+  }
+  return (
+    <p className="item-meta note-source">
+      {`Written from ${found.title}. `}
+      <button
+        type="button"
+        className="button-link"
+        onClick={() => onOpenSource(found.sourceId)}
+      >
+        Open source
+      </button>
+    </p>
   );
 }
 
@@ -1181,23 +1276,51 @@ function NoteForm({
   onSaved,
 }: {
   note?: Note;
-  imported?: ImportedFile;
+  imported?: SourceNoteDraft;
   onCancel: () => void;
   onSaved: (note: Note) => void;
 }) {
   const [title, setTitle] = useState(imported?.title ?? note?.title ?? "");
   const [body, setBody] = useState(imported?.body ?? note?.body ?? "");
+  const savedPictures = note?.pictures ?? [];
+  const [pictures, setPictures] = useState<Asset[]>(savedPictures);
   // Compared with what's saved: imported text isn't saved anywhere yet, so it
   // counts as unsaved from the start.
-  useUnsavedChanges(title !== (note?.title ?? "") || body !== (note?.body ?? ""));
-  const { saving, submit, fieldError, formError, edited } = useFormSave(
-    () => (note ? updateNote(note.id, title, body) : createNote(title, body)),
-    onSaved,
-    { title: "note-title", body: "note-body" }
+  useUnsavedChanges(
+    title !== (note?.title ?? "") ||
+      body !== (note?.body ?? "") ||
+      !samePictures(pictures, savedPictures)
   );
+  const { saving, submit, fieldError, formError, edited } = useFormSave(
+    () => {
+      const ids = pictures.map((picture) => picture.id);
+      return note
+        ? updateNote(note.id, title, body, ids)
+        : imported
+          ? createNoteFromSource(imported.sourceId, title, body, ids)
+          : createNote(title, body, ids);
+    },
+    onSaved,
+    { title: "note-title", body: "note-body", pictures: "note-pictures" }
+  );
+  const changePictures = (next: Asset[]) => {
+    setPictures(next);
+    edited("pictures");
+  };
+  const adder = usePictureAdder({
+    pictures,
+    onChange: changePictures,
+    max: NOTE_PICTURES_MAX,
+  });
 
   return (
-    <form className="card" aria-labelledby="note-form-heading" noValidate onSubmit={submit}>
+    <form
+      className="card"
+      aria-labelledby="note-form-heading"
+      noValidate
+      onSubmit={submit}
+      onPaste={adder.onPaste}
+    >
       <h2 id="note-form-heading" className="form-title">
         {note ? "Edit note" : imported ? `New note from ${imported.fileName}` : "New note"}
       </h2>
@@ -1230,6 +1353,16 @@ function NoteForm({
           edited("body");
         }}
       />
+      <PictureField
+        id="note-pictures"
+        label="Pictures"
+        hint="Optional. Up to 20 PNG, JPEG, GIF or WebP pictures of up to 20 MB each, shown under the note in this order."
+        pictures={pictures}
+        onChange={changePictures}
+        adder={adder}
+        error={fieldError("pictures")}
+        disabled={saving}
+      />
 
       <FormActions
         saveLabel={note ? "Save changes" : "Save note"}
@@ -1261,7 +1394,7 @@ function listed(numbers: number[]): string {
  * `length` characters, as edited) is too long for a note, or to suggest
  * cards from whole. Focus goes to it, so it's read out first.
  */
-function ImportSummary({ imported, length }: { imported: ImportedFile; length: number }) {
+function ImportSummary({ imported, length }: { imported: SourceNoteDraft; length: number }) {
   const summaryRef = useFocusOnMount<HTMLParagraphElement>(true);
   const parts =
     imported.pages === null
@@ -1272,7 +1405,9 @@ function ImportSummary({ imported, length }: { imported: ImportedFile; length: n
   return (
     <>
       <p ref={summaryRef} className="notice" role="status" tabIndex={-1}>
-        {`Synapse read the text of ${imported.fileName}${parts}. Check it and edit it as you like, then save it as a note. The file itself isn't kept.`}
+        {imported.justKept
+          ? `Synapse kept ${imported.fileName} under Sources and read its text${parts}. Check it and edit it as you like, then save it as a note. The source itself doesn't change.`
+          : `This is the text of ${imported.fileName}${parts}, kept under Sources. Check it and edit it as you like, then save it as a note. The source itself doesn't change.`}
       </p>
       {missing.length > 0 && (
         <p className="import-warning">

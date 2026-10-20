@@ -232,3 +232,23 @@ export function InfoIcon() {
     </Icon>
   );
 }
+
+/** A document with a page behind it: a kept source file. */
+export function FileIcon() {
+  return (
+    <Icon>
+      <path d="M9 3.5h6.5L20 8v10.5a1.5 1.5 0 0 1-1.5 1.5H9A1.5 1.5 0 0 1 7.5 18.5V5A1.5 1.5 0 0 1 9 3.5zM15.5 3.5V8H20M4.5 7v13A1.5 1.5 0 0 0 6 21.5h9" />
+    </Icon>
+  );
+}
+
+/** A framed landscape: a picture. */
+export function PictureIcon() {
+  return (
+    <Icon>
+      <rect x="3.5" y="5" width="17" height="14" rx="2" />
+      <circle cx="9" cy="10" r="1.6" />
+      <path d="m4 17 5-4.5 4 3.5 2.5-2 4.5 3.5" />
+    </Icon>
+  );
+}

@@ -1,5 +1,15 @@
-import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
-import type { CardText, CommandError, Deck, DeckDetail, Note, NoteSummary } from "../api";
+import { mockConvertFileSrc, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
+import type {
+  CardText,
+  CommandError,
+  Deck,
+  DeckDetail,
+  ImportedFile,
+  Note,
+  NoteSummary,
+  Source,
+  SourceImport,
+} from "../api";
 
 export const CREATED = "2026-10-01T09:00:00Z";
 
@@ -26,6 +36,43 @@ export function refuse(
   if (field) error.field = field;
   if (index !== undefined) error.index = index;
   return Promise.reject(error);
+}
+
+/** A kept source, as `import_source` and `get_source` send it: a PDF of three pages. */
+export function source(overrides: Partial<Source> = {}): Source {
+  return {
+    id: 3,
+    title: "Lecture 3",
+    kind: "pdf",
+    fileName: "Lecture 3.pdf",
+    pageCount: 3,
+    asset: {
+      id: 7,
+      sha256: "a".repeat(64),
+      mediaType: "application/pdf",
+      size: 2_400_000,
+      createdAt: CREATED,
+    },
+    createdAt: CREATED,
+    updatedAt: CREATED,
+    deletedAt: null,
+    ...overrides,
+  };
+}
+
+/** What `import_source` sends for a file whose text reads as `file`: kept as source 3. */
+export function keptSource(file: ImportedFile): SourceImport {
+  const { status: _read, fileName, ...text } = file;
+  return {
+    status: "imported",
+    source: source({
+      title: file.title,
+      kind: file.kind,
+      fileName,
+      pageCount: file.pages ?? 1,
+    }),
+    text,
+  };
 }
 
 /** A promise the test settles itself, to hold the app in a "saving" or "checking" state. */
@@ -155,11 +202,15 @@ export function fakeBackend(overrides: Record<string, Handler> = {}) {
       decks: [{ id: deck.id, name: deck.name, percent: null }],
       archivedOwn: 0,
     }),
+    // No note comes from a kept source unless a test says so.
+    get_note_source: () => null,
+    locate_quotes: () => null,
     "plugin:window|destroy": () => null,
     ...overrides,
   };
 
   mockWindows("main");
+  mockConvertFileSrc("linux");
   mockIPC(
     (cmd, args) => {
       const handler = handlers[cmd];

@@ -1,9 +1,9 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { FileImport, ImportedFile } from "./api";
+import type { ImportedFile, SourceImport } from "./api";
 import { NotesArea } from "./Notes";
-import { CREATED, deferred, fakeBackend, refuse, type Handler } from "./test/backend";
+import { CREATED, deferred, fakeBackend, keptSource, refuse, type Handler } from "./test/backend";
 
 const LECTURE: ImportedFile = {
   status: "read",
@@ -17,7 +17,7 @@ const LECTURE: ImportedFile = {
 
 function openNotes(handlers: Record<string, Handler> = {}) {
   const backend = fakeBackend({
-    create_note: (args) => {
+    create_note_from_source: (args) => {
       const { title, body } = args as { title: string; body: string };
       return { id: 9, title, body, createdAt: CREATED, updatedAt: CREATED };
     },
@@ -30,19 +30,21 @@ function openNotes(handlers: Record<string, Handler> = {}) {
     }),
     ...handlers,
   });
-  render(<NotesArea onBack={vi.fn()} onOpenDeck={vi.fn()} />);
+  render(<NotesArea onBack={vi.fn()} onOpenDeck={vi.fn()} onOpenSource={vi.fn()} />);
   return { ...backend, user: userEvent.setup() };
 }
 
 describe("importing a file as a note", () => {
   it("opens the file's text as a new note to check, and saves what the user keeps", async () => {
-    const { user, argsOf } = openNotes({ import_file: () => LECTURE });
+    const { user, argsOf } = openNotes({ import_source: () => keptSource(LECTURE) });
     await user.click(await screen.findByRole("button", { name: "Import file" }));
 
     expect(await screen.findByRole("heading", { name: "New note from Lecture 3.pdf" })).toBeTruthy();
-    const summary = screen.getByText(/^Synapse read the text of Lecture 3\.pdf \(3 pages\)\./);
+    const summary = screen.getByText(/^Synapse kept Lecture 3\.pdf under Sources/);
     expect(document.activeElement).toBe(summary);
-    expect(summary.textContent).toContain("The file itself isn't kept.");
+    expect(summary.textContent).toContain(
+      "Synapse kept Lecture 3.pdf under Sources and read its text (3 pages)."
+    );
     expect(
       screen.getByText(
         "Page 2 had no text Synapse could read. They may be scanned images, so check whether anything is missing."
@@ -56,29 +58,39 @@ describe("importing a file as a note", () => {
     await user.click(screen.getByRole("button", { name: "Save note" }));
 
     expect(await screen.findByText("Note saved.")).toBeTruthy();
-    expect(argsOf("create_note")).toEqual([
-      { title: "Lecture 3", body: `${LECTURE.body}\nAnaphase: chromatids separate.` },
+    // Saved with the source it came from, in one command.
+    expect(argsOf("create_note_from_source")).toEqual([
+      {
+        sourceId: 3,
+        title: "Lecture 3",
+        body: `${LECTURE.body}\nAnaphase: chromatids separate.`,
+        pictures: [],
+      },
     ]);
+    expect(argsOf("create_note")).toEqual([]);
   });
 
   it("counts slides for a presentation, and names several pages without text", async () => {
     const { user } = openNotes({
-      import_file: () => ({
-        ...LECTURE,
-        fileName: "Talk.pptx",
-        kind: "powerPoint",
-        pages: 12,
-        pagesWithoutText: [],
-      }),
+      import_source: () =>
+        keptSource({
+          ...LECTURE,
+          fileName: "Talk.pptx",
+          kind: "powerPoint",
+          pages: 12,
+          pagesWithoutText: [],
+        }),
     });
     await user.click(await screen.findByRole("button", { name: "Import file" }));
-    expect(await screen.findByText(/^Synapse read the text of Talk\.pptx \(12 slides\)\./)).toBeTruthy();
+    expect(
+      await screen.findByText(/^Synapse kept Talk\.pptx under Sources and read its text \(12 slides\)\./)
+    ).toBeTruthy();
     expect(screen.queryByText(/had no text Synapse could read/)).toBeNull();
   });
 
   it("lists the pages of a PDF that had no text", async () => {
     const { user } = openNotes({
-      import_file: () => ({ ...LECTURE, pages: 9, pagesWithoutText: [2, 5, 9] }),
+      import_source: () => keptSource({ ...LECTURE, pages: 9, pagesWithoutText: [2, 5, 9] }),
     });
     await user.click(await screen.findByRole("button", { name: "Import file" }));
     expect(await screen.findByText(/^Pages 2, 5, and 9 had no text Synapse could read\./)).toBeTruthy();
@@ -86,7 +98,8 @@ describe("importing a file as a note", () => {
 
   it("warns while the text is too long for a note, until it's shortened", async () => {
     const { user } = openNotes({
-      import_file: () => ({ ...LECTURE, body: "x".repeat(100_001), pages: null, kind: "text" }),
+      import_source: () =>
+        keptSource({ ...LECTURE, body: "x".repeat(100_001), pages: null, kind: "text" }),
     });
     await user.click(await screen.findByRole("button", { name: "Import file" }));
     expect(
@@ -102,7 +115,8 @@ describe("importing a file as a note", () => {
 
   it("says when the text is too long to suggest cards from whole", async () => {
     const { user } = openNotes({
-      import_file: () => ({ ...LECTURE, body: "x".repeat(12_001), pages: null, kind: "text" }),
+      import_source: () =>
+        keptSource({ ...LECTURE, body: "x".repeat(12_001), pages: null, kind: "text" }),
     });
     await user.click(await screen.findByRole("button", { name: "Import file" }));
     expect(
@@ -116,18 +130,18 @@ describe("importing a file as a note", () => {
   });
 
   it("changes nothing when the file window is closed", async () => {
-    const { user, argsOf } = openNotes({ import_file: (): FileImport => ({ status: "cancelled" }) });
+    const { user, argsOf } = openNotes({ import_source: (): SourceImport => ({ status: "cancelled" }) });
     const button = await screen.findByRole("button", { name: "Import file" });
     await user.click(button);
 
     expect(button.getAttribute("aria-disabled")).toBe("false");
     expect(screen.getByRole("heading", { name: "Notes" })).toBeTruthy();
-    expect(argsOf("create_note")).toEqual([]);
+    expect(argsOf("create_note_from_source")).toEqual([]);
   });
 
   it("says why a file can't be imported, and stays in the library", async () => {
     const { user } = openNotes({
-      import_file: () => refuse("invalid", "That file has no text Synapse can import."),
+      import_source: () => refuse("invalid", "That file has no text Synapse can import."),
     });
     await user.click(await screen.findByRole("button", { name: "Import file" }));
 
@@ -138,19 +152,19 @@ describe("importing a file as a note", () => {
   });
 
   it("opens one file window however often Import file is pressed", async () => {
-    const answer = deferred<FileImport>();
-    const { user, argsOf } = openNotes({ import_file: () => answer.promise });
+    const answer = deferred<SourceImport>();
+    const { user, argsOf } = openNotes({ import_source: () => answer.promise });
     const button = await screen.findByRole("button", { name: "Import file" });
 
     await user.click(button);
     await user.click(button);
 
-    expect(argsOf("import_file")).toHaveLength(1);
+    expect(argsOf("import_source")).toHaveLength(1);
     expect(screen.getByText("Choose a file. Synapse then reads its text…")).toBeTruthy();
   });
 
   it("goes back to the library on Cancel, with focus on Import file", async () => {
-    const { user, argsOf } = openNotes({ import_file: () => LECTURE });
+    const { user, argsOf } = openNotes({ import_source: () => keptSource(LECTURE) });
     await user.click(await screen.findByRole("button", { name: "Import file" }));
     await user.click(await screen.findByRole("button", { name: "Cancel" }));
 

@@ -30,7 +30,7 @@ function note(body: string): Note {
 
 async function openNote(body: string) {
   const backend = fakeBackend({ get_note: () => note(body) });
-  render(<NotesArea onBack={vi.fn()} onOpenDeck={vi.fn()} />);
+  render(<NotesArea onBack={vi.fn()} onOpenDeck={vi.fn()} onOpenSource={vi.fn()} />);
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: "Open note" }));
   await screen.findByRole("heading", { name: "Mitosis" });
@@ -105,6 +105,8 @@ describe("reading a note written in Markdown", () => {
 
     expect((screen.getByLabelText("Note") as HTMLTextAreaElement).value).toBe(BODY);
     await user.click(screen.getByRole("button", { name: "Save changes" }));
-    expect(backend.argsOf("update_note")).toEqual([{ noteId: 5, title: "Mitosis", body: BODY }]);
+    expect(backend.argsOf("update_note")).toEqual([
+      { noteId: 5, title: "Mitosis", body: BODY, pictures: [] },
+    ]);
   });
 });

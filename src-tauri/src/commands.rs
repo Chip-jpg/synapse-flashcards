@@ -15,6 +15,7 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::aid::{self, CardHelp, HelpKind, Helping};
 use crate::anki::{self, AnkiError, AnkiImported, AnkiImports, Skipped};
+use crate::assets::{self, Asset, AssetError, AssetStore};
 use crate::authoring::{self, ArchivedDeck, AuthoringError, CardText, DeckDetail, InvalidInput};
 use crate::cards_csv::{self, CardsImported, CsvError, Delimiter, Duplicate, RowProblem};
 use crate::cloze::{self, ClozeChanges, RestoreBlock};
@@ -23,11 +24,14 @@ use crate::export::{self, ExportError};
 use crate::extract::{self, ExtractError, ExtractedText, FileKind};
 use crate::import::{self, ImportError, ImportState, RestoreError};
 use crate::notes::{self, DeletedNote, InvalidNote, Note, NoteError, NoteSummary};
+use crate::occlusion::{self, Mode, OcclusionBox, OcclusionView};
 use crate::optimizer::{self, IntervalChange, Optimized, OptimizerError, Optimizing, Settings};
+use crate::pictures::{CardPictureIds, PictureProblem};
 use crate::quiz::{self, QuizQuestion, Quizzing};
 use crate::retention::{self, RetentionError};
 use crate::scheduler::Rating;
 use crate::search::{self, Scope, SearchResults};
+use crate::sources::{self, InvalidTitle, Source, SourceError, SourcePage};
 use crate::stats::{self, Statistics};
 use crate::study::{self, DeckSummary, SessionCard, StartedSession, StudyError, TodaySummary};
 use crate::suggest::{self, NotePart, Ollama, SuggestError, SuggestedCard, Suggesting};
@@ -61,6 +65,15 @@ enum Field {
     Body,
     /// A cloze card's text.
     Text,
+    /// A note's pictures.
+    Pictures,
+    /// The pictures on a card's front, or on its back.
+    FrontPictures,
+    BackPictures,
+    /// An image occlusion's header.
+    Header,
+    /// An image occlusion's boxes.
+    Boxes,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -136,6 +149,28 @@ impl CommandError {
                 "Each {{c1::…}} needs an answer, and a hint if it has :: after the answer.",
             ),
             InvalidInput::ClozeNumber => (Field::Text, "Number each {{c1::…}} from 1 to 999."),
+            InvalidInput::FrontPictures(problem) => {
+                (Field::FrontPictures, picture_message(problem, false))
+            }
+            InvalidInput::BackPictures(problem) => {
+                (Field::BackPictures, picture_message(problem, false))
+            }
+            InvalidInput::OcclusionHeaderTooLong => {
+                (Field::Header, "The header can be at most 500 characters.")
+            }
+            InvalidInput::OcclusionNoBoxes => {
+                (Field::Boxes, "Draw at least one box over the picture.")
+            }
+            InvalidInput::OcclusionTooManyBoxes => {
+                (Field::Boxes, "A picture can have at most 200 boxes.")
+            }
+            InvalidInput::OcclusionBox => (
+                Field::Boxes,
+                "Each box must be inside the picture and numbered from 1 to 999.",
+            ),
+            InvalidInput::OcclusionLabelTooLong => {
+                (Field::Boxes, "A box's label can be at most 200 characters.")
+            }
         };
         CommandError {
             kind: ErrorKind::Invalid,
@@ -161,6 +196,7 @@ impl CommandError {
             InvalidNote::TitleTooLong => (Field::Title, "Titles can be at most 200 characters."),
             InvalidNote::BodyBlank => (Field::Body, "Write something in the note."),
             InvalidNote::BodyTooLong => (Field::Body, "A note can be at most 100,000 characters."),
+            InvalidNote::Pictures(problem) => (Field::Pictures, picture_message(problem, true)),
         };
         CommandError {
             kind: ErrorKind::Invalid,
@@ -168,6 +204,19 @@ impl CommandError {
             field: Some(field),
             index: None,
         }
+    }
+}
+
+/// What to say about a list of pictures that was refused. The limits must
+/// match `pictures.rs` (checked by a test below).
+fn picture_message(problem: PictureProblem, on_note: bool) -> &'static str {
+    match (problem, on_note) {
+        (PictureProblem::TooMany, true) => "A note can show at most 20 pictures.",
+        (PictureProblem::TooMany, false) => "Each side of a card can show at most 4 pictures.",
+        (PictureProblem::NotAPicture, _) => {
+            "One of the pictures is no longer available. Add it again."
+        }
+        (PictureProblem::Repeated, _) => "The same picture was added twice.",
     }
 }
 
@@ -269,6 +318,18 @@ fn authoring_error(err: AuthoringError, context: &str, failed: &'static str) -> 
         AuthoringError::ClozeSplit => CommandError::invalid(
             "Cards made from one cloze text move together: select all of them.",
         ),
+        AuthoringError::OcclusionNotRestorable(RestoreBlock::NumberGone) => CommandError::stale(
+            "This card's box is no longer on its picture, so it can't be restored.",
+        ),
+        AuthoringError::OcclusionNotRestorable(RestoreBlock::Elsewhere) => CommandError::stale(
+            "This card's picture has its cards in another deck now, so it can't be restored here.",
+        ),
+        AuthoringError::OcclusionSplit => CommandError::invalid(
+            "Cards made from one picture move together: select all of them.",
+        ),
+        AuthoringError::PictureMissing => {
+            CommandError::invalid("That picture isn't kept by Synapse. Choose it again.")
+        }
         AuthoringError::Internal(detail) => {
             eprintln!("[synapse] {context} failed: {detail}");
             CommandError::failed(failed)
@@ -509,12 +570,14 @@ pub async fn create_flashcard(
     deck_id: i64,
     front: String,
     back: String,
+    pictures: Option<CardPictureIds>,
 ) -> Result<DeckDetail, CommandError> {
     if deck_id < 1 {
         return Err(CommandError::invalid(DECK_NOT_FOUND));
     }
     let pool = pool(&app, &database).await?;
-    authoring::create_flashcard(&pool, deck_id, &front, &back, Utc::now())
+    let pictures = pictures.unwrap_or_default();
+    authoring::create_flashcard_with_pictures(&pool, deck_id, &front, &back, &pictures, Utc::now())
         .await
         .map_err(|err| authoring_error(err, "adding a card", "Synapse couldn't save the card."))
 }
@@ -553,14 +616,22 @@ pub async fn update_flashcard(
     card_id: i64,
     front: String,
     back: String,
+    pictures: Option<CardPictureIds>,
 ) -> Result<DeckDetail, CommandError> {
     if card_id < 1 {
         return Err(CommandError::invalid(CARD_NOT_FOUND));
     }
     let pool = pool(&app, &database).await?;
-    authoring::update_flashcard(&pool, card_id, &front, &back, Utc::now())
-        .await
-        .map_err(|err| authoring_error(err, "editing a card", "Synapse couldn't save the card."))
+    authoring::update_flashcard_with_pictures(
+        &pool,
+        card_id,
+        &front,
+        &back,
+        pictures.as_ref(),
+        Utc::now(),
+    )
+    .await
+    .map_err(|err| authoring_error(err, "editing a card", "Synapse couldn't save the card."))
 }
 
 /// Adds a cloze text to a normal deck: one new card, due immediately, for
@@ -654,6 +725,98 @@ pub async fn preview_cloze(
                 "Synapse couldn't check the text.",
             )
         })
+}
+
+/// Adds an image occlusion to a normal deck: a kept picture with boxes drawn
+/// over it, and one new card, due immediately, for each box number (see
+/// `occlusion.rs`).
+///
+/// Arguments: `{ deckId, assetId, header, mode, boxes }`, `mode` being
+/// `"hideAll"` or `"hideOne"` and each box `{ number, left, top, width,
+/// height, label }` with coordinates from 0 to 1. Returns the updated deck
+/// (same shape as `get_deck_detail`). A refused box rejects with kind
+/// "invalid" and field "boxes"; a refused header, field "header".
+#[tauri::command]
+pub async fn create_occlusion(
+    app: AppHandle,
+    database: State<'_, Database>,
+    deck_id: i64,
+    asset_id: i64,
+    header: String,
+    mode: Mode,
+    boxes: Vec<OcclusionBox>,
+) -> Result<DeckDetail, CommandError> {
+    if deck_id < 1 {
+        return Err(CommandError::invalid(DECK_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    occlusion::create_occlusion(&pool, deck_id, asset_id, &header, mode, &boxes, Utc::now())
+        .await
+        .map_err(|err| {
+            authoring_error(
+                err,
+                "adding image occlusion cards",
+                "Synapse couldn't save the cards.",
+            )
+        })
+}
+
+/// The picture and boxes an image occlusion card was made from, for its edit
+/// form: `{ id, picture, header, mode, boxes, nextNumber }`.
+///
+/// Arguments: `{ cardId }`, any active card of the occlusion.
+#[tauri::command]
+pub async fn get_occlusion(
+    app: AppHandle,
+    database: State<'_, Database>,
+    card_id: i64,
+) -> Result<OcclusionView, CommandError> {
+    if card_id < 1 {
+        return Err(CommandError::invalid(CARD_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    occlusion::get_occlusion(&pool, card_id)
+        .await
+        .map_err(|err| {
+            authoring_error(
+                err,
+                "opening image occlusion cards",
+                "Synapse couldn't open the picture's cards.",
+            )
+        })
+}
+
+/// Replaces an image occlusion's header, way of asking and boxes: numbers
+/// still drawn keep their cards and schedules, a number whose boxes are gone
+/// has its card deleted, and a new number gets a card (its deleted one back,
+/// if it had one in this deck).
+///
+/// Arguments: `{ cardId, header, mode, boxes }`, `cardId` being any active
+/// card of the occlusion. Returns `{ changes, deck }`, as `update_cloze` does.
+#[tauri::command]
+pub async fn update_occlusion(
+    app: AppHandle,
+    database: State<'_, Database>,
+    card_id: i64,
+    header: String,
+    mode: Mode,
+    boxes: Vec<OcclusionBox>,
+) -> Result<ClozeSaved, CommandError> {
+    if card_id < 1 {
+        return Err(CommandError::invalid(CARD_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    let (changes, deck) =
+        occlusion::update_occlusion(&pool, card_id, &header, mode, &boxes, Utc::now())
+            .await
+            .map_err(|err| {
+                authoring_error(
+                    err,
+                    "editing image occlusion cards",
+                    "Synapse couldn't save the cards.",
+                )
+            })?;
+    Ok(ClozeSaved { changes, deck })
 }
 
 /// Soft-deletes a card: it leaves lists, counts, and reviews, but its row and
@@ -976,9 +1139,11 @@ pub async fn create_note(
     database: State<'_, Database>,
     title: String,
     body: String,
+    pictures: Option<Vec<i64>>,
 ) -> Result<Note, CommandError> {
     let pool = pool(&app, &database).await?;
-    notes::create_note(&pool, &title, &body, Utc::now())
+    let pictures = pictures.unwrap_or_default();
+    notes::create_note_with_pictures(&pool, &title, &body, &pictures, Utc::now())
         .await
         .map_err(|err| note_error(err, "saving a note", "Synapse couldn't save the note."))
 }
@@ -994,14 +1159,22 @@ pub async fn update_note(
     note_id: i64,
     title: String,
     body: String,
+    pictures: Option<Vec<i64>>,
 ) -> Result<Note, CommandError> {
     if note_id < 1 {
         return Err(CommandError::invalid(NOTE_NOT_FOUND));
     }
     let pool = pool(&app, &database).await?;
-    notes::update_note(&pool, note_id, &title, &body, Utc::now())
-        .await
-        .map_err(|err| note_error(err, "editing a note", "Synapse couldn't save the note."))
+    notes::update_note_with_pictures(
+        &pool,
+        note_id,
+        &title,
+        &body,
+        pictures.as_deref(),
+        Utc::now(),
+    )
+    .await
+    .map_err(|err| note_error(err, "editing a note", "Synapse couldn't save the note."))
 }
 
 /// Soft-deletes a note: it leaves the library, but its text is kept and it can
@@ -1597,8 +1770,13 @@ pub async fn export_data(
 
     // Timed when the package is written, not when the dialog opened, so
     // `exported_at` says when the backup was actually taken.
+    let store = Database::asset_store(&app).map_err(|err| {
+        eprintln!("[synapse] locating the kept files failed: {err}");
+        CommandError::failed("Synapse couldn't build the export.")
+    })?;
     export::write_package(
         &pool,
+        &store,
         &destination,
         Utc::now(),
         app.package_info().version.to_string().as_str(),
@@ -1608,6 +1786,13 @@ pub async fn export_data(
         ExportError::Destination(detail) => {
             eprintln!("[synapse] writing the export failed: {detail}");
             CommandError::failed("Synapse couldn't save the export there. Try another folder.")
+        }
+        ExportError::MissingAsset(detail) => {
+            eprintln!("[synapse] a kept file couldn't be exported: {detail}");
+            CommandError::failed(
+                "A file Synapse keeps (a source or a picture) is missing or damaged, so the \
+                 backup wouldn't be complete. Nothing was saved.",
+            )
         }
         ExportError::Internal(detail) => {
             eprintln!("[synapse] building the export failed: {detail}");
@@ -1641,6 +1826,9 @@ pub enum ImportCheck {
         file_name: String,
         /// When the backup was made (ISO-8601 UTC), from its manifest.
         exported_at: String,
+        /// How many files (sources, pictures) it keeps; 0 for a backup made
+        /// before Synapse kept files.
+        kept_files: usize,
     },
     /// The user closed the file window without choosing a file.
     Cancelled,
@@ -1767,6 +1955,7 @@ pub async fn prepare_import(
     let staged = import::stage_package(&archive, &workspace)
         .await
         .map_err(import_error)?;
+    let kept_files = staged.assets.len();
     let token = pending.hold(staged.database);
     let file_name = archive
         .file_name()
@@ -1776,6 +1965,7 @@ pub async fn prepare_import(
         token,
         file_name,
         exported_at: staged.manifest.exported_at,
+        kept_files,
     })
 }
 
@@ -1806,7 +1996,11 @@ pub async fn confirm_import(
         // The database is open whenever the dashboard is shown, but make
         // sure: replacing needs the open pool to take its rollback copy.
         pool(&app, &database).await?;
-        import::replace_database(&database, &db_path, &staged, &workspace)
+        let store = Database::asset_store(&app).map_err(|err| {
+            eprintln!("[synapse] locating the kept files for a restore failed: {err}");
+            CommandError::failed(IMPORT_NOT_READY)
+        })?;
+        import::replace_database(&database, &db_path, &store, &staged, &workspace)
             .await
             .map_err(restore_error)
     }
@@ -2435,6 +2629,11 @@ pub enum AnkiFile {
         extra_removed: usize,
         /// Notes to add that had been reviewed in Anki; they start as new.
         reviewed: usize,
+        /// Image occlusion notes to add with their pictures.
+        occlusions: usize,
+        /// Of those, notes whose round or many-sided shapes became
+        /// rectangles, or whose text labels were left out.
+        occlusion_approximated: usize,
     },
     Cancelled,
 }
@@ -2472,6 +2671,11 @@ fn anki_error(err: AnkiError, context: &str, failed: &'static str) -> CommandErr
             CommandError::failed("Synapse couldn't unpack that file.")
         }
         AnkiError::Authoring(err) => authoring_error(err, context, failed),
+        AnkiError::Picture(AssetError::StoreFull) => CommandError::invalid(STORE_FULL),
+        AnkiError::Picture(err) => {
+            eprintln!("[synapse] {context} failed keeping a picture: {err:?}");
+            CommandError::failed(failed)
+        }
     }
 }
 
@@ -2549,13 +2753,20 @@ pub async fn read_anki_package(
                 .collect(),
         })
         .collect();
-    let (notes, skipped, media_removed, extra_removed, reviewed) = (
+    let (notes, skipped, media_removed, extra_removed, reviewed, occlusion_approximated) = (
         package.notes,
         package.skipped,
         package.media_removed,
         package.extra_removed,
         package.reviewed,
+        package.occlusion_approximated,
     );
+    let occlusions = package
+        .decks
+        .iter()
+        .flat_map(|deck| &deck.notes)
+        .filter(|note| note.occlusion.is_some())
+        .count();
     let token = imports.hold(package);
     Ok(AnkiFile::Read {
         token,
@@ -2566,6 +2777,8 @@ pub async fn read_anki_package(
         media_removed,
         extra_removed,
         reviewed,
+        occlusions,
+        occlusion_approximated,
     })
 }
 
@@ -2588,8 +2801,10 @@ pub async fn import_anki_package(
             "This preview is out of date. Choose the file again.",
         ));
     };
+    let failed = "Synapse couldn't save the cards. Nothing was added.";
     let pool = pool(&app, &database).await?;
-    let imported = anki::import_package(&pool, &package, both_directions, Utc::now())
+    let store = asset_store(&app, failed)?;
+    let imported = anki::import_package(&pool, &store, &package, both_directions, Utc::now())
         .await
         .map_err(|err| {
             anki_error(
@@ -2606,6 +2821,599 @@ pub async fn import_anki_package(
 #[tauri::command]
 pub fn cancel_anki_import(imports: State<'_, AnkiImports>, token: u64) {
     imports.forget(token);
+}
+
+/// The folder of kept files, beside the database.
+fn asset_store(app: &AppHandle, failed: &'static str) -> Result<AssetStore, CommandError> {
+    Database::asset_store(app).map_err(|err| {
+        eprintln!("[synapse] locating the kept files failed: {err}");
+        CommandError::failed(failed)
+    })
+}
+
+/// The answer to a `synapse:` request from the webview: a kept picture or
+/// PDF by its hash (see `assets::respond`), or a plain 404.
+pub async fn kept_file(app: &AppHandle, path: &str) -> tauri::http::Response<Vec<u8>> {
+    let database = app.state::<Database>();
+    match (database.pool(app).await, Database::asset_store(app)) {
+        (Ok(pool), Ok(store)) => assets::respond(&pool, &store, path).await,
+        (Err(err), _) | (_, Err(err)) => {
+            eprintln!("[synapse] opening the database to show a kept file failed: {err}");
+            assets::not_found()
+        }
+    }
+}
+
+const PICTURE_NOT_KEPT: &str = "Synapse couldn't keep that picture.";
+
+/// Turns a picture that wasn't kept into a user-safe error.
+fn picture_error(err: AssetError) -> CommandError {
+    match err {
+        AssetError::TooLarge => CommandError::invalid("Pictures can be at most 20 MB."),
+        AssetError::WrongType => CommandError::invalid(
+            "Synapse can keep PNG, JPEG, GIF, and WebP pictures. That file isn't one.",
+        ),
+        AssetError::StoreFull => CommandError::invalid(STORE_FULL),
+        AssetError::Internal(detail) => {
+            eprintln!("[synapse] keeping a picture failed: {detail}");
+            CommandError::failed(PICTURE_NOT_KEPT)
+        }
+    }
+}
+
+const STORE_FULL: &str = "Synapse already keeps 2 GB of sources and pictures, as much as one \
+                          backup can hold, so it can't keep more.";
+
+/// What choosing a picture did: `{ "status": "added", "asset": Asset }` or
+/// `{ "status": "cancelled" }`.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PictureChoice {
+    /// The picture is kept. Show it with its `sha256` (see `api.ts`'s
+    /// `keptFileUrl`) and refer to it by its `id`.
+    Added { asset: Asset },
+    /// The user closed the file window without choosing a file.
+    Cancelled,
+}
+
+/// Chooses a picture file (PNG, JPEG, GIF or WebP) and keeps it, returning
+/// its `assets` row. The same picture chosen twice is kept once. Nothing
+/// points at it yet: whatever the picture is for records that.
+///
+/// Takes no arguments. Returns [`PictureChoice`].
+#[tauri::command]
+pub async fn choose_picture(
+    app: AppHandle,
+    database: State<'_, Database>,
+) -> Result<PictureChoice, CommandError> {
+    let pool = pool(&app, &database).await?;
+    let store = asset_store(&app, PICTURE_NOT_KEPT)?;
+
+    let (sender, mut receiver) = tauri::async_runtime::channel(1);
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Choose a picture")
+        .add_filter("Pictures", &["png", "jpg", "jpeg", "gif", "webp"]);
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.pick_file(move |path| {
+        let _ = sender.try_send(path);
+    });
+    let Some(chosen) = receiver.recv().await else {
+        eprintln!("[synapse] the picture file dialog closed without an answer");
+        return Err(CommandError::failed(
+            "Synapse couldn't open the file window.",
+        ));
+    };
+    let Some(chosen) = chosen else {
+        return Ok(PictureChoice::Cancelled);
+    };
+    let path = chosen.into_path().map_err(|err| {
+        eprintln!("[synapse] the chosen picture's path was unusable: {err}");
+        CommandError::invalid("That file can't be used.")
+    })?;
+    let unreadable = |err: std::io::Error| {
+        eprintln!("[synapse] reading a picture failed: {err}");
+        CommandError::failed("Synapse couldn't read that file.")
+    };
+    // The type is read from the bytes, whatever the file's name says.
+    if std::fs::metadata(&path).map_err(unreadable)?.len() > assets::MAX_PICTURE_BYTES {
+        return Err(picture_error(AssetError::TooLarge));
+    }
+    let bytes = std::fs::read(&path).map_err(unreadable)?;
+    let asset = assets::add_picture(&pool, &store, &bytes, Utc::now())
+        .await
+        .map_err(picture_error)?;
+    Ok(PictureChoice::Added { asset })
+}
+
+/// Keeps a picture sent as raw bytes (a pasted or dropped image):
+/// `invoke("store_picture", bytes)` with a `Uint8Array`. Returns its
+/// `assets` row; bytes that aren't a PNG, JPEG, GIF or WebP are refused.
+#[tauri::command]
+pub async fn store_picture(
+    app: AppHandle,
+    database: State<'_, Database>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<Asset, CommandError> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err(CommandError::invalid(
+            "Synapse can keep PNG, JPEG, GIF, and WebP pictures. That isn't one.",
+        ));
+    };
+    let pool = pool(&app, &database).await?;
+    let store = asset_store(&app, PICTURE_NOT_KEPT)?;
+    assets::add_picture(&pool, &store, bytes, Utc::now())
+        .await
+        .map_err(picture_error)
+}
+
+const SOURCE_NOT_FOUND: &str = "That source doesn't exist.";
+
+/// Turns a source operation that didn't happen into a user-safe error.
+fn source_error(err: SourceError, context: &str, failed: &'static str) -> CommandError {
+    match err {
+        SourceError::Invalid(problem) => CommandError {
+            kind: ErrorKind::Invalid,
+            message: match problem {
+                InvalidTitle::Blank => "Give the source a title.",
+                InvalidTitle::TooLong => "Titles can be at most 200 characters.",
+            },
+            field: Some(Field::Title),
+            index: None,
+        },
+        SourceError::NotFound => CommandError::invalid(SOURCE_NOT_FOUND),
+        SourceError::Deleted => CommandError::stale("This source or note was deleted."),
+        SourceError::NotDeleted => CommandError::stale("This source isn't deleted."),
+        SourceError::AlreadyLinked => {
+            CommandError::stale("This note already says which source it came from.")
+        }
+        SourceError::Asset(AssetError::TooLarge) => {
+            CommandError::invalid("That file is too large to keep: the limit is 50 MB.")
+        }
+        SourceError::Asset(AssetError::WrongType) => CommandError::invalid(
+            "That file isn't the kind of document its name says, so Synapse can't keep it.",
+        ),
+        SourceError::Asset(AssetError::StoreFull) => CommandError::invalid(STORE_FULL),
+        SourceError::Asset(AssetError::Internal(detail)) | SourceError::Internal(detail) => {
+            eprintln!("[synapse] {context} failed: {detail}");
+            CommandError::failed(failed)
+        }
+    }
+}
+
+/// What choosing a document to keep did: `{ "status": "imported", "source":
+/// Source, "text": ExtractedText }` or `{ "status": "cancelled" }`. `text`
+/// is what `import_file` returns, for a note written from the source.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum SourceImport {
+    Imported {
+        source: Box<Source>,
+        text: Box<ExtractedText>,
+    },
+    Cancelled,
+}
+
+/// Chooses a document (PDF, text, Markdown, Word or PowerPoint) and keeps it
+/// as a source: the original file and each page's text. Opens the same file
+/// window as `import_file`, which it extends: a note saved from the returned
+/// text can be linked to the source with `link_note_to_source`.
+///
+/// Takes no arguments. Returns [`SourceImport`]; a file that can't be read
+/// or kept rejects with kind "invalid" or "failed", and nothing is kept.
+#[tauri::command]
+pub async fn import_source(
+    app: AppHandle,
+    database: State<'_, Database>,
+) -> Result<SourceImport, CommandError> {
+    const NOT_KEPT: &str = "Synapse couldn't keep that file.";
+    let pool = pool(&app, &database).await?;
+    let store = asset_store(&app, NOT_KEPT)?;
+
+    let (sender, mut receiver) = tauri::async_runtime::channel(1);
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Choose a document to keep as a source")
+        .add_filter("Notes and documents", &FileKind::EXTENSIONS);
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.pick_file(move |path| {
+        let _ = sender.try_send(path);
+    });
+    let Some(chosen) = receiver.recv().await else {
+        eprintln!("[synapse] the source file dialog closed without an answer");
+        return Err(CommandError::failed(
+            "Synapse couldn't open the file window.",
+        ));
+    };
+    let Some(chosen) = chosen else {
+        return Ok(SourceImport::Cancelled);
+    };
+    let path = chosen.into_path().map_err(|err| {
+        eprintln!("[synapse] the chosen file's path was unusable: {err}");
+        CommandError::invalid("That file can't be used.")
+    })?;
+    let helper = std::env::current_exe().map_err(|err| {
+        eprintln!("[synapse] finding Synapse's own program failed: {err}");
+        CommandError::failed("Synapse couldn't read that file.")
+    })?;
+    let document =
+        tauri::async_runtime::spawn_blocking(move || extract::read_document(&path, &helper))
+            .await
+            .map_err(|err| {
+                eprintln!("[synapse] reading a file to keep stopped: {err}");
+                CommandError::failed("Synapse couldn't read that file.")
+            })?
+            .map_err(extract_error)?;
+    let source = sources::create_source(&pool, &store, &document, Utc::now())
+        .await
+        .map_err(|err| source_error(err, "keeping a source", NOT_KEPT))?;
+    Ok(SourceImport::Imported {
+        source: Box::new(source),
+        text: Box::new(document.text),
+    })
+}
+
+/// Every active source, most recently changed first. Returns `[Source]`.
+#[tauri::command]
+pub async fn get_sources(
+    app: AppHandle,
+    database: State<'_, Database>,
+) -> Result<Vec<Source>, CommandError> {
+    let pool = pool(&app, &database).await?;
+    sources::sources(&pool).await.map_err(|err| {
+        source_error(
+            err,
+            "loading sources",
+            "Synapse couldn't load your sources.",
+        )
+    })
+}
+
+/// Every deleted source, most recently deleted first. Returns `[Source]`.
+#[tauri::command]
+pub async fn get_deleted_sources(
+    app: AppHandle,
+    database: State<'_, Database>,
+) -> Result<Vec<Source>, CommandError> {
+    let pool = pool(&app, &database).await?;
+    sources::deleted_sources(&pool).await.map_err(|err| {
+        source_error(
+            err,
+            "loading deleted sources",
+            "Synapse couldn't load your deleted sources.",
+        )
+    })
+}
+
+/// One active source, by `{ sourceId }`. Returns [`Source`]; a deleted one
+/// rejects with kind "stale".
+#[tauri::command]
+pub async fn get_source(
+    app: AppHandle,
+    database: State<'_, Database>,
+    source_id: i64,
+) -> Result<Source, CommandError> {
+    let pool = pool(&app, &database).await?;
+    sources::source(&pool, source_id).await.map_err(|err| {
+        source_error(
+            err,
+            "loading a source",
+            "Synapse couldn't open that source.",
+        )
+    })
+}
+
+/// The text of every page of an active source, by `{ sourceId }`. Returns
+/// `[{ number, text }]`, numbered from 1.
+#[tauri::command]
+pub async fn get_source_pages(
+    app: AppHandle,
+    database: State<'_, Database>,
+    source_id: i64,
+) -> Result<Vec<SourcePage>, CommandError> {
+    let pool = pool(&app, &database).await?;
+    sources::source_pages(&pool, source_id)
+        .await
+        .map_err(|err| {
+            source_error(
+                err,
+                "loading a source's pages",
+                "Synapse couldn't open that source.",
+            )
+        })
+}
+
+/// Renames an active source: `{ sourceId, title }`. Returns the [`Source`].
+#[tauri::command]
+pub async fn rename_source(
+    app: AppHandle,
+    database: State<'_, Database>,
+    source_id: i64,
+    title: String,
+) -> Result<Source, CommandError> {
+    let pool = pool(&app, &database).await?;
+    sources::rename_source(&pool, source_id, &title, Utc::now())
+        .await
+        .map_err(|err| source_error(err, "renaming a source", "Synapse couldn't rename it."))
+}
+
+/// Deletes a source softly, by `{ sourceId }`; its file and pages are kept.
+#[tauri::command]
+pub async fn delete_source(
+    app: AppHandle,
+    database: State<'_, Database>,
+    source_id: i64,
+) -> Result<(), CommandError> {
+    let pool = pool(&app, &database).await?;
+    sources::delete_source(&pool, source_id, Utc::now())
+        .await
+        .map_err(|err| source_error(err, "deleting a source", "Synapse couldn't delete it."))
+}
+
+/// Restores a deleted source exactly as it was, by `{ sourceId }`.
+#[tauri::command]
+pub async fn restore_source(
+    app: AppHandle,
+    database: State<'_, Database>,
+    source_id: i64,
+) -> Result<(), CommandError> {
+    let pool = pool(&app, &database).await?;
+    sources::restore_source(&pool, source_id)
+        .await
+        .map_err(|err| source_error(err, "restoring a source", "Synapse couldn't restore it."))
+}
+
+/// Records that a note was written from a source: `{ noteId, sourceId }`.
+/// Both must be active; a note's source is set once and never changes.
+#[tauri::command]
+pub async fn link_note_to_source(
+    app: AppHandle,
+    database: State<'_, Database>,
+    note_id: i64,
+    source_id: i64,
+) -> Result<(), CommandError> {
+    let pool = pool(&app, &database).await?;
+    sources::link_note(&pool, note_id, source_id, Utc::now())
+        .await
+        .map_err(|err| {
+            source_error(
+                err,
+                "linking a note to its source",
+                "Synapse couldn't record where the note came from.",
+            )
+        })
+}
+
+/// The id of the source a note was written from, by `{ noteId }`, or null.
+#[tauri::command]
+pub async fn get_note_source(
+    app: AppHandle,
+    database: State<'_, Database>,
+    note_id: i64,
+) -> Result<Option<i64>, CommandError> {
+    let pool = pool(&app, &database).await?;
+    sources::note_source(&pool, note_id).await.map_err(|err| {
+        source_error(
+            err,
+            "finding a note's source",
+            "Synapse couldn't load that note's source.",
+        )
+    })
+}
+
+/// Saves a new note written from a source and records that it came from it,
+/// together: `{ sourceId, title, body, pictures? }` (picture ids, in order, as
+/// `create_note` takes them). Returns the [`Note`]. A refused
+/// title or text points at its field, as `create_note` does; a deleted
+/// source rejects with kind "stale". Nothing is written either way.
+#[tauri::command]
+pub async fn create_note_from_source(
+    app: AppHandle,
+    database: State<'_, Database>,
+    source_id: i64,
+    title: String,
+    body: String,
+    pictures: Option<Vec<i64>>,
+) -> Result<Note, CommandError> {
+    let pool = pool(&app, &database).await?;
+    let pictures = pictures.unwrap_or_default();
+    sources::create_note(&pool, source_id, &title, &body, &pictures, Utc::now())
+        .await
+        .map_err(|err| match err {
+            sources::NoteFromSourceError::Note(err) => note_error(
+                err,
+                "saving a note from a source",
+                "Synapse couldn't save the note.",
+            ),
+            sources::NoteFromSourceError::Source(err) => source_error(
+                err,
+                "saving a note from a source",
+                "Synapse couldn't save the note.",
+            ),
+        })
+}
+
+/// The active notes written from an active source, by `{ sourceId }`.
+/// Returns `[NoteSummary]`, most recently edited first.
+#[tauri::command]
+pub async fn get_source_notes(
+    app: AppHandle,
+    database: State<'_, Database>,
+    source_id: i64,
+) -> Result<Vec<NoteSummary>, CommandError> {
+    let pool = pool(&app, &database).await?;
+    sources::source_notes(&pool, source_id)
+        .await
+        .map_err(|err| {
+            source_error(
+                err,
+                "loading a source's notes",
+                "Synapse couldn't load the notes written from it.",
+            )
+        })
+}
+
+/// Where quotes from a note are in the source it was written from:
+/// `{ noteId, quotes }`. Returns [`sources::QuotedSource`], or null when the
+/// note didn't come from a source or its source is deleted.
+#[tauri::command]
+pub async fn locate_quotes(
+    app: AppHandle,
+    database: State<'_, Database>,
+    note_id: i64,
+    quotes: Vec<String>,
+) -> Result<Option<sources::QuotedSource>, CommandError> {
+    if quotes.len() > sources::MAX_QUOTES {
+        return Err(CommandError::invalid(
+            "That's more quotes than Synapse looks for at once.",
+        ));
+    }
+    let pool = pool(&app, &database).await?;
+    sources::locate_quotes(&pool, note_id, &quotes)
+        .await
+        .map_err(|err| {
+            source_error(
+                err,
+                "finding quotes in a source",
+                "Synapse couldn't find where those quotes came from.",
+            )
+        })
+}
+
+/// One page of an active source with a quote marked on it: `{ sourceId,
+/// number, quote }`. Returns `[{ text, hit }]`; an empty quote marks nothing.
+#[tauri::command]
+pub async fn get_quoted_page(
+    app: AppHandle,
+    database: State<'_, Database>,
+    source_id: i64,
+    number: u32,
+    quote: String,
+) -> Result<Vec<search::Piece>, CommandError> {
+    let pool = pool(&app, &database).await?;
+    sources::quoted_page(&pool, source_id, number, &quote)
+        .await
+        .map_err(|err| {
+            source_error(
+                err,
+                "loading a source's page",
+                "Synapse couldn't open that page.",
+            )
+        })?
+        .ok_or_else(|| CommandError::invalid("That source has no such page."))
+}
+
+/// The original file of an active source, checked, for a copy of it.
+async fn source_original(
+    app: &AppHandle,
+    database: &Database,
+    source_id: i64,
+) -> Result<(Source, Vec<u8>), CommandError> {
+    const UNREADABLE: &str = "Synapse couldn't read the kept file.";
+    let pool = pool(app, database).await?;
+    let store = asset_store(app, UNREADABLE)?;
+    sources::original(&pool, &store, source_id)
+        .await
+        .map_err(|err| source_error(err, "reading a source's file", UNREADABLE))
+}
+
+/// Saves a copy of a source's original file where the user chooses, by
+/// `{ sourceId }`. Opens the OS "save as" dialog; closing it returns
+/// `{ status: "cancelled" }` and writes nothing. Returns [`ExportOutcome`].
+#[tauri::command]
+pub async fn save_source_copy(
+    app: AppHandle,
+    database: State<'_, Database>,
+    source_id: i64,
+) -> Result<ExportOutcome, CommandError> {
+    let (source, bytes) = source_original(&app, &database, source_id).await?;
+
+    let (sender, mut receiver) = tauri::async_runtime::channel(1);
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Save a copy of the original")
+        .set_file_name(sources::copy_file_name(&source));
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.save_file(move |path| {
+        let _ = sender.try_send(path);
+    });
+    let Some(chosen) = receiver.recv().await else {
+        eprintln!("[synapse] the source copy save dialog closed without an answer");
+        return Err(CommandError::failed(
+            "Synapse couldn't open the save window.",
+        ));
+    };
+    let Some(chosen) = chosen else {
+        return Ok(ExportOutcome::Cancelled);
+    };
+    let destination = chosen.into_path().map_err(|err| {
+        eprintln!("[synapse] the chosen copy path was unusable: {err}");
+        CommandError::invalid("That save location can't be used.")
+    })?;
+    if database.is_database_file(&app, &destination) {
+        return Err(CommandError::invalid(
+            "That's Synapse's own data file. Choose another name.",
+        ));
+    }
+    std::fs::write(&destination, &bytes).map_err(|err| {
+        eprintln!("[synapse] writing a source copy failed: {err}");
+        CommandError::failed("Synapse couldn't save the copy there. Try another folder.")
+    })?;
+    let file_name = destination
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Ok(ExportOutcome::Saved { file_name })
+}
+
+/// Opens a source's original file in the program the computer uses for that
+/// kind of file, by `{ sourceId }`. The kept file has no name of its own, so
+/// a copy under the original name goes to a Synapse folder in the system's
+/// temporary folder first; the kept file itself is never handed out.
+#[tauri::command]
+pub async fn open_source_original(
+    app: AppHandle,
+    database: State<'_, Database>,
+    source_id: i64,
+) -> Result<(), CommandError> {
+    use tauri_plugin_opener::OpenerExt;
+    const NOT_OPENED: &str = "Synapse couldn't open the original.";
+    let (source, bytes) = source_original(&app, &database, source_id).await?;
+    let folder = std::env::temp_dir()
+        .join("synapse-originals")
+        .join(&source.asset.sha256[..16]);
+    let path = folder.join(sources::copy_file_name(&source));
+    std::fs::create_dir_all(&folder)
+        .and_then(|()| std::fs::write(&path, &bytes))
+        .map_err(|err| {
+            eprintln!("[synapse] writing a copy to open failed: {err}");
+            CommandError::failed(NOT_OPENED)
+        })?;
+    app.opener()
+        .open_path(path.to_string_lossy(), None::<&str>)
+        .map_err(|err| {
+            eprintln!("[synapse] opening a source's original failed: {err}");
+            CommandError::failed(
+                "Synapse couldn't open the original. Save a copy instead, and open that.",
+            )
+        })
 }
 
 #[cfg(test)]
@@ -2755,13 +3563,15 @@ mod tests {
                 token: 3,
                 file_name: "synapse-export-2026-09-16.zip".to_string(),
                 exported_at: "2026-09-16T09:30:00.000Z".to_string(),
+                kept_files: 2,
             })
             .unwrap(),
             json!({
                 "status": "ready",
                 "token": 3,
                 "fileName": "synapse-export-2026-09-16.zip",
-                "exportedAt": "2026-09-16T09:30:00.000Z"
+                "exportedAt": "2026-09-16T09:30:00.000Z",
+                "keptFiles": 2
             })
         );
         assert_eq!(
@@ -2855,6 +3665,7 @@ mod tests {
                 body: "one\ntwo".to_string(),
                 created_at: time.clone(),
                 updated_at: time.clone(),
+                pictures: Vec::new(),
             })
             .unwrap(),
             json!({
@@ -2862,7 +3673,8 @@ mod tests {
                 "title": "Cells",
                 "body": "one\ntwo",
                 "createdAt": "2026-09-16T12:00:00.000Z",
-                "updatedAt": "2026-09-16T12:00:00.000Z"
+                "updatedAt": "2026-09-16T12:00:00.000Z",
+                "pictures": []
             })
         );
         assert_eq!(
@@ -2909,6 +3721,46 @@ mod tests {
             to_json(NoteError::Internal("no such table: notes".into())),
             json!({ "kind": "failed", "message": "failed" })
         );
+    }
+
+    #[test]
+    fn picture_errors_point_at_the_pictures_and_match_the_limits() {
+        use crate::pictures::{CARD_SIDE_PICTURES_MAX, NOTE_PICTURES_MAX};
+        let note = serde_json::to_value(note_error(
+            NoteError::Invalid(InvalidNote::Pictures(PictureProblem::TooMany)),
+            "test",
+            "failed",
+        ))
+        .unwrap();
+        assert_eq!(note["field"], "pictures");
+        assert!(note["message"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("at most {NOTE_PICTURES_MAX} pictures")));
+        for (problem, field) in [
+            (
+                InvalidInput::FrontPictures(PictureProblem::TooMany),
+                "frontPictures",
+            ),
+            (
+                InvalidInput::BackPictures(PictureProblem::TooMany),
+                "backPictures",
+            ),
+        ] {
+            let card = serde_json::to_value(CommandError::invalid_input(problem)).unwrap();
+            assert_eq!(card["field"], field);
+            assert!(card["message"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("at most {CARD_SIDE_PICTURES_MAX} pictures")));
+        }
+        for problem in [PictureProblem::NotAPicture, PictureProblem::Repeated] {
+            let card = serde_json::to_value(CommandError::invalid_input(
+                InvalidInput::BackPictures(problem),
+            ))
+            .unwrap();
+            assert_eq!(card["kind"], "invalid");
+        }
     }
 
     #[test]
@@ -3447,6 +4299,8 @@ mod tests {
             media_removed: 1,
             extra_removed: 3,
             reviewed: 2,
+            occlusions: 2,
+            occlusion_approximated: 1,
         };
         assert_eq!(
             serde_json::to_value(file).unwrap(),
@@ -3473,6 +4327,8 @@ mod tests {
                 "mediaRemoved": 1,
                 "extraRemoved": 3,
                 "reviewed": 2,
+                "occlusions": 2,
+                "occlusionApproximated": 1,
             })
         );
         assert_eq!(

@@ -30,7 +30,7 @@ function written(questions: QuizQuestion[], leftOut = 0, unsupported = 0): QuizO
 async function openQuiz(handlers: Record<string, Handler> = {}) {
   const backend = fakeBackend(handlers);
   const user = userEvent.setup();
-  const view = render(<NotesArea onBack={vi.fn()} onOpenDeck={vi.fn()} />);
+  const view = render(<NotesArea onBack={vi.fn()} onOpenDeck={vi.fn()} onOpenSource={vi.fn()} />);
   await user.click(await screen.findByRole("button", { name: "Open note" }));
   await user.click(await screen.findByRole("button", { name: "Quiz me" }));
   return { ...backend, ...view, user };
