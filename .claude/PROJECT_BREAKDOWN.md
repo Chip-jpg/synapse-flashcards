@@ -566,6 +566,15 @@ Added on branch `claude/sources-foundation-yugkjq` (not yet released): phase 1 o
 - **Backups** (format 2, section 10.1). Export packs every listed file, checking size and hash as it reads. Restore checks the entries against the backup's own `assets` rows (name, size, hash, type; nothing missing or extra), stages them, adds them to the store before swapping the database, checks every listed file is present after opening, and takes back the files it added if anything fails.
 - **Not done.** No screen yet. Files are never removed, and a restore leaves files only the replaced data used (no clean-up). Not checked on Windows; the `synapse:` scheme was checked in the real app on Linux (a picture stored, shown 1×1, served as `image/png`, missing hash a 404).
 
+## 4.14 Pictures in notes and on cards
+
+Added on branch `claude/sources-pictures-04zgws` (not yet released), on top of 4.13: phase 2 of "Sources and pictures".
+
+- **What.** A note shows up to 20 kept pictures under its text (`NOTE_PICTURES_MAX`), each side of a front/back card up to 4 (`CARD_SIDE_PICTURES_MAX`), in order. Added with *Add picture* (`choose_picture`) or pasted (`store_picture`), ordered and removed in the form, saved with the text in one transaction (`create_note`/`update_note`/`create_flashcard`/`update_flashcard` take an optional `pictures`; left out keeps them). Shown in the note, small in the deck's card list, and in review (front with the question, back with the answer; `SessionCard.pictures`).
+- **Schema (migration 0017).** `note_pictures (note_id, position, asset_id)` and `card_pictures (card_id, side, position, asset_id)`, by asset id only. Saving replaces a list (delete + insert of link rows); the files and `assets` rows stay. Triggers: only image assets; link rows frozen while the note or card is deleted, or the card's deck archived; only active basic cards take pictures (cloze and later kinds don't). The Sample deck is refused in Rust. No column added to an existing table; backups unchanged (every `assets` row travels).
+- **Frontend.** `src/pictures.tsx`: `KeptPicture` (falls back to "This picture couldn't be shown"), `PictureGallery`, `PictureField`, `usePictureAdder`. Picture changes count as unsaved.
+- **Checked** in the real app on Linux (adding through the GTK file window, note view, card list, review). **Not working there:** pasting a picture (WebKitGTK hands the page no picture data); untested on Windows. Dropping files isn't offered (Tauri takes file drops). No pictures in CSV or from Anki yet.
+
 ______________________________________________________________________
 
 ## 5. FSRS and personalization
@@ -970,6 +979,7 @@ The project history gives this high-level progression:
 | `0014` | Desired retention, global and per deck (append-only) |
 | `0015` | Indexes on `review_logs` by card and by time (speed only; no rule or row changes) |
 | `0016` | Kept files (`assets`), sources with their pages, and the note saved from each (branch `claude/sources-foundation-yugkjq`; section 4.13) |
+| `0017` | Pictures in notes and on card sides (`note_pictures`, `card_pictures`; branch `claude/sources-pictures-04zgws`; section 4.14) |
 
 The first seven are described in the original specification. The final three are established by your later feature reports and repository history.
 

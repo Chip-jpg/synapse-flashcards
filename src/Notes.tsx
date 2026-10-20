@@ -14,10 +14,12 @@ import {
   searchNotes,
   toCommandError,
   updateNote,
+  NOTE_PICTURES_MAX,
   type CommandError,
   type Deck,
   type DeckDetail,
   type DeletedNote,
+  type Asset,
   type Note,
   type NoteSummary,
 } from "./api";
@@ -42,6 +44,7 @@ import { SUGGESTION_NOTE_MAX_CHARS } from "./noteParts";
 import { draftFromImport, type SourceNoteDraft } from "./Sources";
 import { formatDateTime, Message, useFocusOnMount } from "./ui";
 import { useUnsavedChanges } from "./unsaved";
+import { PictureField, PictureGallery, samePictures, usePictureAdder } from "./pictures";
 
 /** What takes focus when the library appears. */
 type LibraryFocus =
@@ -1121,6 +1124,11 @@ function NoteView({
         )}
 
         <NoteReading body={note.body} />
+        <PictureGallery
+          pictures={note.pictures}
+          label="Picture in the note"
+          listLabel="Pictures in the note"
+        />
       </article>
     </section>
   );
@@ -1274,22 +1282,45 @@ function NoteForm({
 }) {
   const [title, setTitle] = useState(imported?.title ?? note?.title ?? "");
   const [body, setBody] = useState(imported?.body ?? note?.body ?? "");
+  const savedPictures = note?.pictures ?? [];
+  const [pictures, setPictures] = useState<Asset[]>(savedPictures);
   // Compared with what's saved: imported text isn't saved anywhere yet, so it
   // counts as unsaved from the start.
-  useUnsavedChanges(title !== (note?.title ?? "") || body !== (note?.body ?? ""));
-  const { saving, submit, fieldError, formError, edited } = useFormSave(
-    () =>
-      note
-        ? updateNote(note.id, title, body)
-        : imported
-          ? createNoteFromSource(imported.sourceId, title, body)
-          : createNote(title, body),
-    onSaved,
-    { title: "note-title", body: "note-body" }
+  useUnsavedChanges(
+    title !== (note?.title ?? "") ||
+      body !== (note?.body ?? "") ||
+      !samePictures(pictures, savedPictures)
   );
+  const { saving, submit, fieldError, formError, edited } = useFormSave(
+    () => {
+      const ids = pictures.map((picture) => picture.id);
+      return note
+        ? updateNote(note.id, title, body, ids)
+        : imported
+          ? createNoteFromSource(imported.sourceId, title, body, ids)
+          : createNote(title, body, ids);
+    },
+    onSaved,
+    { title: "note-title", body: "note-body", pictures: "note-pictures" }
+  );
+  const changePictures = (next: Asset[]) => {
+    setPictures(next);
+    edited("pictures");
+  };
+  const adder = usePictureAdder({
+    pictures,
+    onChange: changePictures,
+    max: NOTE_PICTURES_MAX,
+  });
 
   return (
-    <form className="card" aria-labelledby="note-form-heading" noValidate onSubmit={submit}>
+    <form
+      className="card"
+      aria-labelledby="note-form-heading"
+      noValidate
+      onSubmit={submit}
+      onPaste={adder.onPaste}
+    >
       <h2 id="note-form-heading" className="form-title">
         {note ? "Edit note" : imported ? `New note from ${imported.fileName}` : "New note"}
       </h2>
@@ -1321,6 +1352,16 @@ function NoteForm({
           setBody(value);
           edited("body");
         }}
+      />
+      <PictureField
+        id="note-pictures"
+        label="Pictures"
+        hint="Optional. Up to 20 PNG, JPEG, GIF or WebP pictures of up to 20 MB each, shown under the note in this order."
+        pictures={pictures}
+        onChange={changePictures}
+        adder={adder}
+        error={fieldError("pictures")}
+        disabled={saving}
       />
 
       <FormActions

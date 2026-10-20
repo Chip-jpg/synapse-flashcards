@@ -105,6 +105,8 @@ describe("reading a note written in Markdown", () => {
 
     expect((screen.getByLabelText("Note") as HTMLTextAreaElement).value).toBe(BODY);
     await user.click(screen.getByRole("button", { name: "Save changes" }));
-    expect(backend.argsOf("update_note")).toEqual([{ noteId: 5, title: "Mitosis", body: BODY }]);
+    expect(backend.argsOf("update_note")).toEqual([
+      { noteId: 5, title: "Mitosis", body: BODY, pictures: [] },
+    ]);
   });
 });

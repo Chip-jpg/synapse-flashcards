@@ -87,6 +87,7 @@ use sqlx::{SqliteConnection, SqlitePool};
 
 use crate::cloze::{self, RestoreBlock};
 use crate::db::{to_db_time, DbError};
+use crate::pictures::{self, CardPictureIds, CardPictures, PictureError, PictureProblem};
 use crate::study;
 
 pub const DECK_NAME_MAX_CHARS: usize = 100;
@@ -134,14 +135,16 @@ pub struct ArchivedDeck {
     pub archived_at: String,
 }
 
-/// One card in a deck's card list: `{ id, front, back, cloze }`, where
-/// `cloze` is `null` for a front/back card.
+/// One card in a deck's card list: `{ id, front, back, cloze, pictures }`,
+/// where `cloze` is `null` for a front/back card and `pictures` holds the
+/// pictures on each side (`{ front: [], back: [] }` for most cards).
 #[derive(Debug, PartialEq, serde::Serialize)]
 pub struct DeckCard {
     pub id: i64,
     pub front: String,
     pub back: String,
     pub cloze: Option<CardCloze>,
+    pub pictures: CardPictures,
 }
 
 /// Which cloze text a card was made from, and its number in it:
@@ -234,6 +237,11 @@ pub enum InvalidInput {
     ClozeEmpty,
     /// A deletion's number is 0 or above `cloze::CLOZE_NUMBER_MAX`.
     ClozeNumber,
+    /// The front's pictures: too many, one that isn't a kept picture, or one
+    /// twice (`pictures.rs`).
+    FrontPictures(PictureProblem),
+    /// The same, for the back's pictures.
+    BackPictures(PictureProblem),
 }
 
 /// Why an authoring operation didn't happen.
@@ -531,22 +539,27 @@ pub(crate) async fn load_deck_detail(
     )
     .bind(deck_id)
     .fetch_all(&mut *conn)
-    .await?
-    .into_iter()
-    .map(|row| DeckCard {
-        cloze: match (row.cloze_text_id, row.cloze_number, row.cloze_text) {
-            (Some(text_id), Some(number), Some(text)) => Some(CardCloze {
-                text_id,
-                number,
-                text,
-            }),
-            _ => None,
-        },
-        id: row.id,
-        front: row.front,
-        back: row.back,
-    })
-    .collect();
+    .await?;
+    let mut card_pictures = pictures::deck_card_pictures(conn, deck_id)
+        .await
+        .map_err(AuthoringError::Internal)?;
+    let cards = cards
+        .into_iter()
+        .map(|row| DeckCard {
+            pictures: card_pictures.remove(&row.id).unwrap_or_default(),
+            cloze: match (row.cloze_text_id, row.cloze_number, row.cloze_text) {
+                (Some(text_id), Some(number), Some(text)) => Some(CardCloze {
+                    text_id,
+                    number,
+                    text,
+                }),
+                _ => None,
+            },
+            id: row.id,
+            front: row.front,
+            back: row.back,
+        })
+        .collect();
 
     // Most recently deleted first, as the archived-deck and deleted-note
     // histories are ordered: the card the user just deleted is the one they
@@ -604,11 +617,28 @@ pub async fn deck_detail(
 /// The card starts as a brand-new FSRS card: state `New`, no memory state,
 /// no reviews, and `due` NULL, which the study queries treat as due now. So
 /// it's offered in this deck's next review session, and in no other deck's.
+///
+/// Only the tests use it; the app saves through the `_with_pictures` version.
+#[cfg(test)]
 pub async fn create_flashcard(
     pool: &SqlitePool,
     deck_id: i64,
     front: &str,
     back: &str,
+    now: DateTime<Utc>,
+) -> Result<DeckDetail, AuthoringError> {
+    create_flashcard_with_pictures(pool, deck_id, front, back, &CardPictureIds::default(), now)
+        .await
+}
+
+/// As [`create_flashcard`], with pictures on either side (`pictures.rs`).
+/// The text and every picture are checked before anything is written.
+pub async fn create_flashcard_with_pictures(
+    pool: &SqlitePool,
+    deck_id: i64,
+    front: &str,
+    back: &str,
+    picture_ids: &CardPictureIds,
     now: DateTime<Utc>,
 ) -> Result<DeckDetail, AuthoringError> {
     let card = validate_card(front, back)?;
@@ -618,7 +648,11 @@ pub async fn create_flashcard(
     // Stops here, before writing anything, if the deck is missing, archived,
     // or the sample deck. Returning early drops `tx`, which rolls it back.
     active_normal_deck(&mut tx, deck_id).await?;
-    insert_new_card(&mut tx, deck_id, &card, &now).await?;
+    let card_pictures = checked_card_pictures(&mut tx, picture_ids).await?;
+    let card_id = insert_new_card(&mut tx, deck_id, &card, &now).await?;
+    if !card_pictures.is_empty() {
+        pictures::set_card_pictures(&mut tx, card_id, &card_pictures).await?;
+    }
 
     let deck = load_deck_detail(&mut tx, deck_id, &now).await?;
     tx.commit().await?;
@@ -673,8 +707,8 @@ pub(crate) async fn insert_new_card(
     deck_id: i64,
     card: &NewCard,
     now: &str,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
+) -> Result<i64, sqlx::Error> {
+    let inserted = sqlx::query(
         "INSERT INTO flashcards (deck_id, front, back, fsrs_state, due, reps, lapses,
                                  created_at, updated_at)
          VALUES (?1, ?2, ?3, 'New', NULL, 0, 0, ?4, ?4)",
@@ -685,7 +719,31 @@ pub(crate) async fn insert_new_card(
     .bind(now)
     .execute(conn)
     .await?;
-    Ok(())
+    Ok(inserted.last_insert_rowid())
+}
+
+/// Checks the pictures for both sides of a card, saying which side is wrong.
+async fn checked_card_pictures(
+    conn: &mut SqliteConnection,
+    ids: &CardPictureIds,
+) -> Result<CardPictures, AuthoringError> {
+    Ok(CardPictures {
+        front: picture_side(conn, &ids.front, InvalidInput::FrontPictures).await?,
+        back: picture_side(conn, &ids.back, InvalidInput::BackPictures).await?,
+    })
+}
+
+async fn picture_side(
+    conn: &mut SqliteConnection,
+    ids: &[i64],
+    wrong: fn(PictureProblem) -> InvalidInput,
+) -> Result<Vec<crate::assets::Asset>, AuthoringError> {
+    pictures::checked(conn, ids, pictures::CARD_SIDE_PICTURES_MAX)
+        .await
+        .map_err(|err| match err {
+            PictureError::Invalid(problem) => AuthoringError::Invalid(wrong(problem)),
+            PictureError::Internal(detail) => AuthoringError::Internal(detail),
+        })
 }
 
 /// Where a card sits and what state it is in: everything needed to decide
@@ -777,11 +835,27 @@ async fn restorable_card_deck(
 /// Only the text (and `updated_at`) changes. The card's FSRS state, due date,
 /// repetitions, lapses, and review logs are untouched, so its schedule carries
 /// on as before.
+///
+/// Only the tests use it; the app saves through the `_with_pictures` version.
+#[cfg(test)]
 pub async fn update_flashcard(
     pool: &SqlitePool,
     card_id: i64,
     front: &str,
     back: &str,
+    now: DateTime<Utc>,
+) -> Result<DeckDetail, AuthoringError> {
+    update_flashcard_with_pictures(pool, card_id, front, back, None, now).await
+}
+
+/// As [`update_flashcard`], also replacing the card's pictures when
+/// `picture_ids` is given (`None` keeps them).
+pub async fn update_flashcard_with_pictures(
+    pool: &SqlitePool,
+    card_id: i64,
+    front: &str,
+    back: &str,
+    picture_ids: Option<&CardPictureIds>,
     now: DateTime<Utc>,
 ) -> Result<DeckDetail, AuthoringError> {
     let card = validate_card(front, back)?;
@@ -798,6 +872,10 @@ pub async fn update_flashcard(
     if kind != "basic" {
         return Err(AuthoringError::WrongKind);
     }
+    let card_pictures = match picture_ids {
+        Some(ids) => Some(checked_card_pictures(&mut tx, ids).await?),
+        None => None,
+    };
     sqlx::query(
         "UPDATE flashcards SET front = ?1, back = ?2, updated_at = ?3
          WHERE id = ?4 AND deleted_at IS NULL",
@@ -808,6 +886,9 @@ pub async fn update_flashcard(
     .bind(card_id)
     .execute(&mut *tx)
     .await?;
+    if let Some(card_pictures) = card_pictures {
+        pictures::set_card_pictures(&mut tx, card_id, &card_pictures).await?;
+    }
 
     let deck = load_deck_detail(&mut tx, deck_id, &now).await?;
     tx.commit().await?;
@@ -2133,6 +2214,7 @@ mod tests {
                     front: new_front.into(),
                     back: "New back".into(),
                     cloze: None,
+                    pictures: CardPictures::default(),
                 }
             );
             assert_eq!((detail.card_count, detail.due_count), (2, 1));
@@ -2397,6 +2479,7 @@ mod tests {
                     front: "A2".into(),
                     back: "a2".into(),
                     cloze: None,
+                    pictures: CardPictures::default(),
                 }]
             );
             assert_eq!(
@@ -2525,6 +2608,7 @@ mod tests {
                     front: "New\nfront".into(),
                     back: "new back".into(),
                     cloze: None,
+                    pictures: CardPictures::default(),
                 }]
             );
             // The seed card plus both created cards, the deleted one included.

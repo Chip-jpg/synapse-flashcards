@@ -241,3 +241,14 @@ export function FileIcon() {
     </Icon>
   );
 }
+
+/** A framed landscape: a picture. */
+export function PictureIcon() {
+  return (
+    <Icon>
+      <rect x="3.5" y="5" width="17" height="14" rx="2" />
+      <circle cx="9" cy="10" r="1.6" />
+      <path d="m4 17 5-4.5 4 3.5 2.5-2 4.5 3.5" />
+    </Icon>
+  );
+}

@@ -2938,9 +2938,16 @@ mod tests {
         let source = crate::sources::create_source(&pool, &store, &document, at(NOW))
             .await
             .unwrap();
-        let note = crate::notes::create_note(&pool, "From the PDF", "Cells", at(NOW))
-            .await
-            .unwrap();
+        // The note shows the picture (0017), so a restore must bring both.
+        let note = crate::notes::create_note_with_pictures(
+            &pool,
+            "From the PDF",
+            "Cells",
+            &[picture.id],
+            at(NOW),
+        )
+        .await
+        .unwrap();
         crate::sources::link_note(&pool, note.id, source.id, at(NOW))
             .await
             .unwrap();
@@ -3058,6 +3065,19 @@ mod tests {
             }
             let response = assets::respond(&restored, &store, &format!("/{}", own.sha256)).await;
             assert_eq!(response.status(), 404);
+            // The note still shows its picture.
+            let note = crate::notes::notes(&restored)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|note| note.title == "From the PDF")
+                .unwrap();
+            let pictures = crate::notes::note(&restored, note.id)
+                .await
+                .unwrap()
+                .pictures;
+            assert_eq!(pictures.len(), 1);
+            assert!(hashes.contains(&pictures[0].sha256));
 
             // Backed up again, it carries the same files and nothing else.
             let again = dir.join("again.zip");

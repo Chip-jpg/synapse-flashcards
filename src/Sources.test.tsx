@@ -191,6 +191,7 @@ describe("the Sources screen", () => {
         sourceId: 3,
         title: "Lecture 3",
         body: "Mitosis is cell division.\n\nMetaphase: chromosomes line up.",
+        pictures: [],
       },
     ]);
   });

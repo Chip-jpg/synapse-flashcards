@@ -25,6 +25,7 @@ use crate::extract::{self, ExtractError, ExtractedText, FileKind};
 use crate::import::{self, ImportError, ImportState, RestoreError};
 use crate::notes::{self, DeletedNote, InvalidNote, Note, NoteError, NoteSummary};
 use crate::optimizer::{self, IntervalChange, Optimized, OptimizerError, Optimizing, Settings};
+use crate::pictures::{CardPictureIds, PictureProblem};
 use crate::quiz::{self, QuizQuestion, Quizzing};
 use crate::retention::{self, RetentionError};
 use crate::scheduler::Rating;
@@ -63,6 +64,11 @@ enum Field {
     Body,
     /// A cloze card's text.
     Text,
+    /// A note's pictures.
+    Pictures,
+    /// The pictures on a card's front, or on its back.
+    FrontPictures,
+    BackPictures,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -138,6 +144,12 @@ impl CommandError {
                 "Each {{c1::…}} needs an answer, and a hint if it has :: after the answer.",
             ),
             InvalidInput::ClozeNumber => (Field::Text, "Number each {{c1::…}} from 1 to 999."),
+            InvalidInput::FrontPictures(problem) => {
+                (Field::FrontPictures, picture_message(problem, false))
+            }
+            InvalidInput::BackPictures(problem) => {
+                (Field::BackPictures, picture_message(problem, false))
+            }
         };
         CommandError {
             kind: ErrorKind::Invalid,
@@ -163,6 +175,7 @@ impl CommandError {
             InvalidNote::TitleTooLong => (Field::Title, "Titles can be at most 200 characters."),
             InvalidNote::BodyBlank => (Field::Body, "Write something in the note."),
             InvalidNote::BodyTooLong => (Field::Body, "A note can be at most 100,000 characters."),
+            InvalidNote::Pictures(problem) => (Field::Pictures, picture_message(problem, true)),
         };
         CommandError {
             kind: ErrorKind::Invalid,
@@ -170,6 +183,19 @@ impl CommandError {
             field: Some(field),
             index: None,
         }
+    }
+}
+
+/// What to say about a list of pictures that was refused. The limits must
+/// match `pictures.rs` (checked by a test below).
+fn picture_message(problem: PictureProblem, on_note: bool) -> &'static str {
+    match (problem, on_note) {
+        (PictureProblem::TooMany, true) => "A note can show at most 20 pictures.",
+        (PictureProblem::TooMany, false) => "Each side of a card can show at most 4 pictures.",
+        (PictureProblem::NotAPicture, _) => {
+            "One of the pictures is no longer available. Add it again."
+        }
+        (PictureProblem::Repeated, _) => "The same picture was added twice.",
     }
 }
 
@@ -511,12 +537,14 @@ pub async fn create_flashcard(
     deck_id: i64,
     front: String,
     back: String,
+    pictures: Option<CardPictureIds>,
 ) -> Result<DeckDetail, CommandError> {
     if deck_id < 1 {
         return Err(CommandError::invalid(DECK_NOT_FOUND));
     }
     let pool = pool(&app, &database).await?;
-    authoring::create_flashcard(&pool, deck_id, &front, &back, Utc::now())
+    let pictures = pictures.unwrap_or_default();
+    authoring::create_flashcard_with_pictures(&pool, deck_id, &front, &back, &pictures, Utc::now())
         .await
         .map_err(|err| authoring_error(err, "adding a card", "Synapse couldn't save the card."))
 }
@@ -555,14 +583,22 @@ pub async fn update_flashcard(
     card_id: i64,
     front: String,
     back: String,
+    pictures: Option<CardPictureIds>,
 ) -> Result<DeckDetail, CommandError> {
     if card_id < 1 {
         return Err(CommandError::invalid(CARD_NOT_FOUND));
     }
     let pool = pool(&app, &database).await?;
-    authoring::update_flashcard(&pool, card_id, &front, &back, Utc::now())
-        .await
-        .map_err(|err| authoring_error(err, "editing a card", "Synapse couldn't save the card."))
+    authoring::update_flashcard_with_pictures(
+        &pool,
+        card_id,
+        &front,
+        &back,
+        pictures.as_ref(),
+        Utc::now(),
+    )
+    .await
+    .map_err(|err| authoring_error(err, "editing a card", "Synapse couldn't save the card."))
 }
 
 /// Adds a cloze text to a normal deck: one new card, due immediately, for
@@ -978,9 +1014,11 @@ pub async fn create_note(
     database: State<'_, Database>,
     title: String,
     body: String,
+    pictures: Option<Vec<i64>>,
 ) -> Result<Note, CommandError> {
     let pool = pool(&app, &database).await?;
-    notes::create_note(&pool, &title, &body, Utc::now())
+    let pictures = pictures.unwrap_or_default();
+    notes::create_note_with_pictures(&pool, &title, &body, &pictures, Utc::now())
         .await
         .map_err(|err| note_error(err, "saving a note", "Synapse couldn't save the note."))
 }
@@ -996,14 +1034,22 @@ pub async fn update_note(
     note_id: i64,
     title: String,
     body: String,
+    pictures: Option<Vec<i64>>,
 ) -> Result<Note, CommandError> {
     if note_id < 1 {
         return Err(CommandError::invalid(NOTE_NOT_FOUND));
     }
     let pool = pool(&app, &database).await?;
-    notes::update_note(&pool, note_id, &title, &body, Utc::now())
-        .await
-        .map_err(|err| note_error(err, "editing a note", "Synapse couldn't save the note."))
+    notes::update_note_with_pictures(
+        &pool,
+        note_id,
+        &title,
+        &body,
+        pictures.as_deref(),
+        Utc::now(),
+    )
+    .await
+    .map_err(|err| note_error(err, "editing a note", "Synapse couldn't save the note."))
 }
 
 /// Soft-deletes a note: it leaves the library, but its text is kept and it can
@@ -3024,7 +3070,8 @@ pub async fn get_note_source(
 }
 
 /// Saves a new note written from a source and records that it came from it,
-/// together: `{ sourceId, title, body }`. Returns the [`Note`]. A refused
+/// together: `{ sourceId, title, body, pictures? }` (picture ids, in order, as
+/// `create_note` takes them). Returns the [`Note`]. A refused
 /// title or text points at its field, as `create_note` does; a deleted
 /// source rejects with kind "stale". Nothing is written either way.
 #[tauri::command]
@@ -3034,9 +3081,11 @@ pub async fn create_note_from_source(
     source_id: i64,
     title: String,
     body: String,
+    pictures: Option<Vec<i64>>,
 ) -> Result<Note, CommandError> {
     let pool = pool(&app, &database).await?;
-    sources::create_note(&pool, source_id, &title, &body, Utc::now())
+    let pictures = pictures.unwrap_or_default();
+    sources::create_note(&pool, source_id, &title, &body, &pictures, Utc::now())
         .await
         .map_err(|err| match err {
             sources::NoteFromSourceError::Note(err) => note_error(
@@ -3470,6 +3519,7 @@ mod tests {
                 body: "one\ntwo".to_string(),
                 created_at: time.clone(),
                 updated_at: time.clone(),
+                pictures: Vec::new(),
             })
             .unwrap(),
             json!({
@@ -3477,7 +3527,8 @@ mod tests {
                 "title": "Cells",
                 "body": "one\ntwo",
                 "createdAt": "2026-09-16T12:00:00.000Z",
-                "updatedAt": "2026-09-16T12:00:00.000Z"
+                "updatedAt": "2026-09-16T12:00:00.000Z",
+                "pictures": []
             })
         );
         assert_eq!(
@@ -3524,6 +3575,46 @@ mod tests {
             to_json(NoteError::Internal("no such table: notes".into())),
             json!({ "kind": "failed", "message": "failed" })
         );
+    }
+
+    #[test]
+    fn picture_errors_point_at_the_pictures_and_match_the_limits() {
+        use crate::pictures::{CARD_SIDE_PICTURES_MAX, NOTE_PICTURES_MAX};
+        let note = serde_json::to_value(note_error(
+            NoteError::Invalid(InvalidNote::Pictures(PictureProblem::TooMany)),
+            "test",
+            "failed",
+        ))
+        .unwrap();
+        assert_eq!(note["field"], "pictures");
+        assert!(note["message"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("at most {NOTE_PICTURES_MAX} pictures")));
+        for (problem, field) in [
+            (
+                InvalidInput::FrontPictures(PictureProblem::TooMany),
+                "frontPictures",
+            ),
+            (
+                InvalidInput::BackPictures(PictureProblem::TooMany),
+                "backPictures",
+            ),
+        ] {
+            let card = serde_json::to_value(CommandError::invalid_input(problem)).unwrap();
+            assert_eq!(card["field"], field);
+            assert!(card["message"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("at most {CARD_SIDE_PICTURES_MAX} pictures")));
+        }
+        for problem in [PictureProblem::NotAPicture, PictureProblem::Repeated] {
+            let card = serde_json::to_value(CommandError::invalid_input(
+                InvalidInput::BackPictures(problem),
+            ))
+            .unwrap();
+            assert_eq!(card["kind"], "invalid");
+        }
     }
 
     #[test]

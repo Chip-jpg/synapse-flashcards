@@ -52,7 +52,20 @@ export type DeckCard = {
   back: string;
   /** For a cloze card, the text it was made from; `null` (or absent) for a front/back card. */
   cloze?: CardCloze | null;
+  /** The pictures on each side (absent from older test data: no pictures). */
+  pictures?: CardPictures;
 };
+
+/** Mirrors `CardPictures` in `src-tauri/src/pictures.rs`: each side's pictures, in order. */
+export type CardPictures = { front: Asset[]; back: Asset[] };
+
+/** The pictures to save on each side of a card, by asset id, in order. */
+export type CardPictureIds = { front: number[]; back: number[] };
+
+/** The most pictures a note shows: `NOTE_PICTURES_MAX` in `pictures.rs`. */
+export const NOTE_PICTURES_MAX = 20;
+/** The most pictures one side of a card shows: `CARD_SIDE_PICTURES_MAX` in `pictures.rs`. */
+export const CARD_SIDE_PICTURES_MAX = 4;
 
 /**
  * Mirrors `CardCloze` in `src-tauri/src/authoring.rs`: the cloze text a card
@@ -145,6 +158,8 @@ export type SessionCard =
       offerHelp: boolean;
       /** A cloze card as pieces of its text; `null` (or absent) for a front/back card. */
       cloze?: ClozePart[] | null;
+      /** The pictures on each side of a front/back card (absent from older test data: none). */
+      pictures?: CardPictures;
     }
   | { status: "completed"; cardsReviewed: number };
 
@@ -199,6 +214,8 @@ export type Note = {
   body: string;
   createdAt: string;
   updatedAt: string;
+  /** The pictures shown under the text, in order (absent from older test data: none). */
+  pictures?: Asset[];
 };
 
 /**
@@ -206,7 +223,18 @@ export type Note = {
  * plus "deck", used only by the frontend's own check that a deck was chosen
  * before asking Rust to add a card to it.
  */
-export type Field = "name" | "description" | "front" | "back" | "title" | "body" | "text" | "deck";
+export type Field =
+  | "name"
+  | "description"
+  | "front"
+  | "back"
+  | "title"
+  | "body"
+  | "text"
+  | "deck"
+  | "pictures"
+  | "frontPictures"
+  | "backPictures";
 
 /** Mirrors `CommandError` in `src-tauri/src/commands.rs`. */
 export type CommandError = {
@@ -335,8 +363,13 @@ export function getDeckDetail(deckId: number): Promise<DeckDetail> {
 }
 
 /** Adds a new, immediately due card to a normal deck; resolves with the updated deck. */
-export function createFlashcard(deckId: number, front: string, back: string): Promise<DeckDetail> {
-  return invoke<DeckDetail>("create_flashcard", { deckId, front, back });
+export function createFlashcard(
+  deckId: number,
+  front: string,
+  back: string,
+  pictures?: CardPictureIds
+): Promise<DeckDetail> {
+  return invoke<DeckDetail>("create_flashcard", { deckId, front, back, pictures });
 }
 
 /**
@@ -379,8 +412,13 @@ export function previewCloze(text: string, cardId: number | null): Promise<Cloze
 }
 
 /** Replaces a card's text, keeping its schedule and history; resolves with its deck. */
-export function updateFlashcard(cardId: number, front: string, back: string): Promise<DeckDetail> {
-  return invoke<DeckDetail>("update_flashcard", { cardId, front, back });
+export function updateFlashcard(
+  cardId: number,
+  front: string,
+  back: string,
+  pictures?: CardPictureIds
+): Promise<DeckDetail> {
+  return invoke<DeckDetail>("update_flashcard", { cardId, front, back, pictures });
 }
 
 /**
@@ -775,13 +813,21 @@ export function getNote(noteId: number): Promise<Note> {
 }
 
 /** Saves a new note. Rust trims and validates both fields; errors name the field to fix. */
-export function createNote(title: string, body: string): Promise<Note> {
-  return invoke<Note>("create_note", { title, body });
+export function createNote(title: string, body: string, pictures?: number[]): Promise<Note> {
+  return invoke<Note>("create_note", { title, body, pictures });
 }
 
-/** Replaces a note's title and body (same rules as creating); resolves with the saved note. */
-export function updateNote(noteId: number, title: string, body: string): Promise<Note> {
-  return invoke<Note>("update_note", { noteId, title, body });
+/**
+ * Replaces a note's title and body (same rules as creating), and its pictures
+ * when `pictures` (asset ids, in order) is given; resolves with the saved note.
+ */
+export function updateNote(
+  noteId: number,
+  title: string,
+  body: string,
+  pictures?: number[]
+): Promise<Note> {
+  return invoke<Note>("update_note", { noteId, title, body, pictures });
 }
 
 /**
@@ -1245,8 +1291,13 @@ export function getNoteSource(noteId: number): Promise<number | null> {
  * title or text rejects with its field, as `createNote` does; a deleted
  * source rejects with kind "stale".
  */
-export function createNoteFromSource(sourceId: number, title: string, body: string): Promise<Note> {
-  return invoke<Note>("create_note_from_source", { sourceId, title, body });
+export function createNoteFromSource(
+  sourceId: number,
+  title: string,
+  body: string,
+  pictures?: number[]
+): Promise<Note> {
+  return invoke<Note>("create_note_from_source", { sourceId, title, body, pictures });
 }
 
 /** The active notes written from an active source, most recently edited first. */

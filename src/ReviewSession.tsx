@@ -3,12 +3,14 @@ import {
   getSessionCard,
   reviewCard,
   toCommandError,
+  type CardPictures,
   type ClozePart,
   type Flashcard,
   type Rating,
   type SessionProgress,
 } from "./api";
 import { CardHelp } from "./CardHelp";
+import { PictureGallery } from "./pictures";
 import { Message, useFocusOnMount } from "./ui";
 
 type SessionState =
@@ -21,6 +23,7 @@ type SessionState =
       againStreak: number;
       offerHelp: boolean;
       cloze?: ClozePart[] | null;
+      pictures?: CardPictures;
     }
   | { status: "completed"; cardsReviewed: number };
 
@@ -124,6 +127,7 @@ export function ReviewSession({
             againStreak={state.againStreak ?? 0}
             offerHelp={state.offerHelp === true}
             cloze={state.cloze ?? null}
+            pictures={state.pictures}
             onReviewed={reload}
           />
         </>
@@ -185,6 +189,7 @@ function Card({
   againStreak,
   offerHelp,
   cloze,
+  pictures,
   onReviewed,
 }: {
   sessionId: number;
@@ -193,6 +198,8 @@ function Card({
   offerHelp: boolean;
   /** A cloze card as pieces of its text, or null for a front/back card. */
   cloze: ClozePart[] | null;
+  /** The pictures on each side of a front/back card. */
+  pictures: CardPictures | undefined;
   onReviewed: () => void;
 }) {
   const [revealed, setRevealed] = useState(false);
@@ -291,6 +298,11 @@ function Card({
           <p className="card-text">
             {cloze ? <ClozeText parts={cloze} revealed={false} /> : card.front}
           </p>
+          <PictureGallery
+            pictures={pictures?.front}
+            label="Picture with the question"
+            listLabel="Pictures with the question"
+          />
         </section>
 
         {revealed && (
@@ -306,6 +318,11 @@ function Card({
             <p className="card-text">
               {cloze ? <ClozeText parts={cloze} revealed /> : card.back}
             </p>
+            <PictureGallery
+              pictures={pictures?.back}
+              label="Picture with the answer"
+              listLabel="Pictures with the answer"
+            />
           </section>
         )}
       </div>

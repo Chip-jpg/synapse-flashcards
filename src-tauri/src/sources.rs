@@ -422,6 +422,7 @@ pub async fn create_note(
     source_id: i64,
     title: &str,
     body: &str,
+    picture_ids: &[i64],
     now: DateTime<Utc>,
 ) -> Result<Note, NoteFromSourceError> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -431,7 +432,7 @@ pub async fn create_note(
     if source.deleted_at.is_some() {
         return Err(NoteFromSourceError::Source(SourceError::Deleted));
     }
-    let note = notes::insert_note(&mut tx, title, body, now)
+    let note = notes::insert_note(&mut tx, title, body, picture_ids, now)
         .await
         .map_err(NoteFromSourceError::Note)?;
     sqlx::query("INSERT INTO source_notes (note_id, source_id, created_at) VALUES (?1, ?2, ?3)")
@@ -997,7 +998,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            let note = create_note(&pool, source.id, " Biology ", "Cells", at(NOW))
+            let note = create_note(&pool, source.id, " Biology ", "Cells", &[], at(NOW))
                 .await
                 .unwrap();
             assert_eq!(note.title, "Biology");
@@ -1005,20 +1006,72 @@ mod tests {
 
             // A refused note writes neither the note nor a link.
             assert!(matches!(
-                create_note(&pool, source.id, "   ", "Cells", at(NOW)).await,
+                create_note(&pool, source.id, "   ", "Cells", &[], at(NOW)).await,
                 Err(NoteFromSourceError::Note(NoteError::Invalid(_)))
             ));
             assert!(matches!(
-                create_note(&pool, 999, "Title", "Cells", at(NOW)).await,
+                create_note(&pool, 999, "Title", "Cells", &[], at(NOW)).await,
                 Err(NoteFromSourceError::Source(SourceError::NotFound))
             ));
             delete_source(&pool, source.id, at(LATER)).await.unwrap();
             assert!(matches!(
-                create_note(&pool, source.id, "Title", "Cells", at(NOW)).await,
+                create_note(&pool, source.id, "Title", "Cells", &[], at(NOW)).await,
                 Err(NoteFromSourceError::Source(SourceError::Deleted))
             ));
             assert_eq!(count(&pool, "SELECT COUNT(*) FROM notes").await, 1);
             assert_eq!(count(&pool, "SELECT COUNT(*) FROM source_notes").await, 1);
+            let _ = std::fs::remove_dir_all(store.dir());
+        });
+    }
+
+    #[test]
+    fn a_note_from_a_source_keeps_its_pictures_or_saves_nothing() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let store = scratch_store("sources-note-pictures");
+            let source = create_source(&pool, &store, &pdf_document("x"), at(NOW))
+                .await
+                .unwrap();
+            let first = crate::assets::add_picture(&pool, &store, &png(1), at(NOW))
+                .await
+                .unwrap();
+            let second = crate::assets::add_picture(&pool, &store, &png(2), at(NOW))
+                .await
+                .unwrap();
+
+            let note = create_note(
+                &pool,
+                source.id,
+                "Biology",
+                "Cells",
+                &[second.id, first.id],
+                at(NOW),
+            )
+            .await
+            .unwrap();
+            assert_eq!(note.pictures, vec![second.clone(), first.clone()]);
+            assert_eq!(
+                crate::notes::note(&pool, note.id).await.unwrap().pictures,
+                vec![second, first.clone()]
+            );
+            assert_eq!(note_source(&pool, note.id).await.unwrap(), Some(source.id));
+
+            // A file that isn't a picture refuses the note, and its link.
+            assert!(matches!(
+                create_note(
+                    &pool,
+                    source.id,
+                    "Other",
+                    "Cells",
+                    &[first.id, source.asset.id],
+                    at(NOW),
+                )
+                .await,
+                Err(NoteFromSourceError::Note(NoteError::Invalid(_)))
+            ));
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM notes").await, 1);
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM source_notes").await, 1);
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM note_pictures").await, 2);
             let _ = std::fs::remove_dir_all(store.dir());
         });
     }
@@ -1034,13 +1087,13 @@ mod tests {
             let other = create_source(&pool, &store, &text_document("other"), at(NOW))
                 .await
                 .unwrap();
-            let first = create_note(&pool, source.id, "First", "a", at(NOW))
+            let first = create_note(&pool, source.id, "First", "a", &[], at(NOW))
                 .await
                 .unwrap();
-            let second = create_note(&pool, source.id, "Second", "b", at(LATER))
+            let second = create_note(&pool, source.id, "Second", "b", &[], at(LATER))
                 .await
                 .unwrap();
-            create_note(&pool, other.id, "Elsewhere", "c", at(NOW))
+            create_note(&pool, other.id, "Elsewhere", "c", &[], at(NOW))
                 .await
                 .unwrap();
             crate::notes::create_note(&pool, "Unlinked", "d", at(NOW))
@@ -1080,7 +1133,7 @@ mod tests {
             let source = create_source(&pool, &store, &pdf_document("one"), at(NOW))
                 .await
                 .unwrap();
-            let note = create_note(&pool, source.id, "Biology", "Cells", at(NOW))
+            let note = create_note(&pool, source.id, "Biology", "Cells", &[], at(NOW))
                 .await
                 .unwrap();
             let quotes: Vec<String> = [

@@ -12,6 +12,9 @@ import {
   toCommandError,
   updateCloze,
   updateFlashcard,
+  CARD_SIDE_PICTURES_MAX,
+  type Asset,
+  type CardPictures,
   type ClozeChanges,
   type DeckCard,
   type DeckDetail as Deck,
@@ -30,6 +33,10 @@ import {
 } from "./icons";
 import { formatDateTime, Message, useFocusOnMount } from "./ui";
 import { useUnsavedChanges } from "./unsaved";
+import { PictureField, PictureGallery, samePictures, usePictureAdder } from "./pictures";
+
+/** A card with no pictures, as cards from before pictures (and tests) arrive. */
+const NO_PICTURES: CardPictures = { front: [], back: [] };
 import { useStartReview } from "./useStartReview";
 
 type DetailState =
@@ -696,12 +703,15 @@ function CardText({
   front,
   back,
   clozeNumber,
+  pictures,
 }: {
   frontId: string;
   front: string;
   back: string;
   /** A cloze card's number, shown as a tag: the card hides that `{{cN::…}}`. */
   clozeNumber?: number;
+  /** Each side's pictures, shown small under its text. */
+  pictures?: CardPictures;
 }) {
   return (
     <div className="card-sides">
@@ -710,8 +720,20 @@ function CardText({
       <p id={frontId} className="card-item-text card-item-front">
         {front}
       </p>
+      <PictureGallery
+        pictures={pictures?.front}
+        label="Picture on the front"
+        listLabel="Pictures on the front"
+        compact
+      />
       <p className="side-label">Back</p>
       <p className="card-item-text card-item-back">{back}</p>
+      <PictureGallery
+        pictures={pictures?.back}
+        label="Picture on the back"
+        listLabel="Pictures on the back"
+        compact
+      />
     </div>
   );
 }
@@ -812,6 +834,7 @@ function CardItem({
         front={card.front}
         back={card.back}
         clozeNumber={card.cloze?.number}
+        pictures={card.pictures}
       />
 
       {confirming ? (
@@ -1254,11 +1277,20 @@ function CardForm({
   const [front, setFront] = useState(initialFront);
   const [back, setBack] = useState(initialBack);
   const [text, setText] = useState(initialText);
+  const initialPictures = card?.pictures ?? NO_PICTURES;
+  const [frontPictures, setFrontPictures] = useState<Asset[]>(initialPictures.front);
+  const [backPictures, setBackPictures] = useState<Asset[]>(initialPictures.back);
   const [preview, setPreview] = useState<Preview>({ status: "none" });
   // Once a kind has been chosen, focus stays on the choice rather than
   // jumping to the field that appears.
   const [chosen, setChosen] = useState(false);
-  useUnsavedChanges(front !== initialFront || back !== initialBack || text !== initialText);
+  useUnsavedChanges(
+    front !== initialFront ||
+      back !== initialBack ||
+      text !== initialText ||
+      !samePictures(frontPictures, initialPictures.front) ||
+      !samePictures(backPictures, initialPictures.back),
+  );
   const { saving, submit, fieldError, formError, edited } = useFormSave(
     async (): Promise<{ deck: Deck; notice: string }> => {
       if (kind === "cloze") {
@@ -1277,14 +1309,42 @@ function CardForm({
           ),
         };
       }
+      const pictures = {
+        front: frontPictures.map((picture) => picture.id),
+        back: backPictures.map((picture) => picture.id),
+      };
       const saved = card
-        ? await updateFlashcard(card.id, front, back)
-        : await createFlashcard(deck.id, front, back);
+        ? await updateFlashcard(card.id, front, back, pictures)
+        : await createFlashcard(deck.id, front, back, pictures);
       return { deck: saved, notice: card ? "Card updated." : "Card added." };
     },
     (saved) => onSaved(saved.deck, saved.notice),
-    { front: "card-front", back: "card-back", text: "card-text" },
+    {
+      front: "card-front",
+      back: "card-back",
+      text: "card-text",
+      frontPictures: "card-front-pictures",
+      backPictures: "card-back-pictures",
+    },
   );
+  const changeFrontPictures = (next: Asset[]) => {
+    setFrontPictures(next);
+    edited("frontPictures");
+  };
+  const changeBackPictures = (next: Asset[]) => {
+    setBackPictures(next);
+    edited("backPictures");
+  };
+  const frontAdder = usePictureAdder({
+    pictures: frontPictures,
+    onChange: changeFrontPictures,
+    max: CARD_SIDE_PICTURES_MAX,
+  });
+  const backAdder = usePictureAdder({
+    pictures: backPictures,
+    onChange: changeBackPictures,
+    max: CARD_SIDE_PICTURES_MAX,
+  });
 
   // The live count: Rust reads the text a moment after typing stops, so the
   // count always follows the same rules as saving.
@@ -1392,33 +1452,57 @@ function CardForm({
         </>
       ) : (
         <>
-          <TextField
-            id="card-front"
-            label="Front"
-            hint="The question. Required. Up to 2,000 characters."
-            value={front}
-            error={fieldError("front")}
-            required
-            multiline
-            autoFocus={!chosen}
-            onChange={(value) => {
-              setFront(value);
-              edited("front");
-            }}
-          />
-          <TextField
-            id="card-back"
-            label="Back"
-            hint="The answer. Required. Up to 2,000 characters."
-            value={back}
-            error={fieldError("back")}
-            required
-            multiline
-            onChange={(value) => {
-              setBack(value);
-              edited("back");
-            }}
-          />
+          <div className="card-form-side" onPaste={frontAdder.onPaste}>
+            <TextField
+              id="card-front"
+              label="Front"
+              hint="The question. Required. Up to 2,000 characters."
+              value={front}
+              error={fieldError("front")}
+              required
+              multiline
+              autoFocus={!chosen}
+              onChange={(value) => {
+                setFront(value);
+                edited("front");
+              }}
+            />
+            <PictureField
+              id="card-front-pictures"
+              label="Pictures on the front"
+              hint="Optional. Up to 4, shown under the question."
+              pictures={frontPictures}
+              onChange={changeFrontPictures}
+              adder={frontAdder}
+              error={fieldError("frontPictures")}
+              disabled={saving}
+            />
+          </div>
+          <div className="card-form-side" onPaste={backAdder.onPaste}>
+            <TextField
+              id="card-back"
+              label="Back"
+              hint="The answer. Required. Up to 2,000 characters."
+              value={back}
+              error={fieldError("back")}
+              required
+              multiline
+              onChange={(value) => {
+                setBack(value);
+                edited("back");
+              }}
+            />
+            <PictureField
+              id="card-back-pictures"
+              label="Pictures on the back"
+              hint="Optional. Up to 4, shown with the answer."
+              pictures={backPictures}
+              onChange={changeBackPictures}
+              adder={backAdder}
+              error={fieldError("backPictures")}
+              disabled={saving}
+            />
+          </div>
         </>
       )}
 

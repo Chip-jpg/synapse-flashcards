@@ -60,7 +60,12 @@ describe("importing a file as a note", () => {
     expect(await screen.findByText("Note saved.")).toBeTruthy();
     // Saved with the source it came from, in one command.
     expect(argsOf("create_note_from_source")).toEqual([
-      { sourceId: 3, title: "Lecture 3", body: `${LECTURE.body}\nAnaphase: chromatids separate.` },
+      {
+        sourceId: 3,
+        title: "Lecture 3",
+        body: `${LECTURE.body}\nAnaphase: chromatids separate.`,
+        pictures: [],
+      },
     ]);
     expect(argsOf("create_note")).toEqual([]);
   });
