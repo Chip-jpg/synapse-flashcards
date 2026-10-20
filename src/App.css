@@ -2771,8 +2771,10 @@ textarea.field-input {
 
 .source-page-jump .field-input {
   width: auto;
-  min-height: 2.25rem;
-  padding-block: 0.25rem;
+  min-height: 0;
+  height: 2.125rem;
+  padding-block: 0;
+  font-size: 0.875rem;
 }
 
 /* A page's text, scrolled on its own so its page buttons stay in reach. */
@@ -2783,6 +2785,11 @@ textarea.field-input {
   background-color: var(--surface-low);
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-sm);
+}
+
+.source-page-scroll .source-page-text {
+  padding-top: 0;
+  border-top: 0;
 }
 
 .source-page-text {
