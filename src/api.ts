@@ -1238,3 +1238,77 @@ export function linkNoteToSource(noteId: number, sourceId: number): Promise<void
 export function getNoteSource(noteId: number): Promise<number | null> {
   return invoke<number | null>("get_note_source", { noteId });
 }
+
+/**
+ * Saves a new note written from an active source and records that it came
+ * from it, both at once: the note is never saved without its link. A refused
+ * title or text rejects with its field, as `createNote` does; a deleted
+ * source rejects with kind "stale".
+ */
+export function createNoteFromSource(sourceId: number, title: string, body: string): Promise<Note> {
+  return invoke<Note>("create_note_from_source", { sourceId, title, body });
+}
+
+/** The active notes written from an active source, most recently edited first. */
+export function getSourceNotes(sourceId: number): Promise<NoteSummary[]> {
+  return invoke<NoteSummary[]>("get_source_notes", { sourceId });
+}
+
+/**
+ * Mirrors `QuoteSpot` in `src-tauri/src/sources.rs`: the page a quote starts
+ * on and the page it ends on (the same, unless it runs over a page break).
+ */
+export type QuoteSpot = { page: number; lastPage: number };
+
+/**
+ * Mirrors `QuotedSource` in `src-tauri/src/sources.rs`: the source a note
+ * was written from, and a spot for each quote asked about, in order (null
+ * when that quote isn't in the source word for word, e.g. after edits).
+ */
+export type QuotedSource = {
+  sourceId: number;
+  title: string;
+  kind: FileKind;
+  pageCount: number;
+  spots: (QuoteSpot | null)[];
+};
+
+/**
+ * Where quotes from a note (a suggested card's or a quiz question's) are in
+ * the source the note was written from, found by Rust with the same
+ * word-for-word rule that checked them. Null when the note didn't come from
+ * a source, or its source is deleted. At most 100 quotes.
+ */
+export function locateQuotes(noteId: number, quotes: string[]): Promise<QuotedSource | null> {
+  return invoke<QuotedSource | null>("locate_quotes", { noteId, quotes });
+}
+
+/**
+ * One page of an active source as pieces of text, with the part of `quote`
+ * on that page marked (`hit`). An empty quote marks nothing. Render the
+ * pieces as text, with `<mark>`, never as HTML.
+ */
+export function getQuotedPage(
+  sourceId: number,
+  number: number,
+  quote: string,
+): Promise<SnippetPiece[]> {
+  return invoke<SnippetPiece[]>("get_quoted_page", { sourceId, number, quote });
+}
+
+/**
+ * Saves a copy of a source's original file where the user chooses, through
+ * the OS "save as" dialog. Closing it resolves with `{ status: "cancelled" }`.
+ */
+export function saveSourceCopy(sourceId: number): Promise<ExportOutcome> {
+  return invoke<ExportOutcome>("save_source_copy", { sourceId });
+}
+
+/**
+ * Opens a source's original in the program the computer uses for that kind
+ * of file. Rust hands that program a copy, in a Synapse folder in the
+ * system's temporary folder, never the kept file itself.
+ */
+export function openSourceOriginal(sourceId: number): Promise<void> {
+  return invoke<void>("open_source_original", { sourceId });
+}

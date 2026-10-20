@@ -529,13 +529,15 @@ pub struct QuoteSpot {
 }
 
 /// The source a note came from, and where each of the quotes asked about is
-/// in it: `{ sourceId, title, spots }`, with a spot (or null, when that quote
+/// in it: `{ sourceId, title, kind, pageCount, spots }`, with a spot (or null, when that quote
 /// isn't in the source word for word) per quote, in the order asked.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotedSource {
     pub source_id: i64,
     pub title: String,
+    pub kind: FileKind,
+    pub page_count: u32,
     pub spots: Vec<Option<QuoteSpot>>,
 }
 
@@ -635,6 +637,8 @@ pub async fn locate_quotes(
     Ok(Some(QuotedSource {
         source_id,
         title: found.title,
+        kind: found.kind,
+        page_count: found.page_count,
         spots,
     }))
 }
@@ -1095,7 +1099,7 @@ mod tests {
                 .unwrap();
             let spot = |page, last_page| Some(QuoteSpot { page, last_page });
             assert_eq!(found.source_id, source.id);
-            assert_eq!(found.title, "Biology one");
+            assert_eq!((found.title.as_str(), found.page_count), ("Biology one", 3));
             assert_eq!(
                 found.spots,
                 vec![spot(1, 1), spot(1, 3), spot(1, 3), None, None]

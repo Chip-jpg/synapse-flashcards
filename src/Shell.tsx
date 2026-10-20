@@ -5,18 +5,20 @@ import {
   ChartIcon,
   DatabaseIcon,
   DeskIcon,
+  FileIcon,
   LogoIcon,
   SearchIcon,
   SlidersIcon,
 } from "./icons";
 
 /** The places the sidebar leads to. */
-export type Place = "desk" | "search" | "notes" | "stats" | "archived" | "backup" | "settings";
+export type Place = "desk" | "search" | "notes" | "sources" | "stats" | "archived" | "backup" | "settings";
 
 const PLACES: { place: Place; label: string; icon: ReactNode }[] = [
   { place: "desk", label: "Study Desk", icon: <DeskIcon /> },
   { place: "search", label: "Search", icon: <SearchIcon /> },
   { place: "notes", label: "Notes", icon: <BookIcon /> },
+  { place: "sources", label: "Sources", icon: <FileIcon /> },
   { place: "stats", label: "Statistics", icon: <ChartIcon /> },
   { place: "archived", label: "Archived decks", icon: <ArchiveIcon /> },
   { place: "backup", label: "Backup & restore", icon: <DatabaseIcon /> },

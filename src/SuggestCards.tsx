@@ -15,6 +15,7 @@ import { loadDeckChoices } from "./deckChoices";
 import { FormActions, SelectField, TextField, useFormSave } from "./forms";
 import { SparkleIcon, TrashIcon } from "./icons";
 import { noteParts, SUGGESTION_NOTE_MAX_CHARS, type NotePart } from "./noteParts";
+import { QuotePageLink, QuotesFromSource } from "./SourcePages";
 import { Message, useFocusOnMount } from "./ui";
 import { useUnsavedChanges } from "./unsaved";
 
@@ -378,25 +379,27 @@ function Suggester({
         />
       )}
       {stage.step === "review" && (
-        <ReviewSuggestions
-          key={round}
-          model={stage.model}
-          drafts={stage.drafts}
-          leftOut={stage.leftOut}
-          unsupported={stage.unsupported}
-          decks={decks}
-          onSaved={onSaved}
-          onCancel={onCancel}
-          onNoDecks={onNoDecks}
-          onAllRemoved={() =>
-            show(
-              choose("notice", {
-                notice:
-                  "You removed every suggested card, so there's nothing to save. Suggest again, or go back to the note.",
-              })
-            )
-          }
-        />
+        <QuotesFromSource noteId={note.id} quotes={stage.drafts.map((draft) => draft.source)}>
+          <ReviewSuggestions
+            key={round}
+            model={stage.model}
+            drafts={stage.drafts}
+            leftOut={stage.leftOut}
+            unsupported={stage.unsupported}
+            decks={decks}
+            onSaved={onSaved}
+            onCancel={onCancel}
+            onNoDecks={onNoDecks}
+            onAllRemoved={() =>
+              show(
+                choose("notice", {
+                  notice:
+                    "You removed every suggested card, so there's nothing to save. Suggest again, or go back to the note.",
+                })
+              )
+            }
+          />
+        </QuotesFromSource>
       )}
     </section>
   );
@@ -699,6 +702,7 @@ function ReviewSuggestions({
                 <figure className="draft-source">
                   <figcaption className="side-label">From your note</figcaption>
                   <blockquote className="draft-quote">{draft.source}</blockquote>
+                  <QuotePageLink quote={draft.source} />
                   {draft.unfamiliar.length > 0 && (
                     <p className="draft-check">
                       {`Not in your note: ${draft.unfamiliar.join(", ")}. The suggested answer may say more than your note does.`}

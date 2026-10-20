@@ -3,7 +3,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import App from "./App";
-import { fakeBackend } from "./test/backend";
+import { fakeBackend, keptSource } from "./test/backend";
 
 function sidebar() {
   return within(screen.getByRole("navigation", { name: "Synapse" }));
@@ -129,15 +129,16 @@ describe("leaving a form with unsaved changes", () => {
 
   it("asks first when a file's text was imported, even if none was changed", async () => {
     fakeBackend({
-      import_file: () => ({
-        status: "read",
-        fileName: "Lecture 3.pdf",
-        kind: "pdf",
-        title: "Lecture 3",
-        body: "Mitosis is cell division.",
-        pages: 1,
-        pagesWithoutText: [],
-      }),
+      import_source: () =>
+        keptSource({
+          status: "read",
+          fileName: "Lecture 3.pdf",
+          kind: "pdf",
+          title: "Lecture 3",
+          body: "Mitosis is cell division.",
+          pages: 1,
+          pagesWithoutText: [],
+        }),
     });
     const user = userEvent.setup();
     render(<App />);
