@@ -621,10 +621,20 @@ Written on branch `claude/project-thread-50ujao` (not yet released): the shared 
 
 Written on branch `claude/project-thread-sh8b9z` (not yet released), on top of 4.17: the first screen that uses text recognition. Frontend only (`ScannedPages.tsx`, `Sources.tsx`, `Notes.tsx`); no command, no migration.
 
-- **Read scanned pages (N).** A PDF source with pages `get_pages_to_recognise` lists offers to read them all, with "Reading page 3 of 12…", a bar and *Stop* (`stop_recognition`); leaving the screen stops it too. Then a summary: pages read, pages where nothing was found, and pages skipped with a plain reason per `PageProblem`. Skipped pages aren't offered again on that screen (Rust would list them again: `pages_to_read` only leaves out pages it read).
+- **Read scanned pages (N).** A PDF source with pages `get_pages_to_recognise` lists offers to read them all, with "Reading page 3 of 12…", a bar and *Stop* (`stop_recognition`); leaving the screen stops it too. Then a summary: pages read, pages where nothing was found, and pages skipped with a plain reason per `PageProblem`. Skipped pages aren't offered again on that screen; a page that draws no picture is kept by Rust as an empty reading, so it isn't offered on later visits either, while a picture Synapse couldn't decode is.
 - **The page viewer.** A page with no text of its own shows its recognised text, set apart, under "Recognised text, check for mistakes", saying which engine read it and when (and, for the built-in one, that it doesn't read accents). *Read this page* / *Read this page again* reads one page (`pages: [n]`). The page dialog of a quote's link carries the same label.
 - **Notes.** `draftFromPages` uses `readable` text, `pagesWithoutText` counts only pages still without text, and the new-note form says which pages were recognised.
 - **Importing a scan.** When *Import file* keeps a PDF with no text at all, a step before the note form offers *Read scanned pages*, *Write the note myself* or *Cancel*; after reading, the form opens with the text. A scan whose file was read before (readings belong to the file) goes straight to the form. *Add source* opens the source with a notice pointing at *Read scanned pages*.
+
+## 4.19 Text from pictures, and boxes for image occlusion
+
+Written on branch `claude/project-thread-abrm8t` (not yet released), on top of 4.17. Frontend only: no command, no migration.
+
+- **Text in picture** (`src/pictureText.tsx`: `usePictureReading`, `PictureTextPanel`). On each picture in the note view's gallery and in the note and card forms' picture fields (`PictureGallery readText`, `PictureField addText`). The panel says "Recognised text: check it for mistakes" and which engine read it; *Copy* everywhere, *Add to note* / *Add to front* / *Add to back* in forms (appended after a blank line, counted as an unsaved edit). "No text found." for an empty reading. *Stop*, and leaving the screen stops it, but only if no newer reading has started (`newestRun`), since starting one stops the last.
+- **Note from a photo** (Notes library). `choosePicture`, then `recognisePicture`; the new-note form opens with the text as the body, the picture attached and a notice to check it (`PhotoDraft`, `PhotoSummary`); no title is guessed. A photo with no text, or a reading stopped or refused, still opens the form with the picture.
+- **Find labels** (`Occlusion.tsx`, `labelBoxes`). One box per recognised line, or per word; a line is split where a gap between words is wider than the line is tall (`labelRuns`), since the engine reads two labels side by side on a diagram as one line; padded by a fifth of the text's height (scaled by the picture's aspect ratio sideways), clamped to the picture, rounded to 4 decimals, labelled with the text cut to 200 characters, each a new card number. Text whose centre is already under a box with the same label is skipped. At most 200 boxes; the rest are counted in the message.
+- **Checked** in the real app on Linux (Xvfb, scratch database): a typed-text photo read word for word; a diagram's four labels found (after the line split), plus one stray "S" read from a drawn circle, removed by hand; the boxes saved as four cards.
+- **Not done:** the Ollama engine choice (`ReadWith`, piece 3, wires in after this merges); no text in review pictures or in a deleted note's pictures; *Note from a photo* doesn't take a pasted picture.
 
 ______________________________________________________________________
 
@@ -839,7 +849,8 @@ Current README identifies these main files:
 | `markdown.ts`, `NoteMarkdown.tsx` | Reading a note's Markdown and showing it formatted, never as HTML (section 4.12) |
 | `SuggestCards.tsx` | Suggesting cards from a note and checking them before saving |
 | `Quiz.tsx` | A multiple-choice quiz on a note, and adding missed questions as cards |
-| `Occlusion.tsx` | Picture cards (image occlusion): the form to draw boxes, and the picture shown in review |
+| `Occlusion.tsx` | Picture cards (image occlusion): the form to draw boxes (and *Find labels*), and the picture shown in review |
+| `pictureText.tsx` | Reading the text in a kept picture, and the panel that shows it as recognised text |
 | `deckChoices.ts` | The decks a card can be added to, for both card-from-note screens |
 | `ScannedPages.tsx` | Reading a PDF source's scanned pages: progress and Stop, the summary, and the label on recognised text |
 | `Search.tsx` | Search: every card and note at once, with snippets and filters |
