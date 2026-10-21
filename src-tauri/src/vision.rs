@@ -33,7 +33,7 @@ use tokio_util::sync::CancellationToken;
 use crate::assets::{self, MediaType};
 use crate::extract::FileKind;
 use crate::notes::NOTE_BODY_MAX_CHARS;
-use crate::ocr::{self, Job, PageOutcome};
+use crate::ocr::{self, Job, PageOutcome, PageProblem};
 use crate::recognition::{
     self, Engine, Helper, PageProgress, PageSkipped, Recognition, RecognitionError, PICTURE_PAGE,
 };
@@ -380,7 +380,8 @@ pub async fn read_picture(
 
 /// The pages of the active PDF source `source_id` that reading with `model`
 /// would cover when no pages are named: those whose extracted text is blank
-/// and whose reading in use isn't already this model's.
+/// and whose reading in use isn't already this model's, nor the empty
+/// reading kept for a page found to draw no picture.
 pub async fn pages_to_read(
     pool: &SqlitePool,
     source_id: i64,
@@ -410,10 +411,17 @@ pub async fn pages_to_read(
         .into_iter()
         .filter_map(|page| u32::try_from(page).ok())
         .filter(|page| {
-            done.get(page)
-                .is_none_or(|found| found.engine != Engine::Ollama || found.model != model)
+            done.get(page).is_none_or(|found| {
+                !no_picture(found) && (found.engine != Engine::Ollama || found.model != model)
+            })
         })
         .collect())
+}
+
+/// Whether `found` is the empty reading kept for a page that draws no
+/// picture (`recognition::recognise_source`): no text and no size.
+fn no_picture(found: &Recognition) -> bool {
+    found.engine == Engine::Ocrs && found.width.is_none() && found.text.is_empty()
 }
 
 /// Reads pages of the active PDF source `source_id` with the vision model
@@ -461,6 +469,24 @@ pub async fn read_source(
         };
         let problem = match outcome {
             PageOutcome::Problem(problem) => {
+                // As the built-in engine does: a page that draws no picture
+                // has nothing to read, so it isn't offered again.
+                if problem == PageProblem::NoPicture {
+                    let mut conn = pool.acquire().await?;
+                    recognition::insert(
+                        &mut conn,
+                        source.asset.id,
+                        page,
+                        Engine::Ocrs,
+                        ocr::MODEL,
+                        "",
+                        &[],
+                        None,
+                        now(),
+                    )
+                    .await
+                    .map_err(internal)?;
+                }
                 result.skipped.push(PageSkipped { page, problem });
                 Some(problem)
             }
@@ -729,6 +755,21 @@ mod tests {
                 .decode(images[0].as_str().unwrap())
                 .unwrap();
             assert!(png.starts_with(b"\x89PNG"));
+
+            // The built-in engine, asked again, still gives its own reading,
+            // with the positions a model doesn't give.
+            let builtin = recognition::recognise_picture(
+                &pool,
+                &store,
+                helper(),
+                picture.id,
+                CancellationToken::new(),
+                at(NOW),
+            )
+            .await
+            .unwrap();
+            assert_eq!(builtin.engine, Engine::Ocrs);
+            assert_eq!(builtin.text, "La fotosintesi e il processo piu importante.");
 
             // Asking again with the same model doesn't send it again.
             let (base, server) = fake_ollama(vec![]);
@@ -1011,6 +1052,64 @@ mod tests {
                     Err(VisionError::Recognition(RecognitionError::NotReadable))
                 ));
             }
+        });
+    }
+
+    #[test]
+    fn a_page_without_a_picture_is_kept_as_read_by_either_engine() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let store = scratch_store("vision-no-picture");
+            // Page 1 draws only vector text that extraction didn't find.
+            let mut document = scanned_pdf();
+            document.bytes = pages::pdf(&[TestPage::TextOnly, TestPage::Jpeg]);
+            document.pages = vec![String::new(), String::new()];
+            document.text.pages = Some(2);
+            let source = sources::create_source(&pool, &store, &document, at(NOW))
+                .await
+                .unwrap();
+            assert_eq!(
+                pages_to_read(&pool, source.id, MODEL).await.unwrap(),
+                [1, 2]
+            );
+            let (base, server) =
+                fake_ollama(vec![(200, tags(&[MODEL], &[])), (200, chat(ITALIAN))]);
+            let result = read_source(
+                &pool,
+                &store,
+                helper(),
+                &ollama(&base),
+                source.id,
+                None,
+                MODEL,
+                CancellationToken::new(),
+                || at(NOW),
+                |_| {},
+            )
+            .await
+            .unwrap();
+            assert_eq!(result.read, [2]);
+            assert_eq!(
+                result.skipped,
+                [PageSkipped {
+                    page: 1,
+                    problem: PageProblem::NoPicture
+                }]
+            );
+            assert_eq!(server.join().unwrap().len(), 2);
+            assert!(pages_to_read(&pool, source.id, MODEL)
+                .await
+                .unwrap()
+                .is_empty());
+            // Another model is still offered the page with a picture.
+            assert_eq!(
+                pages_to_read(&pool, source.id, "gemma3:4b").await.unwrap(),
+                [2]
+            );
+            assert_eq!(
+                recognition::pages_to_read(&pool, source.id).await.unwrap(),
+                [2]
+            );
         });
     }
 

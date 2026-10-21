@@ -1776,7 +1776,11 @@ function PhotoSummary({ photo }: { photo: PhotoDraft }) {
               ? `${photo.problem} The photo is attached below: write the note yourself, and give it a title.`
               : "Reading stopped before any text was found. The photo is attached below: write the note yourself, and give it a title."}
       </p>
-      {found && <p className="field-hint">{readBy(recognition)}</p>}
+      {found && (
+        <p className="field-hint">
+          {`${readBy(recognition)} To read it with another reader, such as a vision model in Ollama for accents and handwriting, use Text in picture under the photo.`}
+        </p>
+      )}
     </>
   );
 }

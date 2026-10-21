@@ -28,6 +28,7 @@ import {
 } from "./api";
 import { FormActions, TextField, useFormSave } from "./forms";
 import { usePictureReading } from "./pictureText";
+import { BUILT_IN } from "./ReadWith";
 import { Message } from "./ui";
 import { useUnsavedChanges } from "./unsaved";
 
@@ -447,7 +448,8 @@ function OcclusionEditor({
   async function findLabels() {
     if (!picture || reading.state.status === "reading") return;
     setLabelsFound("");
-    const read = await reading.read(picture.id);
+    // Boxes need to know where text is, which only the built-in reader says.
+    const read = await reading.read(picture.id, BUILT_IN);
     if (read === null) return;
     reading.clear();
     if (read.status === "stopped") {

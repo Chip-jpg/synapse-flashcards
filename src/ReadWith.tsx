@@ -11,8 +11,6 @@ import {
   type ModelPictureReading,
   type ModelSourceRecognition,
   type PageProgress,
-  type Recognition,
-  type RecognisedText,
 } from "./api";
 
 /**
@@ -50,18 +48,24 @@ function rememberReader(reader: Reader) {
 
 /** Ollama's vision models, while loading them, or why there are none to offer. */
 export type VisionModels =
+  | { status: "idle" }
   | { status: "loading" }
   | { status: "ready"; models: string[] }
   | { status: "unavailable"; message: string };
 
 /**
  * The reader to use, and the vision models it can be chosen from. Starts
- * with the reader chosen last, once Ollama confirms that model is still
- * there; until then, and otherwise, the built-in engine.
+ * with the reader chosen last. Ollama isn't asked for its models until a
+ * [`ReadWith`] choice is shown (or `reload` is called): then a remembered
+ * model that has gone, or an Ollama that can't be reached, means the
+ * built-in engine.
  */
 export function useReader() {
-  const [models, setModels] = useState<VisionModels>({ status: "loading" });
-  const [reader, setReader] = useState<Reader>(BUILT_IN);
+  const [models, setModels] = useState<VisionModels>({ status: "idle" });
+  const [reader, setReader] = useState<Reader>(() => {
+    const remembered = rememberedModel();
+    return remembered === null ? BUILT_IN : { engine: "ollama", model: remembered };
+  });
 
   const load = useCallback(async () => {
     setModels({ status: "loading" });
@@ -69,25 +73,15 @@ export function useReader() {
     try {
       found = await getVisionModels();
     } catch (err) {
-      setModels({
-        status: "unavailable",
-        message: toCommandError(err).message,
-      });
+      setModels({ status: "unavailable", message: toCommandError(err).message });
       setReader(BUILT_IN);
       return;
     }
     setModels({ status: "ready", models: found });
-    setReader((current) => {
-      const wanted = current.engine === "ollama" ? current.model : rememberedModel();
-      return wanted !== null && found.includes(wanted)
-        ? { engine: "ollama", model: wanted }
-        : BUILT_IN;
-    });
+    setReader((current) =>
+      current.engine === "ollama" && found.includes(current.model) ? current : BUILT_IN,
+    );
   }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
 
   const choose = useCallback((next: Reader) => {
     setReader(next);
@@ -102,57 +96,70 @@ export type ReaderState = ReturnType<typeof useReader>;
 /**
  * Choosing what reads the text: *Built in*, or one of Ollama's vision models.
  * Put it beside a *Read* action, and read with [`readPicture`] or
- * [`readSourcePages`] using `state.reader`.
+ * [`readSourcePages`] using `state.reader`. Showing it asks Ollama for its
+ * models. `brief` leaves out the hint about each reader.
  */
 export function ReadWith({
   id,
   state,
   disabled = false,
+  brief = false,
 }: {
   id: string;
   state: ReaderState;
   disabled?: boolean;
+  brief?: boolean;
 }) {
   const { reader, models, choose, reload } = state;
+  useEffect(() => {
+    if (models.status === "idle") void reload();
+  }, [models.status, reload]);
+
   const names = models.status === "ready" ? models.models : [];
+  // Until the list comes, the model chosen last stays shown as chosen.
+  const offered =
+    reader.engine === "ollama" && !names.includes(reader.model) ? [reader.model, ...names] : names;
   const hint =
     reader.engine === "ocrs"
       ? "The reader built into Synapse is quick, but reads letters without accents (è as e) and reads handwriting poorly."
       : "A vision model in Ollama, on this computer, reads accents and handwriting, but takes much longer, and can misread or make up words.";
+  const looking = models.status === "idle" || models.status === "loading";
   return (
     <div className="read-with">
       <div className="field">
         <label htmlFor={id} className="field-label">
           Read with
         </label>
-        <p id={`${id}-hint`} className="field-hint">
-          {hint}
-        </p>
+        {!brief && (
+          <p id={`${id}-hint`} className="field-hint">
+            {hint}
+          </p>
+        )}
         <select
           id={id}
           className="field-input"
           value={reader.engine === "ollama" ? reader.model : BUILT_IN_VALUE}
           disabled={disabled}
-          aria-describedby={`${id}-hint`}
+          aria-describedby={brief ? undefined : `${id}-hint`}
           onChange={(event) => {
             const value = event.target.value;
             choose(value === BUILT_IN_VALUE ? BUILT_IN : { engine: "ollama", model: value });
           }}
         >
           <option value={BUILT_IN_VALUE}>Built in</option>
-          {names.map((name) => (
+          {offered.map((name) => (
             <option key={name} value={name}>
               {name} (Ollama)
             </option>
           ))}
         </select>
       </div>
-      {models.status === "loading" && (
+      {looking && (
         <p className="field-hint" role="status">
           Looking for vision models in Ollama…
         </p>
       )}
-      {models.status !== "loading" && names.length === 0 && (
+      {!looking && names.length === 0 && (
         <p className="field-hint">
           {models.status === "unavailable"
             ? `${models.message} Until then, only the built-in reader is offered.`
@@ -202,11 +209,6 @@ export async function readSourcePages(
   }
   const result = await recogniseSourcePages(sourceId, pages, onProgress);
   return { ...result, agreement: [] };
-}
-
-/** "the built-in reader", or "qwen2.5vl:7b in Ollama": who read some text. */
-export function readBy(text: Pick<Recognition | RecognisedText, "engine" | "model">): string {
-  return text.engine === "ollama" ? `${text.model} in Ollama` : "the built-in reader";
 }
 
 /**

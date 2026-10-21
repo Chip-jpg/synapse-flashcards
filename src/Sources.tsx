@@ -2,7 +2,6 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   deleteSource,
   getDeletedSources,
-  getPagesToRecognise,
   getSource,
   getSourceNotes,
   getSourcePages,
@@ -43,6 +42,7 @@ import {
   useSourceReading,
   type Reading,
 } from "./ScannedPages";
+import { BUILT_IN, pagesToRead, ReadWith, useReader, type Reader, type ReaderState } from "./ReadWith";
 import { KIND_NAMES } from "./SourcePages";
 import { formatDateTime, Message, useFocusOnMount } from "./ui";
 import { useUnsavedChanges } from "./unsaved";
@@ -595,13 +595,13 @@ type SourceState =
  * Fetches a source, its pages, the notes written from it, and the pages left
  * to read; never rejects.
  */
-async function loadSource(sourceId: number): Promise<SourceState> {
+async function loadSource(sourceId: number, reader: Reader = BUILT_IN): Promise<SourceState> {
   try {
     const [source, pages, notes, toRead] = await Promise.all([
       getSource(sourceId),
       getSourcePages(sourceId),
       getSourceNotes(sourceId),
-      getPagesToRecognise(sourceId),
+      pagesToRead(reader, sourceId),
     ]);
     return { status: "ready", source, pages, notes, toRead };
   } catch (err) {
@@ -637,6 +637,8 @@ function SourceScreen({
   const [mode, setMode] = useState<Mode>("view");
   const [notice, setNotice] = useState(initialNotice);
   const reader = useSourceReading();
+  const readWith = useReader();
+  const readerKey = readWith.reader.engine === "ollama" ? readWith.reader.model : "";
   // Which run is going or last finished: every page left, or one page from
   // the page viewer. Its progress and summary show where it was started.
   const [run, setRun] = useState<{ single: number | null; summary: string | null } | null>(null);
@@ -646,13 +648,14 @@ function SourceScreen({
 
   useEffect(() => {
     let current = true;
-    loadSource(sourceId).then((next) => {
+    loadSource(sourceId, readWith.reader).then((next) => {
       if (current) setState(next);
     });
     return () => {
       current = false;
     };
-  }, [sourceId, attempt]);
+    // The pages left to read depend on the reader, by its key.
+  }, [sourceId, attempt, readerKey]);
 
   if (state.status === "loading") {
     return (
@@ -693,10 +696,18 @@ function SourceScreen({
    */
   async function read(single: number | null) {
     setRun({ single, summary: null });
-    const result = await reader.start(sourceId, single === null ? toRead : [single]);
-    if (result === null) return;
+    const result = await reader.start(
+      sourceId,
+      single === null ? toRead : [single],
+      readWith.reader,
+    );
+    if (result === null) {
+      // A model that has left Ollama: the choice offered is out of date.
+      if (readWith.reader.engine === "ollama") void readWith.reload();
+      return;
+    }
     setSkipped((now) => withSkipped(now, result));
-    const next = await loadSource(sourceId);
+    const next = await loadSource(sourceId, readWith.reader);
     setState(next);
     if (next.status === "ready") setRun({ single, summary: readingSummary(result, next.pages) });
   }
@@ -737,6 +748,8 @@ function SourceScreen({
 
         {source.kind === "pdf" && (
           <ScannedPanel
+            scanned={pages.filter((page) => page.text.trim() === "").length}
+            readWith={readWith}
             toRead={toRead.length}
             progress={runHere(false) ? reading : null}
             summary={runHere(false) ? (run?.summary ?? null) : null}
@@ -764,6 +777,7 @@ function SourceScreen({
                 }
               : null
           }
+          readWith={readWith}
           onRead={read}
           onStop={reader.stop}
         />
@@ -1073,6 +1087,8 @@ function SourceNotes({
  * progress of that run, and how it went. Nothing when there's nothing to say.
  */
 function ScannedPanel({
+  scanned,
+  readWith,
   toRead,
   progress,
   summary,
@@ -1081,7 +1097,10 @@ function ScannedPanel({
   onRead,
   onStop,
 }: {
-  /** How many pages are left to read. */
+  /** How many pages have no text of their own. */
+  scanned: number;
+  readWith: ReaderState;
+  /** How many pages are left to read, by the reader chosen. */
   toRead: number;
   progress: (Reading & { status: "reading" }) | null;
   summary: string | null;
@@ -1091,7 +1110,7 @@ function ScannedPanel({
   onRead: () => void;
   onStop: () => void;
 }) {
-  if (toRead === 0 && !progress && !summary && !error) return null;
+  if (scanned === 0 && toRead === 0 && !progress && !summary && !error) return null;
 
   return (
     <section className="scanned-pages" aria-labelledby="scanned-pages-heading">
@@ -1108,6 +1127,14 @@ function ScannedPanel({
               {error}
             </p>
           )}
+          {toRead === 0 && scanned > 0 && (
+            <p className="field-hint">
+              {`Every page without text has been read by the reader chosen. To read ${
+                scanned === 1 ? "it" : "them"
+              } again with another, such as a vision model in Ollama for accents and handwriting, choose it below.`}
+            </p>
+          )}
+          {scanned > 0 && <ReadWith id="scanned-read-with" state={readWith} disabled={busy} />}
           {toRead > 0 && (
             <>
               <p className="field-hint">{scannedHint(toRead)}</p>
@@ -1159,11 +1186,13 @@ function PageViewer({
   pages,
   reading,
   pageRun,
+  readWith,
   onRead,
   onStop,
 }: {
   source: Source;
   pages: SourcePage[];
+  readWith: ReaderState;
   /** Whether a run is going, so another can't start. */
   reading: boolean;
   pageRun: PageRun | null;
@@ -1273,7 +1302,8 @@ function PageViewer({
       </div>
 
       {readable && !thisRun?.progress && (
-        <div className="deck-actions">
+        <div className="deck-actions read-page-actions">
+          <ReadWith id="page-read-with" state={readWith} disabled={reading} brief />
           <button
             type="button"
             className="button button-small"
@@ -1332,6 +1362,7 @@ export function ReadScannedImport({
   onCancel: () => void;
 }) {
   const reader = useSourceReading();
+  const readWith = useReader();
   const [scan, setScan] = useState<ScanStep>({ step: "checking" });
   const pageCount = kept.text.pagesWithoutText.length;
   const left = scan.step === "after" ? scan.toRead : kept.text.pagesWithoutText;
@@ -1361,10 +1392,13 @@ export function ReadScannedImport({
   }, [kept.source.id]);
 
   async function read() {
-    const result = await reader.start(kept.source.id, left);
-    if (result === null) return;
+    const result = await reader.start(kept.source.id, left, readWith.reader);
+    if (result === null) {
+      if (readWith.reader.engine === "ollama") void readWith.reload();
+      return;
+    }
     skippedRef.current = withSkipped(skippedRef.current, result);
-    const next = await loadSource(kept.source.id);
+    const next = await loadSource(kept.source.id, readWith.reader);
     if (next.status === "error") {
       setScan({ step: "error", message: next.message });
       return;
@@ -1420,6 +1454,7 @@ export function ReadScannedImport({
               {reader.reading.message}
             </p>
           )}
+          {left.length > 0 && <ReadWith id="import-read-with" state={readWith} />}
           <div className="form-actions">
             {left.length > 0 && (
               <button type="button" className="button button-primary" onClick={read}>

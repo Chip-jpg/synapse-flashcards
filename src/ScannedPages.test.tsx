@@ -21,7 +21,8 @@ function recognised(text: string, engine: RecognisedText["engine"] = "ocrs"): Re
   return {
     text,
     engine,
-    model: engine === "ocrs" ? "ocrs 0.13 (detection f15cfb56, recognition e484866d)" : "qwen2.5vl:7b",
+    model:
+      engine === "ocrs" ? "ocrs 0.13 (detection f15cfb56, recognition e484866d)" : "qwen2.5vl:7b",
     createdAt: READ_AT,
   };
 }
@@ -101,9 +102,7 @@ describe("reading a source's scanned pages", () => {
     expect(screen.getByText(/^2 pages of this PDF have no text Synapse could read/)).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Read scanned pages (2)" }));
 
-    const summary = await screen.findByText(
-      "Read page 2. Skipped page 4: no picture to read.",
-    );
+    const summary = await screen.findByText("Read page 2. Skipped page 4: no picture to read.");
     expect(document.activeElement).toBe(summary);
     expect(argsOf("recognise_source_pages")).toEqual([
       expect.objectContaining({ sourceId: 3, pages: [2, 4] }),
@@ -114,7 +113,9 @@ describe("reading a source's scanned pages", () => {
     await user.click(screen.getByRole("button", { name: "Next page" }));
     expect(screen.getByText("Prophase: chromosomes condense.")).toBeTruthy();
     const label = screen.getByText("Recognised text, check for mistakes.").parentElement!;
-    expect(label.textContent).toContain("Synapse's built-in reader read it from the page's picture");
+    expect(label.textContent).toContain(
+      "Synapse's built-in reader read it from the page's picture",
+    );
     expect(label.textContent).toContain("It doesn't read accents: è comes out as e.");
     expect(screen.getByRole("button", { name: "Read this page again" })).toBeTruthy();
   });
@@ -161,24 +162,22 @@ describe("reading a source's scanned pages", () => {
   });
 
   it("reads one page again from the page viewer", async () => {
-    const { user, argsOf } = openApp(
-      {
-        get_source_pages: () => [
-          { number: 1, text: "Mitosis is cell division.", recognised: null },
-          { number: 2, text: "", recognised: recognised("Prophase", "ollama") },
-        ],
-        get_pages_to_recognise: () => [],
-        recognise_source_pages: () => ({ read: [2], skipped: [], stopped: false }),
-      },
-    );
+    const { user, argsOf } = openApp({
+      get_source_pages: () => [
+        { number: 1, text: "Mitosis is cell division.", recognised: null },
+        { number: 2, text: "", recognised: recognised("Prophase", "ollama") },
+      ],
+      get_pages_to_recognise: () => [],
+      recognise_source_pages: () => ({ read: [2], skipped: [], stopped: false }),
+    });
     await openLecture(user);
-    // Nothing left to read, so nothing is offered for the whole source.
-    expect(screen.queryByRole("heading", { name: "Scanned pages" })).toBeNull();
+    // Nothing left to read, so reading the whole source isn't offered, only
+    // the choice of another reader.
+    expect(screen.queryByRole("button", { name: /Read scanned pages/ })).toBeNull();
+    expect(screen.getByText(/Every page without text has been read/)).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "Next page" }));
-    expect(
-      screen.getByText(/qwen2\.5vl:7b, a vision model in Ollama read it/),
-    ).toBeTruthy();
+    expect(screen.getByText(/qwen2\.5vl:7b, a vision model in Ollama read it/)).toBeTruthy();
     // Only the built-in reader is said to miss accents.
     expect(screen.queryByText(/doesn't read accents/)).toBeNull();
 
@@ -203,7 +202,9 @@ describe("reading a source's scanned pages", () => {
     expect(body.value).toBe(
       "Mitosis is cell division.\n\nProphase: chromosomes condense.\n\nMetaphase: chromosomes line up.\n\nTelophase: two nuclei form.",
     );
-    expect(screen.getByText(/^Pages 2 and 4 were scanned, so their text was recognised/)).toBeTruthy();
+    expect(
+      screen.getByText(/^Pages 2 and 4 were scanned, so their text was recognised/),
+    ).toBeTruthy();
     // Every page has text now.
     expect(screen.queryByText(/had no text Synapse could read/)).toBeNull();
 
@@ -267,7 +268,10 @@ function openNotes(handlers: Record<string, Handler> = {}) {
     get_pages_to_recognise: () =>
       pages.filter((page) => page.recognised === null).map((page) => page.number),
     recognise_source_pages: (args) => {
-      pages = pages.map((page) => ({ ...page, recognised: recognised(`Page ${page.number} text.`) }));
+      pages = pages.map((page) => ({
+        ...page,
+        recognised: recognised(`Page ${page.number} text.`),
+      }));
       sendOnChannel(args.onProgress, 0, { page: 1, done: 1, total: 2, problem: null });
       return { read: [1, 2], skipped: [], stopped: false };
     },
@@ -282,14 +286,18 @@ describe("importing a scanned PDF", () => {
     const { user, argsOf } = openNotes();
     await user.click(await screen.findByRole("button", { name: "Import file" }));
 
-    const intro = await screen.findByText(/^Synapse kept Scan\.pdf under Sources, but none of its 2 pages/);
+    const intro = await screen.findByText(
+      /^Synapse kept Scan\.pdf under Sources, but none of its 2 pages/,
+    );
     expect(document.activeElement).toBe(intro);
     await user.click(screen.getByRole("button", { name: "Read scanned pages (2)" }));
 
     const body = (await screen.findByLabelText("Note")) as HTMLTextAreaElement;
     expect(body.value).toBe("Page 1 text.\n\nPage 2 text.");
     expect(screen.getByRole("heading", { name: "New note from Scan.pdf" })).toBeTruthy();
-    expect(screen.getByText(/^Synapse kept Scan\.pdf under Sources and read its text/)).toBeTruthy();
+    expect(
+      screen.getByText(/^Synapse kept Scan\.pdf under Sources and read its text/),
+    ).toBeTruthy();
     expect(screen.getByText(/^Pages 1 and 2 were scanned/)).toBeTruthy();
     expect(argsOf("recognise_source_pages")).toEqual([
       expect.objectContaining({ sourceId: 3, pages: [1, 2] }),

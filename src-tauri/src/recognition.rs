@@ -216,6 +216,26 @@ pub async fn latest(
     row.map(from_row).transpose()
 }
 
+/// The newest reading of one page of a file by the built-in engine with
+/// today's models, if it has one.
+async fn latest_by_builtin(
+    pool: &SqlitePool,
+    asset_id: i64,
+    page: u32,
+) -> Result<Option<Recognition>, DbError> {
+    let row: Option<RecognitionRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {FIELDS} FROM recognitions WHERE asset_id = ?1 AND page = ?2 AND engine = ?3 AND model = ?4
+         ORDER BY id DESC LIMIT 1"
+    )))
+    .bind(asset_id)
+    .bind(i64::from(page))
+    .bind(ocr::ENGINE)
+    .bind(ocr::MODEL)
+    .fetch_optional(pool)
+    .await?;
+    row.map(from_row).transpose()
+}
+
 /// The recognition in use for every page of a file that has one, by page.
 pub async fn latest_pages(
     conn: &mut SqliteConnection,
@@ -344,17 +364,13 @@ pub async fn recognise_picture(
     if !asset.media_type.is_picture() {
         return Err(RecognitionError::NotReadable);
     }
-    if read_by_builtin(pool, asset_id)
+    // The built-in engine's own reading, even when a vision model has read
+    // the picture since: it says where the text is, which a model doesn't.
+    if let Some(found) = latest_by_builtin(pool, asset_id, PICTURE_PAGE)
         .await
         .map_err(RecognitionError::Internal)?
-        .contains(&PICTURE_PAGE)
     {
-        if let Some(found) = latest(pool, asset_id, PICTURE_PAGE)
-            .await
-            .map_err(RecognitionError::Internal)?
-        {
-            return Ok(found);
-        }
+        return Ok(found);
     }
     let bytes = kept_bytes(store, &asset)?;
     let (mut outcomes, run) = start(helper, Job::Picture, bytes, stop);

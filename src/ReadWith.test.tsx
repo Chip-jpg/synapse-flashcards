@@ -6,13 +6,13 @@ import type { PageProgress } from "./api";
 import {
   Agreement,
   pagesToRead,
-  readBy,
   readPicture,
   ReadWith,
   readSourcePages,
   useReader,
   type PictureRead,
 } from "./ReadWith";
+import { readBy } from "./pictureText";
 import { fakeBackend, refuse, sendOnChannel } from "./test/backend";
 
 /** A picture's *Text in picture* action, as a screen would wire `ReadWith`. */
@@ -38,9 +38,7 @@ function TextInPicture({ assetId }: { assetId: number }) {
       </button>
       {read?.status === "read" && (
         <div>
-          <p>
-            Recognised by {readBy(read.recognition)}: {read.recognition.text}
-          </p>
+          <p>{`${readBy(read.recognition)} ${read.recognition.text}`}</p>
           <Agreement percent={read.agreement} />
         </div>
       )}
@@ -79,7 +77,9 @@ describe("choosing what reads the text", () => {
     await optionsLoaded();
     await userEvent.click(screen.getByRole("button", { name: "Text in picture" }));
     expect(
-      await screen.findByText("Recognised by the built-in reader: Mitochondria make ATP."),
+      await screen.findByText(
+        "Read by Synapse's built-in reader, which doesn't read accents or handwriting well. Mitochondria make ATP.",
+      ),
     ).toBeTruthy();
     expect(backend.argsOf("recognise_picture")).toEqual([{ assetId: 3 }]);
     expect(backend.calls).not.toContain("recognise_picture_with_model");
@@ -110,7 +110,7 @@ describe("choosing what reads the text", () => {
     expect(screen.getByText(/reads accents and handwriting/)).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "Text in picture" }));
     expect(
-      await screen.findByText("Recognised by qwen2.5vl:7b in Ollama: La cellula è viva."),
+      await screen.findByText("Read by qwen2.5vl:7b in Ollama. La cellula è viva."),
     ).toBeTruthy();
     expect(
       screen.getByText(/has 75% of the words the built-in reader found/).textContent,

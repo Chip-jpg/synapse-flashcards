@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  recognisePicture,
   stopRecognition,
   toCommandError,
   type Asset,
   type Recognition,
 } from "./api";
+import { Agreement, ReadWith, readPicture, useReader, type Reader } from "./ReadWith";
 
 /**
  * Reading the text in a kept picture, and showing what was read. Text
@@ -19,7 +19,13 @@ import {
 export type PictureReadState =
   | { status: "idle" }
   | { status: "reading"; assetId: number }
-  | { status: "read"; assetId: number; recognition: Recognition }
+  | {
+      status: "read";
+      assetId: number;
+      recognition: Recognition;
+      /** How far a model's text agrees with the built-in reader's, if both read it. */
+      agreement: number | null;
+    }
   | { status: "stopped"; assetId: number }
   | { status: "error"; assetId: number; message: string };
 
@@ -36,11 +42,13 @@ export function readingAssetId(state: PictureReadState): number | null {
 let newestRun = 0;
 
 /**
- * Reads pictures one at a time with `recognisePicture`. `stop` ends the
- * reading in progress; leaving the screen does too.
+ * Reads pictures one at a time, with the reader chosen in `readWith` (the
+ * built-in engine, or a vision model in Ollama). `stop` ends the reading in
+ * progress; leaving the screen does too.
  */
 export function usePictureReading() {
   const [state, setState] = useState<PictureReadState>({ status: "idle" });
+  const readWith = useReader();
   const runRef = useRef<number | null>(null);
 
   useEffect(
@@ -54,23 +62,34 @@ export function usePictureReading() {
   );
 
   /**
-   * Reads `assetId`. Resolves with how it went, or with null when nobody is
-   * waiting for it any more (the screen went, or another picture was asked
-   * for).
+   * Reads `assetId`, with `reader` or else the one chosen. Resolves with how
+   * it went, or with null when nobody is waiting for it any more (the screen
+   * went, or another picture was asked for).
    */
-  async function read(assetId: number): Promise<PictureReadState | null> {
+  async function read(
+    assetId: number,
+    reader: Reader = readWith.reader,
+  ): Promise<PictureReadState | null> {
     const run = ++newestRun;
     runRef.current = run;
     setState({ status: "reading", assetId });
     let next: PictureReadState;
     try {
-      const reading = await recognisePicture(assetId);
+      const reading = await readPicture(reader, assetId);
       next =
         reading.status === "read"
-          ? { status: "read", assetId, recognition: reading.recognition }
+          ? {
+              status: "read",
+              assetId,
+              recognition: reading.recognition,
+              agreement: reading.agreement,
+            }
           : { status: "stopped", assetId };
     } catch (err) {
-      next = { status: "error", assetId, message: toCommandError(err).message };
+      const failure = toCommandError(err);
+      next = { status: "error", assetId, message: failure.message };
+      // The model has left Ollama: the list offered is out of date.
+      if (failure.kind === "stale" && reader.engine === "ollama") void readWith.reload();
     }
     // Gone, or another picture was asked for meanwhile: that one is shown.
     if (runRef.current !== run) return null;
@@ -83,7 +102,7 @@ export function usePictureReading() {
     void stopRecognition().catch(() => {});
   }
 
-  return { state, read, stop, clear: () => setState({ status: "idle" }) };
+  return { state, read, stop, readWith, clear: () => setState({ status: "idle" }) };
 }
 
 export type PictureReading = ReturnType<typeof usePictureReading>;
@@ -188,6 +207,7 @@ export function PictureTextPanel({
               Recognised text: check it for mistakes
             </p>
             <p className="field-hint">{readBy(state.recognition)}</p>
+            <Agreement percent={state.agreement} />
             <p className="picture-text-body">{state.recognition.text}</p>
             <div className="picture-text-row">
               {add && (
@@ -213,6 +233,18 @@ export function PictureTextPanel({
             </div>
           </>
         ))}
+      {state.status !== "reading" && assetId !== null && (
+        <div className="picture-text-again">
+          <ReadWith id={`read-with-${assetId}`} state={reading.readWith} brief />
+          <button
+            type="button"
+            className="button button-small"
+            onClick={() => void reading.read(assetId)}
+          >
+            Read again
+          </button>
+        </div>
+      )}
       <p className="form-status" role="status">
         {said}
       </p>

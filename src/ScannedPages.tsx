@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  recogniseSourcePages,
   stopRecognition,
   toCommandError,
+  type ModelSourceRecognition,
   type PageProblem,
   type RecognisedText,
   type SourcePage,
   type SourceRecognition,
 } from "./api";
+import { BUILT_IN, readSourcePages, type Reader } from "./ReadWith";
 import { formatDateTime, useFocusOnMount } from "./ui";
 
 /** Why a page was skipped, said plainly. */
@@ -56,7 +57,10 @@ export function readBy(recognised: RecognisedText): string {
  * which of them nothing was found (`pages`, as they are after reading), and
  * which were skipped and why.
  */
-export function readingSummary(result: SourceRecognition, pages: SourcePage[]): string {
+export function readingSummary(
+  result: SourceRecognition & Partial<Pick<ModelSourceRecognition, "agreement">>,
+  pages: SourcePage[],
+): string {
   const read = [...result.read].sort((a, b) => a - b);
   const empty = read.filter((number) => {
     const page = pages.find((each) => each.number === number);
@@ -92,6 +96,18 @@ export function readingSummary(result: SourceRecognition, pages: SourcePage[]): 
   for (const [problem, numbers] of byProblem) {
     parts.push(`Skipped ${pagesNamed(numbers.sort((a, b) => a - b))}: ${PROBLEMS[problem]}.`);
   }
+
+  // A vision model can misread or make up text: where it and the built-in
+  // reader found mostly different words, say so.
+  const doubtful = (result.agreement ?? [])
+    .filter((each) => each.percent < 50)
+    .map((each) => each.page)
+    .sort((a, b) => a - b);
+  if (doubtful.length > 0) {
+    parts.push(
+      `On ${pagesNamed(doubtful)}, the model's text shares under half the words the built-in reader found: check ${doubtful.length === 1 ? "it" : "them"} against the original.`,
+    );
+  }
   return parts.join(" ");
 }
 
@@ -102,8 +118,9 @@ export type Reading =
   | { status: "error"; message: string };
 
 /**
- * Reads pages of a source with `recogniseSourcePages`, one run at a time,
- * following its progress. Leaving the screen (unmounting) stops a run.
+ * Reads pages of a source with the reader chosen (the built-in engine, or a
+ * vision model in Ollama), one run at a time, following its progress.
+ * Leaving the screen (unmounting) stops a run.
  */
 export function useSourceReading() {
   const [reading, setReading] = useState<Reading>({ status: "idle" });
@@ -120,18 +137,22 @@ export function useSourceReading() {
   }, []);
 
   /**
-   * Reads `pages` of source `sourceId`, in order. Resolves with how it went,
-   * or null when it failed (`reading` says why), another run was going, or
-   * the screen was left.
+   * Reads `pages` of source `sourceId`, in order, with `reader`. Resolves
+   * with how it went, or null when it failed (`reading` says why), another
+   * run was going, or the screen was left.
    */
-  async function start(sourceId: number, pages: number[]): Promise<SourceRecognition | null> {
+  async function start(
+    sourceId: number,
+    pages: number[],
+    reader: Reader = BUILT_IN,
+  ): Promise<ModelSourceRecognition | null> {
     if (runningRef.current) return null;
     runningRef.current = true;
     setReading({ status: "reading", done: 0, total: Math.max(pages.length, 1), stopping: false });
 
-    let result: SourceRecognition | null = null;
+    let result: ModelSourceRecognition | null = null;
     try {
-      result = await recogniseSourcePages(sourceId, pages, (progress) => {
+      result = await readSourcePages(reader, sourceId, pages, (progress) => {
         if (!mountedRef.current) return;
         setReading((now) =>
           now.status === "reading"
