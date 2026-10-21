@@ -205,6 +205,35 @@ export function fakeBackend(overrides: Record<string, Handler> = {}) {
     // No note comes from a kept source unless a test says so.
     get_note_source: () => null,
     locate_quotes: () => null,
+    // Nothing has been read by text recognition unless a test says so.
+    get_picture_recognition: () => null,
+    get_pages_to_recognise: () => [],
+    recognise_picture: (args) => ({
+      status: "read",
+      recognition: {
+        assetId: args.assetId,
+        page: 0,
+        engine: "ocrs",
+        model: "ocrs 0.13 (detection f15cfb56, recognition e484866d)",
+        text: "Mitochondria make ATP.",
+        lines: [
+          {
+            text: "Mitochondria make ATP.",
+            box: { left: 0.1, top: 0.2, width: 0.5, height: 0.08 },
+            words: [
+              { text: "Mitochondria", box: { left: 0.1, top: 0.2, width: 0.27, height: 0.08 } },
+              { text: "make", box: { left: 0.39, top: 0.2, width: 0.1, height: 0.08 } },
+              { text: "ATP.", box: { left: 0.51, top: 0.2, width: 0.09, height: 0.08 } },
+            ],
+          },
+        ],
+        width: 800,
+        height: 600,
+        createdAt: "2026-10-21T09:00:00Z",
+      },
+    }),
+    recognise_source_pages: () => ({ read: [], skipped: [], stopped: false }),
+    stop_recognition: () => null,
     "plugin:window|destroy": () => null,
     ...overrides,
   };
@@ -236,4 +265,17 @@ export function fakeBackend(overrides: Record<string, Handler> = {}) {
     /** The arguments of each `cmd` the app sent, oldest first. */
     argsOf: (cmd: string) => sent.filter((call) => call.cmd === cmd).map((call) => call.args),
   };
+}
+
+/**
+ * Sends `message` on a channel the app passed to a command (such as
+ * `recogniseSourcePages`'s `onProgress`), as Rust would: messages are numbered
+ * from 0 and delivered in that order.
+ */
+export function sendOnChannel(channel: unknown, index: number, message: unknown) {
+  const internals = (window as unknown as { __TAURI_INTERNALS__: Internals }).__TAURI_INTERNALS__;
+  (internals as unknown as { runCallback: (id: number, data: unknown) => void }).runCallback(
+    (channel as { id: number }).id,
+    { index, message },
+  );
 }

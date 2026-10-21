@@ -9,6 +9,7 @@
 
 use chrono::Utc;
 use sqlx::SqlitePool;
+use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 
 use tauri_plugin_dialog::DialogExt;
@@ -25,9 +26,13 @@ use crate::extract::{self, ExtractError, ExtractedText, FileKind};
 use crate::import::{self, ImportError, ImportState, RestoreError};
 use crate::notes::{self, DeletedNote, DeletedNoteText, InvalidNote, Note, NoteError, NoteSummary};
 use crate::occlusion::{self, Mode, OcclusionBox, OcclusionView};
+use crate::ocr::PageProblem;
 use crate::optimizer::{self, IntervalChange, Optimized, OptimizerError, Optimizing, Settings};
 use crate::pictures::{CardPictureIds, PictureProblem};
 use crate::quiz::{self, QuizQuestion, Quizzing};
+use crate::recognition::{
+    self, PageProgress, Recognising, Recognition, RecognitionError, SourceRecognition,
+};
 use crate::retention::{self, RetentionError};
 use crate::scheduler::Rating;
 use crate::search::{self, Scope, SearchResults};
@@ -1678,8 +1683,8 @@ fn extract_error(err: ExtractError) -> CommandError {
             )
         }
         ExtractError::NoText => CommandError::invalid(
-            "That file has no text Synapse can import. If it's scanned, its pages are pictures \
-             of text, which Synapse can't read yet.",
+            "That file has no text Synapse can import. If it's a scanned PDF, add it as a \
+             source, where Synapse can read the text on its pages.",
         ),
         ExtractError::HelperFailed(detail) => {
             eprintln!("[synapse] reading a PDF failed: {detail}");
@@ -3467,6 +3472,167 @@ pub async fn open_source_original(
                 "Synapse couldn't open the original. Save a copy instead, and open that.",
             )
         })
+}
+
+// Text recognition (`recognition.rs`, `ocr.rs`).
+
+/// Turns a recognition that didn't happen into a user-safe error.
+fn recognition_error(err: RecognitionError, context: &str) -> CommandError {
+    match err {
+        RecognitionError::NotFound => {
+            CommandError::invalid("That picture or source doesn't exist.")
+        }
+        RecognitionError::Deleted => CommandError::stale("This source was deleted."),
+        RecognitionError::NotReadable => CommandError::invalid(
+            "Synapse can only read text in pictures and in the pages of a PDF.",
+        ),
+        RecognitionError::Picture(PageProblem::TooLarge) => CommandError::invalid(
+            "That picture is too large to read: the limit is 80 million pixels.",
+        ),
+        RecognitionError::Picture(_) => {
+            CommandError::invalid("Synapse couldn't read that picture. It may be damaged.")
+        }
+        RecognitionError::Unreadable(detail) => {
+            eprintln!("[synapse] {context}: the PDF couldn't be opened: {detail}");
+            CommandError::invalid(
+                "Synapse couldn't open that PDF to read its pages. It may be damaged or \
+                 password-protected.",
+            )
+        }
+        // Commands turn a stop into `{ status: "stopped" }` before this.
+        RecognitionError::Stopped => CommandError::failed("Reading the text was stopped."),
+        RecognitionError::Internal(detail) => {
+            eprintln!("[synapse] {context} failed: {detail}");
+            CommandError::failed("Synapse couldn't read the text. Try again.")
+        }
+    }
+}
+
+fn recognition_helper() -> Result<recognition::Helper, CommandError> {
+    recognition::Helper::this_program().map_err(|err| {
+        eprintln!("[synapse] finding Synapse's own program failed: {err}");
+        CommandError::failed("Synapse couldn't read the text. Try again.")
+    })
+}
+
+/// What reading a picture did: `{ "status": "read", "recognition":
+/// Recognition }` or `{ "status": "stopped" }`.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PictureReading {
+    Read { recognition: Box<Recognition> },
+    Stopped,
+}
+
+/// Reads the text in a kept picture with the built-in engine: `{ assetId }`.
+/// A picture already read returns what was read, without reading it again.
+/// Returns [`PictureReading`]. Can be stopped with `stop_recognition`.
+#[tauri::command]
+pub async fn recognise_picture(
+    app: AppHandle,
+    database: State<'_, Database>,
+    recognising: State<'_, Recognising>,
+    asset_id: i64,
+) -> Result<PictureReading, CommandError> {
+    const CONTEXT: &str = "reading a picture's text";
+    let run = recognising.begin();
+    let pool = pool(&app, &database).await?;
+    let store = asset_store(&app, "Synapse couldn't read the text. Try again.")?;
+    let helper = recognition_helper()?;
+    match recognition::recognise_picture(&pool, &store, helper, asset_id, run.token(), Utc::now())
+        .await
+    {
+        Ok(found) => Ok(PictureReading::Read {
+            recognition: Box::new(found),
+        }),
+        Err(RecognitionError::Stopped) => Ok(PictureReading::Stopped),
+        Err(err) => Err(recognition_error(err, CONTEXT)),
+    }
+}
+
+/// The text read from a kept picture, if it has been read: `{ assetId }`.
+/// Returns `Recognition | null`.
+#[tauri::command]
+pub async fn get_picture_recognition(
+    app: AppHandle,
+    database: State<'_, Database>,
+    asset_id: i64,
+) -> Result<Option<Recognition>, CommandError> {
+    let pool = pool(&app, &database).await?;
+    recognition::latest(&pool, asset_id, recognition::PICTURE_PAGE)
+        .await
+        .map_err(|err| {
+            recognition_error(RecognitionError::Internal(err), "loading a picture's text")
+        })
+}
+
+/// The pages of a PDF source that reading would cover when no pages are
+/// named: `{ sourceId }`. Returns `[number]`: pages with no text that the
+/// built-in engine hasn't read yet. Empty for a source that isn't a PDF.
+#[tauri::command]
+pub async fn get_pages_to_recognise(
+    app: AppHandle,
+    database: State<'_, Database>,
+    source_id: i64,
+) -> Result<Vec<u32>, CommandError> {
+    let pool = pool(&app, &database).await?;
+    match recognition::pages_to_read(&pool, source_id).await {
+        Err(RecognitionError::NotReadable) => Ok(Vec::new()),
+        result => result.map_err(|err| recognition_error(err, "finding scanned pages")),
+    }
+}
+
+/// Reads the text on pages of an active PDF source with the built-in engine:
+/// `{ sourceId, pages?, onProgress }`. Without `pages`, every page with no
+/// text that hasn't been read yet. `onProgress` is a channel that receives
+/// `{ page, done, total, problem }` as each page finishes; each page is saved
+/// as it is read. Returns `{ read, skipped, stopped }`; stopping with
+/// `stop_recognition` keeps the pages already read.
+#[tauri::command]
+pub async fn recognise_source_pages(
+    app: AppHandle,
+    database: State<'_, Database>,
+    recognising: State<'_, Recognising>,
+    source_id: i64,
+    pages: Option<Vec<u32>>,
+    on_progress: Channel<PageProgress>,
+) -> Result<SourceRecognition, CommandError> {
+    const CONTEXT: &str = "reading a source's pages";
+    let run = recognising.begin();
+    let pool = pool(&app, &database).await?;
+    let store = asset_store(&app, "Synapse couldn't read the text. Try again.")?;
+    let helper = recognition_helper()?;
+    match recognition::recognise_source(
+        &pool,
+        &store,
+        helper,
+        source_id,
+        pages,
+        run.token(),
+        Utc::now,
+        |progress| {
+            let _ = on_progress.send(progress);
+        },
+    )
+    .await
+    {
+        Ok(result) => Ok(result),
+        Err(RecognitionError::Stopped) => Ok(SourceRecognition {
+            stopped: true,
+            ..SourceRecognition::default()
+        }),
+        Err(err) => Err(recognition_error(err, CONTEXT)),
+    }
+}
+
+/// Stops the text being read, if any. Takes no arguments; returns `null`.
+#[tauri::command]
+pub fn stop_recognition(recognising: State<'_, Recognising>) {
+    recognising.stop();
 }
 
 #[cfg(test)]

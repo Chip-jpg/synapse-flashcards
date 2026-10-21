@@ -16,8 +16,9 @@
 //!   then its speaker notes. Images are left out.
 //! - PDF: each page's text, with lines broken at the edge of the page joined
 //!   up again ([`unwrap_lines`]). Pages with no text are reported, since
-//!   they're usually scanned images (there's no OCR), and a PDF with no text
-//!   at all is refused.
+//!   they're usually scanned images, which text recognition can read
+//!   (`ocr.rs`). Importing a PDF with no text at all as a note is refused;
+//!   keeping it as a source isn't ([`read_document`]).
 //!
 //! PDFs are read by a second, short-lived run of Synapse ([`PDF_HELPER_ARG`]).
 //! The PDF library can fail on a damaged or unusual file by panicking, which
@@ -121,7 +122,11 @@ pub enum ExtractError {
 /// Reads the text of the file at `path`, starting `helper` (normally Synapse
 /// itself) to read a PDF. Blocking: run it off the async runtime.
 pub fn read_file(path: &Path, helper: &Path) -> Result<ExtractedText, ExtractError> {
-    read_document(path, helper).map(|document| document.text)
+    let document = read_document(path, helper)?;
+    if document.text.body.is_empty() {
+        return Err(ExtractError::NoText);
+    }
+    Ok(document.text)
 }
 
 /// A file read whole, for keeping it as a source (`sources.rs`): its bytes,
@@ -139,6 +144,8 @@ pub struct Document {
 }
 
 /// [`read_file`], keeping the bytes and each page's text too. Blocking.
+/// Unlike [`read_file`], a PDF with no text at all (a scan) is read, with an
+/// empty body and every page in `pages_without_text`.
 pub fn read_document(path: &Path, helper: &Path) -> Result<Document, ExtractError> {
     let kind = FileKind::of(path).ok_or(ExtractError::Unsupported)?;
     let size = std::fs::metadata(path)
@@ -192,7 +199,9 @@ pub fn read_document(path: &Path, helper: &Path) -> Result<Document, ExtractErro
     };
 
     let body = tidy(&body);
-    if body.is_empty() {
+    // A PDF of scanned pages has no text to extract, but is still kept as a
+    // source: its pages can be read by text recognition (`recognition.rs`).
+    if body.is_empty() && kind != FileKind::Pdf {
         return Err(ExtractError::NoText);
     }
     let pages_text = match page_texts {
@@ -218,7 +227,7 @@ pub fn read_document(path: &Path, helper: &Path) -> Result<Document, ExtractErro
 /// (`.`, `!`, `?`, `:`, `;`), or the next one starts a list item, and blank
 /// lines between paragraphs stay. A line ending in a hyphen joins without a
 /// space, the hyphen kept, since it may belong to the word.
-fn unwrap_lines(page: &str) -> String {
+pub(crate) fn unwrap_lines(page: &str) -> String {
     let starts_item = |line: &str| {
         let line = line.trim_start();
         let numbered = line.split_once(['.', ')']).is_some_and(|(number, _)| {

@@ -1,4 +1,4 @@
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 /** Mirrors `DeckSummary` in `src-tauri/src/study.rs`. */
@@ -1339,8 +1339,29 @@ export type Source = {
   deletedAt: string | null;
 };
 
-/** Mirrors `SourcePage` in `src-tauri/src/sources.rs`; `text` is empty for a page without text. */
-export type SourcePage = { number: number; text: string };
+/**
+ * Mirrors `SourcePage` in `src-tauri/src/sources.rs`. `text` is what
+ * extraction read, empty for a page without text (a scan); `recognised` is
+ * the text read from the page's picture, or null if it hasn't been read.
+ * Recognised text may hold mistakes: always show it as recognised.
+ */
+export type SourcePage = {
+  number: number;
+  text: string;
+  recognised: RecognisedText | null;
+};
+
+/** Which engine read some text: built in (`ocrs`) or a vision model in Ollama. */
+export type RecognitionEngine = "ocrs" | "ollama";
+
+/** Mirrors `RecognisedText` in `src-tauri/src/sources.rs`. */
+export type RecognisedText = {
+  text: string;
+  engine: RecognitionEngine;
+  /** The models that read it: the built-in engine's, or the Ollama model's name. */
+  model: string;
+  createdAt: string;
+};
 
 /**
  * Mirrors `SourceImport` in `src-tauri/src/commands.rs`: the kept source and
@@ -1491,4 +1512,105 @@ export function saveSourceCopy(sourceId: number): Promise<ExportOutcome> {
  */
 export function openSourceOriginal(sourceId: number): Promise<void> {
   return invoke<void>("open_source_original", { sourceId });
+}
+
+// Text recognition (`src-tauri/src/recognition.rs`, `ocr.rs`).
+
+/**
+ * A rectangle on a picture, in fractions (0 to 1) of its width and height:
+ * the same form as an image occlusion box.
+ */
+export type TextBox = { left: number; top: number; width: number; height: number };
+
+/** One line read from a picture, in reading order, with its words. */
+export type RecognisedLine = {
+  text: string;
+  box: TextBox;
+  words: { text: string; box: TextBox }[];
+};
+
+/**
+ * Mirrors `Recognition` in `src-tauri/src/recognition.rs`: what was read from
+ * a picture (page 0) or a page of a PDF. `lines` is empty, and `width` and
+ * `height` null, for an engine that doesn't say where text is.
+ */
+export type Recognition = {
+  assetId: number;
+  page: number;
+  engine: RecognitionEngine;
+  model: string;
+  text: string;
+  lines: RecognisedLine[];
+  width: number | null;
+  height: number | null;
+  createdAt: string;
+};
+
+/** Why a page couldn't be read. Mirrors `PageProblem` in `ocr.rs`. */
+export type PageProblem = "noPicture" | "unreadablePicture" | "tooLarge" | "noSuchPage";
+
+/** Sent as each page of a source finishes. `problem` is null when it was read. */
+export type PageProgress = {
+  page: number;
+  done: number;
+  total: number;
+  problem: PageProblem | null;
+};
+
+/** How reading a source's pages went. Pages read are saved even when stopped. */
+export type SourceRecognition = {
+  read: number[];
+  skipped: { page: number; problem: PageProblem }[];
+  stopped: boolean;
+};
+
+export type PictureReading =
+  | { status: "read"; recognition: Recognition }
+  | { status: "stopped" };
+
+/**
+ * Reads the text in a kept picture with the engine built into Synapse. A
+ * picture already read resolves with what was read, without reading it again.
+ * `stopRecognition` resolves this with `{ status: "stopped" }`.
+ */
+export function recognisePicture(assetId: number): Promise<PictureReading> {
+  return invoke<PictureReading>("recognise_picture", { assetId });
+}
+
+/** The text read from a kept picture, or null if it hasn't been read. */
+export function getPictureRecognition(assetId: number): Promise<Recognition | null> {
+  return invoke<Recognition | null>("get_picture_recognition", { assetId });
+}
+
+/**
+ * The pages of a PDF source with no text that haven't been read yet: what
+ * `recogniseSourcePages` reads without `pages`. Empty for other sources.
+ */
+export function getPagesToRecognise(sourceId: number): Promise<number[]> {
+  return invoke<number[]>("get_pages_to_recognise", { sourceId });
+}
+
+/**
+ * Reads the text on pages of an active PDF source with the built-in engine,
+ * saving each page as it is read: `pages`, or by default every page
+ * `getPagesToRecognise` lists. `onProgress` hears about each page as it
+ * finishes. `stopRecognition` ends it early, keeping the pages done.
+ */
+export function recogniseSourcePages(
+  sourceId: number,
+  pages: number[] | null,
+  onProgress: (progress: PageProgress) => void,
+): Promise<SourceRecognition> {
+  const channel = new Channel<PageProgress>();
+  channel.onmessage = onProgress;
+  return invoke<SourceRecognition>("recognise_source_pages", {
+    sourceId,
+    pages,
+    onProgress: channel,
+  });
+}
+
+/** Stops the text being read, if any. */
+export function stopRecognition(): Promise<void> {
+  return invoke<void>("stop_recognition");
 }

@@ -11,10 +11,13 @@ mod export;
 pub mod extract;
 mod import;
 mod notes;
+// Public for its test of the recognition helper process (`tests/ocr_helper.rs`).
 mod occlusion;
+pub mod ocr;
 mod optimizer;
 mod pictures;
 mod quiz;
+mod recognition;
 mod retention;
 mod scheduler;
 mod search;
@@ -40,6 +43,8 @@ pub fn run() {
         .manage(aid::Helping::default())
         // The quiz Ollama is writing, so it can be stopped.
         .manage(quiz::Quizzing::default())
+        // The text being read from a picture or scanned pages, so it can be stopped.
+        .manage(recognition::Recognising::default())
         // Fitting FSRS parameters, so it can be stopped, and its result.
         .manage(optimizer::Optimizing::default())
         // An Anki package read and waiting for the user to add it.
@@ -137,6 +142,11 @@ pub fn run() {
             commands::get_deleted_sources,
             commands::get_source,
             commands::get_source_pages,
+            commands::recognise_picture,
+            commands::get_picture_recognition,
+            commands::get_pages_to_recognise,
+            commands::recognise_source_pages,
+            commands::stop_recognition,
             commands::rename_source,
             commands::delete_source,
             commands::restore_source,

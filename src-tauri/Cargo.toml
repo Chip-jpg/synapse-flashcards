@@ -55,12 +55,43 @@ ruzstd = "0.9"
 # and checking a restored backup's files against those names. Already in the
 # tree through Tauri, so it adds nothing to the build.
 sha2 = "0.10"
-
-
-[dev-dependencies]
-# Making PDFs to import in tests. The version and features `pdf-extract`
-# already uses, so it adds nothing to the build.
+# Reading text in pictures and scanned pages (`ocr.rs`): a pure-Rust OCR
+# engine and the neural network runtime it uses, so no C library or DLL is
+# built or shipped. Its two models are bundled in `models/`.
+ocrs = { version = "0.13", default-features = false, features = ["rten"] }
+rten = { version = "0.26", default-features = false, features = ["rten_format"] }
+rten-imageproc = "0.26"
+# Decoding the pictures it reads (the kinds `assets.rs` keeps). Pure Rust.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+# Finding the scanned picture on each page of a PDF. Already in the tree
+# through `pdf-extract`, at the same version.
 lopdf = { version = "0.42", default-features = false, features = ["wasm_js"] }
+# Decoding black-and-white scans in PDFs (CCITT Group 4, as office scanners write).
+fax = "0.3"
+
+
+# Debug builds and tests run text recognition too: without optimising the
+# network runtime, one page takes minutes instead of a second.
+[profile.dev.package.ocrs]
+opt-level = 3
+[profile.dev.package.rten]
+opt-level = 3
+[profile.dev.package.rten-gemm]
+opt-level = 3
+[profile.dev.package.rten-vecmath]
+opt-level = 3
+[profile.dev.package.rten-simd]
+opt-level = 3
+[profile.dev.package.rten-tensor]
+opt-level = 3
+[profile.dev.package.rten-imageproc]
+opt-level = 3
+[profile.dev.package.rten-parallel]
+opt-level = 3
+[profile.dev.package.rten-base]
+opt-level = 3
+[profile.dev.package.zune-jpeg]
+opt-level = 3
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

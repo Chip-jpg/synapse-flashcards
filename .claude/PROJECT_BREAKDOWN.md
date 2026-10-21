@@ -604,6 +604,19 @@ Released in v0.8.0 (written on branch `claude/sources-screen-9yz936`): phase 2 o
 - **Originals.** `open_source_original` copies the kept file to `<temp>/synapse-originals/<hash prefix>/<name>` and opens it with the opener plugin; `save_source_copy` writes a copy where the user chooses. Both check the file's hash first (`sources::original`); the kept file is never handed out.
 - **Not checked** in the real window, on Windows, or *Open original* on a real desktop.
 
+## 4.17 Text recognition (foundation)
+
+Written on branch `claude/project-thread-50ujao` (not yet released): the shared foundation of the "Text recognition" major feature. No screen uses it yet; the contract for the pieces built on it is `/mnt/project-files/planning/text-recognition-contract.md` (project files).
+
+- **Engine** (`ocr.rs`). [ocrs](https://github.com/robertknight/ocrs) 0.13, pure Rust on `rten`; its two models (`src-tauri/models/`, CC BY-SA 4.0, unchanged, hashes checked by a test) are compiled in with `include_bytes!`, so no DLL, resource or download. About half a second for a page on a laptop-class CPU. Reads the Latin alphabet without accents ("è" → "e", some → "?") and handwriting poorly: Samu chose (2026-10-21) the built-in engine plus an optional local vision model in Ollama for accents and handwriting.
+- **Scanned PDF pages.** The largest image a page draws (through forms too), decoded in Rust: DCT (JPEG), raw/Flate/LZW 8-bit grey, RGB, CMYK (ICCBased by its N), 1-bit and image masks, CCITT G4 and G3 1-D (`fax` crate); `/Rotate` applied. JPX and JBIG2 are `unreadablePicture`. No page rendering: vector text on a page is extraction's job.
+- **Helper process.** Synapse started with `--recognise-text` (`main.rs`): a JSON job line then the bytes on stdin, one JSON line per page on stdout. A crash, or 90 s on one page (`PAGE_TIMEOUT`), is a failed recognition; stopping kills the child. Pictures over 80 MP are refused before decoding; longer sides over 4,000 px are scaled down.
+- **Schema (migration 0019).** `recognitions (asset_id, page, engine 'ocrs'|'ollama', model, text ≤100,000, lines JSON, width, height, created_at)`. Page 0 for a picture, 1+ for a PDF (trigger); never updated or deleted; the newest row per (asset, page) is in use. By file, not by note/card/source, so equal files are read once. Backups carry it unchanged (format 2 still); an older Synapse refuses a schema-19 backup as newer.
+- **Sources.** `source_pages` stays as extraction read it; `SourcePage.recognised` offers the page's recognised text beside it, and `readable()` (extracted text, or recognised where blank) is what `locate_quotes`/`quoted_page` search. `import_source` now keeps a PDF with no text at all (body empty, every page in `pagesWithoutText`); `import_file` still refuses it.
+- **Commands.** `recognise_picture` (cached: a picture read by today's models isn't read again), `get_picture_recognition`, `get_pages_to_recognise`, `recognise_source_pages` (pages or all unread blank pages; a `Channel` of `{page, done, total, problem}`; each page saved as read; stop keeps them), `stop_recognition` (`Recognising` state, one at a time).
+- **Text.** Lines in reading order; a blank line where a gap is over 1.6× the usual one; lines in a paragraph joined as an imported PDF's are (`extract::unwrap_lines`).
+- **Not done here:** any screen, the Ollama engine, searching recognised text, OCR of text drawn as vector shapes, languages beyond unaccented Latin. Not checked on Windows.
+
 ______________________________________________________________________
 
 ## 5. FSRS and personalization
@@ -861,6 +874,8 @@ For example, hiding a Restore button is useful UX, but the Rust command must sti
 | `anki.rs` | Reading an Anki package's collection read-only and adding its front/back, cloze and image occlusion notes (with pictures) as new decks |
 | `assets.rs` | Files kept by hash in `assets/` beside the database, and the `synapse:` scheme that shows them |
 | `sources.rs` | Imported documents kept as sources, with each page's text, and the note saved from each |
+| `ocr.rs` | The built-in text recognition engine, the scanned picture on a PDF page, and the `--recognise-text` helper process |
+| `recognition.rs` | What was read from each kept picture or PDF page, and reading them through the helper (stoppable) |
 | `export.rs` | Backup creation (format 2: the database and every kept file) |
 | `import.rs` | Backup checking and replacement, kept files included |
 
@@ -1012,6 +1027,7 @@ The project history gives this high-level progression:
 | `0016` | Kept files (`assets`), sources with their pages, and the note saved from each (branch `claude/sources-foundation-yugkjq`; section 4.13) |
 | `0017` | Pictures in notes and on card sides (`note_pictures`, `card_pictures`; branch `claude/sources-pictures-04zgws`; section 4.14) |
 | `0018` | Image occlusion: `occlusions`, and `occlusion_id`/`occlusion_number` on `flashcards` (branch `claude/sources-image-occlusion-8pmk5r`; section 4.15) |
+| `0019` | Text recognition: `recognitions`, what was read from each kept picture or PDF page (branch `claude/project-thread-50ujao`; section 4.17) |
 
 The first seven are described in the original specification. The final three are established by your later feature reports and repository history.
 

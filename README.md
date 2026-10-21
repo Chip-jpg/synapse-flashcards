@@ -299,6 +299,21 @@ app shows pictures and PDFs only through its own `synapse:` address, by hash. Pi
 and on cards (migration 0017) and picture cards (image occlusion, migration 0018) keep their
 pictures here, and the Sources screen keeps imported documents.
 
+**Text recognition.** From migration 0019 Synapse can read the text in a kept picture, and on the
+scanned pages of a PDF source, with an OCR engine built into the app
+([ocrs](https://github.com/robertknight/ocrs), pure Rust; its two models are bundled in
+`src-tauri/models/` and compiled into the program, see the README there). Nothing is downloaded and
+nothing leaves your computer. On a PDF page, the largest picture drawn on it is read: JPEG,
+uncompressed or Flate samples (grey, RGB, CMYK) and black-and-white CCITT Group 4 scans, turned as
+the page is; JPEG 2000 and JBIG2 pictures are reported as unreadable. Reading runs in a helper
+process (Synapse started with `--recognise-text`), can be stopped, and saves each page as it is
+read. What was read is kept in `recognitions`, beside the file, never in place of what extraction
+read: a source's page still holds its extracted text (empty for a scan), and offers the
+recognised text next to it, which is used to find quotes on that page. Rows are never changed;
+reading again adds a newer one. The engine reads the Latin alphabet without accents (Italian "è"
+comes out as "e") and reads handwriting poorly, so recognised text is always shown as such, for you
+to check.
+
 **Sources.** *Sources* in the sidebar lists the documents Synapse keeps (kind, pages or slides,
 size, and date), newest first, with deleted ones underneath and *Restore*. *Add source* keeps a file
 without writing a note. Opening one shows its text a page (or slide) at a time, with previous, next
@@ -380,8 +395,9 @@ What's taken from each kind of file:
 
 - **PDF** — the text of each page, in order, with lines that were only broken at the edge of the
   page joined up again. Pages with no text (usually scanned images) are named, so you can check
-  nothing's missing; a PDF with no text at all, such as a scan, is refused, since Synapse can't
-  read pictures of text. Password-protected PDFs can't be read.
+  nothing's missing. A PDF with no text at all, such as a scan, is still kept as a source, whose
+  pages text recognition can read (see *Text recognition*); it can't become a note directly.
+  Password-protected PDFs can't be read.
 - **Text and Markdown** — the whole file, as written (UTF-8, UTF-16, or older Windows text). Markdown
   then shows formatted when you read the note.
 - **Word** — the document's paragraphs, list items as `- ` lines, and tables a row per line. Headers,
@@ -510,7 +526,8 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   is exact text only (no fuzzy matching, no search inside deleted notes) and has no index, so each
   search reads every note.
   Importing a file makes a note from its text only: layout and images are left out of the note (the
-  original is kept under *Sources*), and there's no OCR for scanned pages. A card doesn't remember the note it was written or suggested from — so
+  original is kept under *Sources*). Scanned pages are read by text recognition, which knows no
+  accents and reads handwriting poorly. A card doesn't remember the note it was written or suggested from — so
   deleting a note leaves its cards exactly where they are. A deleted note can be read but not
   edited; restore it first.
 - **No sync, accounts, cloud, or collaboration.** By design.
@@ -635,7 +652,12 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   - `sources.rs` — imported documents kept as sources, with the text of each page; the notes
     written from each (saved with their link in one transaction); finding a quote on its pages;
     and copies of the original to open or save.
+  - `ocr.rs` — the built-in text recognition engine: reading a picture, finding and decoding the
+    scanned picture on a PDF page, and the helper process (Synapse started with
+    `--recognise-text`) that does both. `tests/ocr_helper.rs` runs the real binary as the helper.
+  - `recognition.rs` — what was read from each kept picture or PDF page (`recognitions`), reading
+    a picture or a source's scanned pages through the helper, and stopping it.
   - `export.rs` / `import.rs` — writing a `.zip` backup with every kept file, and checking and
     restoring one (kept files included).
-- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0018`), embedded in the
+- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0019`), embedded in the
   binary at compile time.
