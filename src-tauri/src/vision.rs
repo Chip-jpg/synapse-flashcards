@@ -201,9 +201,14 @@ fn unaccented(c: char) -> char {
 /// The share of the built-in engine's distinct words, as a whole percentage,
 /// that the model's text has too, ignoring case and accents: a hint at
 /// whether the model read the same page, not a measure of which is right.
-/// None when the built-in engine found no words.
+/// Words the built-in engine read with a "?" (an accented letter it couldn't
+/// read) don't count. None when the built-in engine found no other words.
 pub fn agreement(model_text: &str, builtin_text: &str) -> Option<u8> {
-    let builtin = plain_words(builtin_text);
+    let readable: Vec<&str> = builtin_text
+        .split_whitespace()
+        .filter(|word| !word.contains('?'))
+        .collect();
+    let builtin = plain_words(&readable.join(" "));
     if builtin.is_empty() {
         return None;
     }
@@ -600,12 +605,15 @@ mod tests {
     fn agreement_is_the_share_of_the_built_in_words_ignoring_case_and_accents() {
         // The built-in engine reads "è" as "e", and some accents as "?".
         let builtin = "La fotosintesi e il processo piu importante.\n\nPerch? la luce e energia.";
-        // Of its ten words, "perch" is the only one the model's text lacks.
-        assert_eq!(agreement(ITALIAN, builtin), Some(90));
+        // "Perch?" doesn't count; every other word is in the model's text.
+        assert_eq!(agreement(ITALIAN, builtin), Some(100));
+        // One of five words misread.
+        assert_eq!(agreement(ITALIAN, "La fotosintesl e il processo"), Some(80));
         assert_eq!(agreement(ITALIAN, "LA FOTOSINTESI"), Some(100));
         assert_eq!(agreement("Something else entirely", builtin), Some(0));
         assert_eq!(agreement(ITALIAN, ""), None);
         assert_eq!(agreement(ITALIAN, " ... "), None);
+        assert_eq!(agreement(ITALIAN, "pi? perch?"), None);
     }
 
     #[test]
@@ -974,12 +982,12 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(result.read, [2]);
-            // Four of the six built-in words: not "perch" or "clorofilla".
+            // Four of the five built-in words that count: not "clorofilla".
             assert_eq!(
                 result.agreement,
                 [PageAgreement {
                     page: 2,
-                    percent: 67
+                    percent: 80
                 }]
             );
 
@@ -1046,6 +1054,66 @@ mod tests {
                     .unwrap(),
                 None
             );
+        });
+    }
+
+    /// Reads an Italian page with the built-in engine and with a real vision
+    /// model, and prints both, to judge the model's reading. Run with
+    /// Ollama running and the model pulled:
+    ///
+    /// ```text
+    /// SYNAPSE_TEST_VISION_MODEL=qwen2.5vl:3b cargo test --locked \
+    ///     real_ollama_reads_an_italian_page -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "needs Ollama running locally, with a vision model"]
+    fn real_ollama_reads_an_italian_page() {
+        let model = std::env::var("SYNAPSE_TEST_VISION_MODEL")
+            .expect("set SYNAPSE_TEST_VISION_MODEL to a vision model installed in Ollama");
+        let page = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/ocr/italiano.png"
+        ))
+        .unwrap();
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let store = scratch_store("vision-real");
+            let picture = assets::add_picture(&pool, &store, &page, at(NOW))
+                .await
+                .unwrap();
+            let builtin = recognition::recognise_picture(
+                &pool,
+                &store,
+                helper(),
+                picture.id,
+                CancellationToken::new(),
+                at(NOW),
+            )
+            .await
+            .unwrap();
+            let ollama = Ollama::local().unwrap();
+            assert!(ollama.vision_models().await.unwrap().contains(&model));
+            let started = std::time::Instant::now();
+            let read = read_picture(
+                &pool,
+                &store,
+                helper(),
+                &ollama,
+                picture.id,
+                &model,
+                CancellationToken::new(),
+                at("2026-10-21T09:05:00Z"),
+            )
+            .await
+            .unwrap();
+            eprintln!("built in:\n{}\n", builtin.text);
+            eprintln!(
+                "{model}, {:.0?}, agreement {:?}:\n{}",
+                started.elapsed(),
+                read.agreement,
+                read.recognition.text
+            );
+            assert!(!read.recognition.text.is_empty());
         });
     }
 }
