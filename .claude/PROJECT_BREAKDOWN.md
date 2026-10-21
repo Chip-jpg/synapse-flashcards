@@ -617,6 +617,15 @@ Written on branch `claude/project-thread-50ujao` (not yet released): the shared 
 - **Text.** Lines in reading order; a blank line where a gap is over 1.6× the usual one; lines in a paragraph joined as an imported PDF's are (`extract::unwrap_lines`).
 - **Not done here:** any screen, the Ollama engine, searching recognised text, OCR of text drawn as vector shapes, languages beyond unaccented Latin. Not checked on Windows.
 
+## 4.18 Text from pictures, and boxes for image occlusion
+
+Written on branch `claude/project-thread-abrm8t` (not yet released), on top of 4.17. Frontend only: no command, no migration.
+
+- **Text in picture** (`src/pictureText.tsx`: `usePictureReading`, `PictureTextPanel`). On each picture in the note view's gallery and in the note and card forms' picture fields (`PictureGallery readText`, `PictureField addText`). The panel says "Recognised text: check it for mistakes" and which engine read it; *Copy* everywhere, *Add to note* / *Add to front* / *Add to back* in forms (appended after a blank line, counted as an unsaved edit). "No text found." for an empty reading. *Stop*, and leaving the screen stops it, but only if no newer reading has started (`newestRun`), since starting one stops the last.
+- **Note from a photo** (Notes library). `choosePicture`, then `recognisePicture`; the new-note form opens with the text as the body, the picture attached and a notice to check it (`PhotoDraft`, `PhotoSummary`); no title is guessed. A photo with no text, or a reading stopped or refused, still opens the form with the picture.
+- **Find labels** (`Occlusion.tsx`, `labelBoxes`). One box per recognised line, or per word; padded by a fifth of the text's height (scaled by the picture's aspect ratio sideways), clamped to the picture, rounded to 4 decimals, labelled with the text cut to 200 characters, each a new card number. Text whose centre is already under a box with the same label is skipped. At most 200 boxes; the rest are counted in the message.
+- **Not done:** the Ollama engine choice (`ReadWith`, piece 3, wires in after this merges); no text in review pictures or in a deleted note's pictures; *Note from a photo* doesn't take a pasted picture.
+
 ______________________________________________________________________
 
 ## 5. FSRS and personalization
@@ -830,7 +839,8 @@ Current README identifies these main files:
 | `markdown.ts`, `NoteMarkdown.tsx` | Reading a note's Markdown and showing it formatted, never as HTML (section 4.12) |
 | `SuggestCards.tsx` | Suggesting cards from a note and checking them before saving |
 | `Quiz.tsx` | A multiple-choice quiz on a note, and adding missed questions as cards |
-| `Occlusion.tsx` | Picture cards (image occlusion): the form to draw boxes, and the picture shown in review |
+| `Occlusion.tsx` | Picture cards (image occlusion): the form to draw boxes (and *Find labels*), and the picture shown in review |
+| `pictureText.tsx` | Reading the text in a kept picture, and the panel that shows it as recognised text |
 | `deckChoices.ts` | The decks a card can be added to, for both card-from-note screens |
 | `Search.tsx` | Search: every card and note at once, with snippets and filters |
 | `Statistics.tsx` | Statistics: reviews per day, true retention, cards by state, due forecast (plain SVG charts) |

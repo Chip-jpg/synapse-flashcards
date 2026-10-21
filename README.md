@@ -314,6 +314,16 @@ reading again adds a newer one. The engine reads the Latin alphabet without acce
 comes out as "e") and reads handwriting poorly, so recognised text is always shown as such, for you
 to check.
 
+**Text in pictures.** Each picture in a note, and in the note and card forms, offers *Text in
+picture*: Synapse reads it and shows what it found in a panel marked as recognised text, with *Copy*
+and, in a form, *Add to note* (or *Add to front* / *Add to back*), which adds it to the end of the
+text; nothing is saved until the form is. *Notes* → *Note from a photo* chooses a picture, reads
+it, and opens a new note with that text and the picture attached, to check and give a title. On a
+picture card, *Find labels* reads the picture and proposes a box over each line of text (or each
+word), a little larger than the text and labelled with it, each its own card, to check, adjust or
+remove before saving; text already under a box with the same label is skipped, and the 200-box and
+200-character label limits hold. *Stop*, or leaving the screen, ends a reading.
+
 **Sources.** *Sources* in the sidebar lists the documents Synapse keeps (kind, pages or slides,
 size, and date), newest first, with deleted ones underneath and *Restore*. *Add source* keeps a file
 without writing a note. Opening one shows its text a page (or slide) at a time, with previous, next

@@ -22,8 +22,11 @@ import {
   type DeckDetail as Deck,
   type OcclusionBox,
   type OcclusionMode,
+  type Recognition,
+  type TextBox,
 } from "./api";
 import { FormActions, TextField, useFormSave } from "./forms";
+import { usePictureReading } from "./pictureText";
 import { Message } from "./ui";
 import { useUnsavedChanges } from "./unsaved";
 
@@ -33,6 +36,73 @@ const MIN_DRAWN = 0.01;
 const STEP = 0.01;
 /** The size of a box added with the button. */
 const NEW_BOX = { width: 0.2, height: 0.1 };
+
+/** The most boxes a picture can have: `BOXES_MAX` in `occlusion.rs`. */
+export const OCCLUSION_BOXES_MAX = 200;
+/** The longest label a box can have: `LABEL_MAX_CHARS` in `occlusion.rs`. */
+const LABEL_MAX_CHARS = 200;
+
+/** What *Find labels* puts a box over. */
+type LabelUnit = "line" | "word";
+
+/** A box proposed over text read in the picture, with that text as its label. */
+type FoundLabel = Omit<OcclusionBox, "number">;
+
+/**
+ * One box over each line (or word) of text read in a picture, a little larger
+ * than the text so it hides it whole, labelled with the text. Text already
+ * under a box with the same label is skipped, so finding labels twice
+ * doesn't double them.
+ */
+export function labelBoxes(
+  recognition: Recognition,
+  unit: LabelUnit,
+  existing: OcclusionBox[],
+): FoundLabel[] {
+  const found: { text: string; box: TextBox }[] =
+    unit === "line" ? recognition.lines : recognition.lines.flatMap((line) => line.words);
+  const proposed: FoundLabel[] = [];
+  for (const { text, box } of found) {
+    const label = [...text.trim()].slice(0, LABEL_MAX_CHARS).join("");
+    if (label === "") continue;
+    // A margin of a fifth of the text's height on each side, in each
+    // direction's own fraction of the picture.
+    const pad = box.height * 0.2;
+    const ratio =
+      recognition.width && recognition.height ? recognition.height / recognition.width : 1;
+    const padX = pad * ratio;
+    const left = clamp(box.left - padX, 0, 1);
+    const top = clamp(box.top - pad, 0, 1);
+    const right = clamp(box.left + box.width + padX, 0, 1);
+    const bottom = clamp(box.top + box.height + pad, 0, 1);
+    const shape = {
+      left: round(left),
+      top: round(top),
+      width: round(Math.max(right - left, MIN_DRAWN)),
+      height: round(Math.max(bottom - top, MIN_DRAWN)),
+      label,
+    };
+    shape.left = Math.min(shape.left, round(1 - shape.width));
+    shape.top = Math.min(shape.top, round(1 - shape.height));
+    const centreX = box.left + box.width / 2;
+    const centreY = box.top + box.height / 2;
+    const covered = [...existing, ...proposed].some(
+      (other) =>
+        other.label === label &&
+        centreX >= other.left &&
+        centreX <= other.left + other.width &&
+        centreY >= other.top &&
+        centreY <= other.top + other.height,
+    );
+    if (!covered) proposed.push(shape);
+  }
+  return proposed;
+}
+
+/** Rounded to 4 decimals, as Rust keeps boxes. */
+function round(value: number): number {
+  return Math.round(value * 10_000) / 10_000;
+}
 
 /** A box with a key that stays the same while it is edited. */
 type EditorBox = OcclusionBox & { key: number };
@@ -255,6 +325,12 @@ function OcclusionEditor({
   const [adding, setAdding] = useState(false);
   const stageRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<Drag | null>(null);
+  const reading = usePictureReading();
+  const [labelUnit, setLabelUnit] = useState<LabelUnit>("line");
+  const [labelsFound, setLabelsFound] = useState("");
+  // The boxes as they are now, for labels found after a wait.
+  const latestBoxes = useRef(boxes);
+  latestBoxes.current = boxes;
 
   const startState = useMemo(
     () =>
@@ -325,6 +401,56 @@ function OcclusionEditor({
     changeBoxes((previous) => [...previous, { ...position, number, label: "", key }]);
     setSelected(key);
     return key;
+  }
+
+  /**
+   * Reads the text in the picture and proposes a box over each line (or
+   * word), labelled with what was read, for the user to check and adjust.
+   */
+  async function findLabels() {
+    if (!picture || reading.state.status === "reading") return;
+    setLabelsFound("");
+    const read = await reading.read(picture.id);
+    if (read === null) return;
+    reading.clear();
+    if (read.status === "stopped") {
+      setLabelsFound("Stopped. No boxes were added.");
+      return;
+    }
+    if (read.status === "error") {
+      setLabelsFound(read.message);
+      return;
+    }
+    if (read.status !== "read") return;
+    const current = latestBoxes.current;
+    const found = labelBoxes(read.recognition, labelUnit, current);
+    if (found.length === 0) {
+      setLabelsFound(
+        read.recognition.text.trim() === ""
+          ? "No text found."
+          : "Every piece of text found already has a box.",
+      );
+      return;
+    }
+    const room = OCCLUSION_BOXES_MAX - current.length;
+    const added = found.slice(0, Math.max(room, 0));
+    const shapes = added.map((shape) => ({
+      ...shape,
+      number: newNumber(),
+      key: keyRef.current++,
+    }));
+    if (shapes.length > 0) changeBoxes((previous) => [...previous, ...shapes]);
+    const what = labelUnit === "line" ? "line" : "word";
+    const parts = [
+      shapes.length === 0
+        ? "No boxes were added"
+        : `Added ${shapes.length} ${shapes.length === 1 ? "box" : "boxes"}, one over each ${what} of text found, each its own card`,
+      found.length > shapes.length &&
+        ` (${found.length - shapes.length} more didn't fit: a picture holds at most ${OCCLUSION_BOXES_MAX} boxes)`,
+    ].filter((part): part is string => typeof part === "string");
+    setLabelsFound(
+      `${parts.join("")}. The labels are recognised text and can have mistakes: check them, and remove or adjust any box before saving.`,
+    );
   }
 
   async function keepPicture(choose: () => Promise<Asset | null>) {
@@ -579,7 +705,39 @@ function OcclusionEditor({
             >
               Add a box
             </button>
+            <button
+              type="button"
+              className="button button-small button-tonal"
+              aria-describedby="occlusion-labels-hint"
+              aria-disabled={reading.state.status === "reading"}
+              onClick={() => void findLabels()}
+            >
+              {reading.state.status === "reading" ? "Finding labels…" : "Find labels"}
+            </button>
+            {reading.state.status === "reading" && (
+              <button type="button" className="button button-small" onClick={reading.stop}>
+                Stop
+              </button>
+            )}
+            <label className="occlusion-label-unit">
+              <span>One box per</span>
+              <select
+                className="field-input"
+                value={labelUnit}
+                onChange={(event) => setLabelUnit(event.target.value as LabelUnit)}
+              >
+                <option value="line">line of text</option>
+                <option value="word">word</option>
+              </select>
+            </label>
           </div>
+          <p className="field-hint" id="occlusion-labels-hint">
+            Find labels reads the text in the picture and puts a box, labelled with that text, over
+            each line or word. Synapse's built-in reader doesn't read accents or handwriting well.
+          </p>
+          <p className="form-status" role="status">
+            {reading.state.status === "reading" ? "Reading the text in the picture…" : labelsFound}
+          </p>
           <p className="cloze-preview" role="status">
             {boxes.length === 0
               ? "No boxes yet."
