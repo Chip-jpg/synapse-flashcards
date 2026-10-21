@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import type { ArchivedDeck } from "./api";
@@ -50,7 +50,8 @@ describe("unarchiving a deck", () => {
     const notice = await screen.findByText(
       "Chemistry unarchived. It's back on your Study Desk with its cards and review history.",
     );
-    expect(document.activeElement).toBe(notice);
+    // Focus moves once the reloaded list has rendered.
+    await waitFor(() => expect(document.activeElement).toBe(notice));
     expect(archived.argsOf("unarchive_deck")).toEqual([{ deckId: 3 }]);
     expect(screen.queryByRole("button", { name: "Unarchive deck" })).toBeNull();
   });

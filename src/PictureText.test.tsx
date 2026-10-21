@@ -473,7 +473,8 @@ describe("finding labels for picture cards", () => {
       (screen.getByLabelText("Label for box 1") as HTMLInputElement).value,
     ).toHaveLength(200);
     expect(screen.queryByLabelText("Label for box 201")).toBeNull();
-  });
+    // 200 boxes, each with a choice of 200 cards, are slow to draw in jsdom.
+  }, 30_000);
 
   it("can be stopped, adding nothing", async () => {
     const { backend, user } = await openOcclusion(waitingForStop());

@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { DeckDetail as Deck } from "./api";
@@ -157,7 +157,8 @@ describe("restoring a card", () => {
     const notice = await screen.findByText(
       "That card couldn't be restored. Here's this deck as it is now.",
     );
-    expect(document.activeElement).toBe(notice);
+    // Focus moves once the reloaded deck has rendered.
+    await waitFor(() => expect(document.activeElement).toBe(notice));
     expect(deck.argsOf("get_deck_detail")).toHaveLength(2);
     expect(screen.queryByRole("button", { name: "Restore card" })).toBeNull();
   });
