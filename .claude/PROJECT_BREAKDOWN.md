@@ -7,7 +7,7 @@ Those are two different levels of maturity, and keeping them separate is essenti
 - The current application is real, released, and usable without AI.
 - The broader study-companion vision is the roadmap, not a list of features already implemented.
 
-As of this update, the latest published release is v0.8.0, released from `main` by the Release workflow on October 20, 2026 (the `v0.8.0` tag names the commit). v0.8.0 is the first major feature, "Sources and pictures" (sections 4.13–4.16): kept originals, pictures, image occlusion, and backup format 2. Since v0.5.0 (October 18, 2026), the 2026-10-19 and 2026-10-20 rounds shipped v0.5.1, v0.6.0, v0.7.0, v0.7.1, v0.7.2, v0.7.3 and v0.8.0 (section 13); their features are described in sections 4 and 5, some still marked with the branch they were written on. v0.5.0 added importing files as notes (section 4.7). v0.4.0 added the first AI feature: cards suggested from a note by a model in Ollama on the user's computer (section 4.6). v0.3.2 added unsaved-changes protection and the first frontend test suite (sections 4.5 and 12). The rest of this breakdown was first written against v0.3.1 and has been updated wherever those changes reach.
+As of this update, the latest published release is v0.8.1, released from `main` by the Release workflow on October 21, 2026 (the `v0.8.1` tag names the commit): restoring selected deleted cards and reading a deleted note (sections 4.2 and 4.3). v0.8.0 (October 20, 2026) was the first major feature, "Sources and pictures" (sections 4.13–4.16): kept originals, pictures, image occlusion, and backup format 2. Since v0.5.0 (October 18, 2026), the 2026-10-19 and 2026-10-20 rounds shipped v0.5.1, v0.6.0, v0.7.0, v0.7.1, v0.7.2, v0.7.3 and v0.8.0, and the 2026-10-21 round v0.8.1 (section 13); their features are described in sections 4 and 5, some still marked with the branch they were written on. v0.5.0 added importing files as notes (section 4.7). v0.4.0 added the first AI feature: cards suggested from a note by a model in Ollama on the user's computer (section 4.6). v0.3.2 added unsaved-changes protection and the first frontend test suite (sections 4.5 and 12). The rest of this breakdown was first written against v0.3.1 and has been updated wherever those changes reach.
 
 This breakdown combines that current repository documentation, your implementation reports, and the original product/specification documents. The older specification is useful for architecture and intent, but parts of its feature-status descriptions are outdated—for example, it predates the restore/unarchive work.
 
@@ -88,14 +88,14 @@ ______________________________________________________________________
 | Repository | `Chip-jpg/synapse-flashcards` |
 | Visibility | Public, by your deliberate choice |
 | Development environments | Your local Windows setup, and Claude Code cloud sessions (Linux) |
-| Latest published release | v0.8.0 (October 20, 2026) |
-| Release commit | The commit the `v0.8.0` tag points at, on `main` |
-| Windows installer | `Synapse_0.8.0_x64-setup.exe` |
-| Windows MSI | `Synapse_0.8.0_x64_en-US.msi` |
+| Latest published release | v0.8.1 (October 21, 2026) |
+| Release commit | The commit the `v0.8.1` tag points at, on `main` |
+| Windows installer | `Synapse_0.8.1_x64-setup.exe` |
+| Windows MSI | `Synapse_0.8.1_x64_en-US.msi` |
 | Installer signing | Release notes say the installers are unsigned |
 | How releases are built | The manual **Release** GitHub Actions workflow on `windows-latest` (since v0.3.2; section 13) |
 | Database migrations documented in current README | `0001`–`0018` |
-| Frontend tests | Vitest + Testing Library: 261 tests at v0.8.0 (`npm test`; section 12.4) |
+| Frontend tests | Vitest + Testing Library: 271 tests at v0.8.1 (`npm test`; section 12.4) |
 | AI generation | Cards suggested from a note by a local model in Ollama, since v0.4.0 (section 4.6) |
 | File import | PDF, TXT, MD, DOCX, PPTX as notes, since v0.5.0 (section 4.7); originals kept as sources since v0.8.0 (sections 4.13, 4.16) |
 
@@ -283,7 +283,7 @@ With two or more deleted cards in a deck, *Restore all* (`restore_deleted_cards`
 
 ### Restore selected
 
-Added on branch `claude/nightly-2026-10-21-restore-selected-58koby` (not yet released). Under *Deleted cards*, each card that can be restored has a *Select* box; *Restore selected* (`restore_flashcards` in `authoring.rs`) restores the ticked ones in one transaction, by `restore_flashcard`'s rules (Sample deck, archived deck, `cloze::restore_block` and `occlusion::restore_block`, checked card by card; cloze and picture fronts and backs rewritten). It sends the ids the user confirmed; if any is no longer a deleted card of that deck, it is refused as stale (`SelectionChanged`) and nothing is written. No migration.
+Released in v0.8.1 (written on branch `claude/nightly-2026-10-21-restore-selected-58koby`). Under *Deleted cards*, each card that can be restored has a *Select* box; *Restore selected* (`restore_flashcards` in `authoring.rs`) restores the ticked ones in one transaction, by `restore_flashcard`'s rules (Sample deck, archived deck, `cloze::restore_block` and `occlusion::restore_block`, checked card by card; cloze and picture fronts and backs rewritten). It sends the ids the user confirmed; if any is no longer a deleted card of that deck, it is refused as stale (`SelectionChanged`) and nothing is written. No migration.
 
 ### Several cards at once
 
@@ -335,7 +335,7 @@ The library is ordered with recently edited notes first. These limits and preser
 
 A deleted note is removed from ordinary navigation and cannot be opened or edited through normal note commands.
 
-The recovery list shows its identifying information and dates. Since branch `claude/nightly-2026-10-21-deleted-note-preview-tcxs3m` (not yet released), *Read note* opens it read-only (`get_deleted_note`, `notes::deleted_note`: title, body, dates, pictures; refused as stale once restored), formatted as an active note is, with *Restore note* as its only action. Editing, card from note, suggestions and quizzes still need it restored, and Rust still refuses edits to a deleted note. No migration.
+The recovery list shows its identifying information and dates. Since v0.8.1 (written on branch `claude/nightly-2026-10-21-deleted-note-preview-tcxs3m`), *Read note* opens it read-only (`get_deleted_note`, `notes::deleted_note`: title, body, dates, pictures; refused as stale once restored), formatted as an active note is, with *Restore note* as its only action. Editing, card from note, suggestions and quizzes still need it restored, and Rust still refuses edits to a deleted note. No migration.
 
 Deletion and restoration preserve the note’s content and original edit timestamps.
 
@@ -1337,6 +1337,7 @@ ______________________________________________________________________
 | v0.7.2 | Cloze siblings kept apart for the day, Anki cloze notes imported, notes read as formatted Markdown |
 | v0.7.3 | Speed on long review histories: `review_logs` indexes (0015), next card without sorting the deck, lighter deck checks and Settings count |
 | v0.8.0 | Sources and pictures: kept files and sources (0016), backup format 2, the Sources screen with page links, pictures in notes and on cards (0017), image occlusion cards and Anki image occlusion import (0018) |
+| v0.8.1 | Restore selected deleted cards, and read a deleted note without restoring it |
 
 Not every feature was committed at the same time as its release bump. Session progress and keyboard ratings were committed September 22 and packaged later.
 
