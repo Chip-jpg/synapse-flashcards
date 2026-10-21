@@ -2925,7 +2925,7 @@ textarea.field-input {
   flex-direction: column;
   gap: 0.375rem;
   align-items: flex-start;
-  width: 7rem;
+  width: 8rem;
 }
 
 .picture-choice-actions {

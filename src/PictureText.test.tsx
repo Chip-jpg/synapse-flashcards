@@ -431,6 +431,45 @@ describe("finding labels for picture cards", () => {
     });
   });
 
+  it("splits a line where its words are far apart, as labels side by side", async () => {
+    // "Cell membrane" and "Nucleus" on one row of a diagram, read as one line.
+    const line = {
+      text: "Cell membrane Nucleus",
+      box: { left: 0.05, top: 0.1, width: 0.85, height: 0.05 },
+      words: [
+        {
+          text: "Cell",
+          box: { left: 0.05, top: 0.1, width: 0.08, height: 0.05 },
+        },
+        {
+          text: "membrane",
+          box: { left: 0.14, top: 0.1, width: 0.15, height: 0.05 },
+        },
+        {
+          text: "Nucleus",
+          box: { left: 0.78, top: 0.1, width: 0.12, height: 0.05 },
+        },
+      ],
+    };
+    await openOcclusion({
+      recognise_picture: (args) => ({
+        status: "read",
+        recognition: reading(args.assetId as number, [line]),
+      }),
+    });
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Find labels" }));
+
+    expect(await screen.findByText(/Added 2 boxes/)).toBeTruthy();
+    expect(
+      (screen.getByLabelText("Label for box 1") as HTMLInputElement).value,
+    ).toBe("Cell membrane");
+    expect(
+      (screen.getByLabelText("Label for box 2") as HTMLInputElement).value,
+    ).toBe("Nucleus");
+  });
+
   it("can put a box over each word instead, each its own card", async () => {
     await openOcclusion();
     const user = userEvent.setup();

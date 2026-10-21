@@ -319,8 +319,8 @@ picture*: Synapse reads it and shows what it found in a panel marked as recognis
 and, in a form, *Add to note* (or *Add to front* / *Add to back*), which adds it to the end of the
 text; nothing is saved until the form is. *Notes* → *Note from a photo* chooses a picture, reads
 it, and opens a new note with that text and the picture attached, to check and give a title. On a
-picture card, *Find labels* reads the picture and proposes a box over each line of text (or each
-word), a little larger than the text and labelled with it, each its own card, to check, adjust or
+picture card, *Find labels* reads the picture and proposes a box over each line of text (split
+where words are far apart, as labels side by side are) or each word, a little larger than the text and labelled with it, each its own card, to check, adjust or
 remove before saving; text already under a box with the same label is skipped, and the 200-box and
 200-character label limits hold. *Stop*, or leaving the screen, ends a reading.
 

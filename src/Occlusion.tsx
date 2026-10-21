@@ -22,6 +22,7 @@ import {
   type DeckDetail as Deck,
   type OcclusionBox,
   type OcclusionMode,
+  type RecognisedLine,
   type Recognition,
   type TextBox,
 } from "./api";
@@ -49,7 +50,8 @@ type LabelUnit = "line" | "word";
 type FoundLabel = Omit<OcclusionBox, "number">;
 
 /**
- * One box over each line (or word) of text read in a picture, a little larger
+ * One box over each line (or word) of text read in a picture (a line split
+ * where its words are far apart, see `labelRuns`), a little larger
  * than the text so it hides it whole, labelled with the text. Text already
  * under a box with the same label is skipped, so finding labels twice
  * doesn't double them.
@@ -59,8 +61,10 @@ export function labelBoxes(
   unit: LabelUnit,
   existing: OcclusionBox[],
 ): FoundLabel[] {
-  const found: { text: string; box: TextBox }[] =
-    unit === "line" ? recognition.lines : recognition.lines.flatMap((line) => line.words);
+  const found =
+    unit === "line"
+      ? recognition.lines.flatMap((line) => labelRuns(line, recognition))
+      : recognition.lines.flatMap((line) => line.words);
   const proposed: FoundLabel[] = [];
   for (const { text, box } of found) {
     const label = [...text.trim()].slice(0, LABEL_MAX_CHARS).join("");
@@ -97,6 +101,39 @@ export function labelBoxes(
     if (!covered) proposed.push(shape);
   }
   return proposed;
+}
+
+/**
+ * A line split where its words are far apart, as two labels side by side on
+ * a diagram are read as one line: a gap wider than the line is tall starts
+ * a new run. Each run is its words' text in one box around them.
+ */
+function labelRuns(
+  line: RecognisedLine,
+  recognition: Recognition,
+): { text: string; box: TextBox }[] {
+  if (line.words.length < 2) return [line];
+  const ratio =
+    recognition.width && recognition.height ? recognition.width / recognition.height : 1;
+  const runs: RecognisedLine["words"][] = [[line.words[0]]];
+  for (const word of line.words.slice(1)) {
+    const run = runs[runs.length - 1];
+    const last = run[run.length - 1];
+    const gap = (word.box.left - (last.box.left + last.box.width)) * ratio;
+    if (gap > Math.max(last.box.height, word.box.height)) runs.push([word]);
+    else run.push(word);
+  }
+  if (runs.length === 1) return [line];
+  return runs.map((words) => {
+    const left = Math.min(...words.map((word) => word.box.left));
+    const top = Math.min(...words.map((word) => word.box.top));
+    const right = Math.max(...words.map((word) => word.box.left + word.box.width));
+    const bottom = Math.max(...words.map((word) => word.box.top + word.box.height));
+    return {
+      text: words.map((word) => word.text).join(" "),
+      box: { left, top, width: right - left, height: bottom - top },
+    };
+  });
 }
 
 /** Rounded to 4 decimals, as Rust keeps boxes. */
@@ -733,7 +770,8 @@ function OcclusionEditor({
           </div>
           <p className="field-hint" id="occlusion-labels-hint">
             Find labels reads the text in the picture and puts a box, labelled with that text, over
-            each line or word. Synapse's built-in reader doesn't read accents or handwriting well.
+            each line (split where words are far apart, as labels side by side are) or each word.
+            Synapse's built-in reader doesn't read accents or handwriting well.
           </p>
           <p className="form-status" role="status">
             {reading.state.status === "reading" ? "Reading the text in the picture…" : labelsFound}
