@@ -898,6 +898,36 @@ pub async fn restore_deleted_cards(
         })
 }
 
+/// Restores several soft-deleted cards of one deck at once, each exactly as
+/// `restore_flashcard` restores one.
+///
+/// Arguments: `{ deckId, cardIds }`, the deleted cards the user selected and
+/// confirmed. Returns `{ changed, deck }`: how many came back, and the deck
+/// with them (same shape as `get_deck_detail`). Rejects with kind "stale" if
+/// any of them is no longer a deleted card of the deck, can't be restored now,
+/// or the deck has been archived, writing nothing either way.
+#[tauri::command]
+pub async fn restore_flashcards(
+    app: AppHandle,
+    database: State<'_, Database>,
+    deck_id: i64,
+    card_ids: Vec<i64>,
+) -> Result<authoring::ChangedCards, CommandError> {
+    if deck_id < 1 {
+        return Err(CommandError::invalid(DECK_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    authoring::restore_flashcards(&pool, deck_id, &card_ids, Utc::now())
+        .await
+        .map_err(|err| {
+            authoring_error(
+                err,
+                "restoring selected cards",
+                "Synapse couldn't restore the cards.",
+            )
+        })
+}
+
 /// Soft-deletes several cards of one deck at once, each exactly as
 /// `delete_flashcard` deletes one.
 ///

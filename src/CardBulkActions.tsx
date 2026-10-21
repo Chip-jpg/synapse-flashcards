@@ -2,13 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import {
   deleteFlashcards,
   moveFlashcards,
+  restoreFlashcards,
   toCommandError,
   type DeckCard,
   type DeckDetail as Deck,
 } from "./api";
 import { loadDeckChoices, type DeckChoices } from "./deckChoices";
 import { SelectField } from "./forms";
-import { ArrowRightIcon, TrashIcon } from "./icons";
+import { ArrowRightIcon, RestoreIcon, TrashIcon } from "./icons";
 
 /** "1 card", "3 cards". */
 export function cardCount(count: number): string {
@@ -362,6 +363,133 @@ export function SelectionActions({
           <p className="form-status" role="status">
             {busy ? "Moving…" : ""}
           </p>
+        </div>
+      )}
+
+      {error && (
+        <p className="message-error" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The action for the deleted cards selected in a deck: restore them, after a
+ * confirmation that names how many. Rust checks that every one is still a
+ * deleted card of this deck that can come back, and restores all of them or
+ * none.
+ */
+export function RestoreSelected({
+  deckId,
+  selected,
+  onClear,
+  onRestored,
+  onStale,
+}: {
+  deckId: number;
+  /** The selected deleted cards' ids, in the list's order. */
+  selected: number[];
+  onClear: () => void;
+  onRestored: (deck: Deck, restored: number) => void;
+  /** Refused because this screen is out of date; `message` says what changed. */
+  onStale: (message: string) => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Blocks a second press immediately, before the re-render lands.
+  const busyRef = useRef(false);
+  const restoreRef = useRef<HTMLButtonElement>(null);
+  const questionRef = useRef<HTMLParagraphElement>(null);
+  // Whether the question was ever opened, so only closing it moves focus.
+  const openedRef = useRef(false);
+  const count = selected.length;
+
+  // As with restoring one card: focus moves to the question when it opens (so
+  // a repeated Enter can't restore), and back to its button if declined.
+  useEffect(() => {
+    if (confirming) {
+      openedRef.current = true;
+      questionRef.current?.focus();
+    } else if (openedRef.current) {
+      restoreRef.current?.focus();
+    }
+  }, [confirming]);
+
+  async function confirmRestore() {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    setError(null);
+
+    try {
+      const { changed, deck } = await restoreFlashcards(deckId, selected);
+      onRestored(deck, changed);
+      return; // The deck screen is replaced.
+    } catch (err) {
+      const failure = toCommandError(err);
+      if (failure.kind === "stale") {
+        onStale(failure.message);
+        return;
+      }
+      setError(failure.message);
+    }
+
+    busyRef.current = false;
+    setBusy(false);
+  }
+
+  return (
+    <div className="selection-bar" role="region" aria-label="Selected deleted cards">
+      <p className="selection-summary">
+        <strong>{`${cardCount(count)} selected.`}</strong>
+      </p>
+
+      {confirming ? (
+        <div className="confirm confirm-calm">
+          <p ref={questionRef} className="confirm-question" tabIndex={-1}>
+            {`Restore ${count === 1 ? "this card" : `these ${count} cards`}? ${count === 1 ? "It goes" : "They go"} back into this deck with the same ${count === 1 ? "schedule" : "schedules"} and review history ${count === 1 ? "it" : "they"} had, and ${count === 1 ? "becomes" : "each becomes"} due again only on the date it already had.`}
+          </p>
+          <div className="deck-actions">
+            <button
+              type="button"
+              className="button button-primary button-small"
+              aria-disabled={busy}
+              onClick={confirmRestore}
+            >
+              {`Restore ${cardCount(count)}`}
+            </button>
+            <button
+              type="button"
+              className="button button-small"
+              aria-disabled={busy}
+              onClick={() => {
+                if (!busyRef.current) setConfirming(false);
+              }}
+            >
+              Keep deleted
+            </button>
+          </div>
+          <p className="form-status" role="status">
+            {busy ? "Restoring…" : ""}
+          </p>
+        </div>
+      ) : (
+        <div className="deck-actions">
+          <button
+            ref={restoreRef}
+            type="button"
+            className="button button-small"
+            onClick={() => setConfirming(true)}
+          >
+            <RestoreIcon />
+            Restore selected
+          </button>
+          <button type="button" className="button button-quiet button-small" onClick={onClear}>
+            Clear selection
+          </button>
         </div>
       )}
 

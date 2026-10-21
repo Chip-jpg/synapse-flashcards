@@ -209,6 +209,8 @@ describe("cloze cards in the deck's lists", () => {
       await screen.findByText(/It can't be restored while \{\{c2::…\}\} isn't in its cloze text/),
     ).toBeTruthy();
     expect(screen.getAllByRole("button", { name: "Restore card" })).toHaveLength(2);
+    // Nor can it be selected for Restore selected.
+    expect(screen.getAllByRole("checkbox", { name: "Select" })).toHaveLength(2);
 
     await user.click(screen.getByRole("button", { name: "Restore 2 cards" }));
     expect(
