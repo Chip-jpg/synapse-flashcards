@@ -40,6 +40,7 @@ use crate::sources::{self, InvalidTitle, Source, SourceError, SourcePage};
 use crate::stats::{self, Statistics};
 use crate::study::{self, DeckSummary, SessionCard, StartedSession, StudyError, TodaySummary};
 use crate::suggest::{self, NotePart, Ollama, SuggestError, SuggestedCard, Suggesting};
+use crate::vision::{self, ModelSourceReading, VisionError};
 
 /// Error sent to React: `{ "kind": "failed" | "stale" | "invalid", "message": "..." }`,
 /// plus `"field": "name" | "description" | "front" | "back" | "title" | "body"`
@@ -3629,10 +3630,208 @@ pub async fn recognise_source_pages(
     }
 }
 
-/// Stops the text being read, if any. Takes no arguments; returns `null`.
+/// Stops the text being read, if any, by either engine. Takes no arguments;
+/// returns `null`.
 #[tauri::command]
 pub fn stop_recognition(recognising: State<'_, Recognising>) {
     recognising.stop();
+}
+
+// Reading text with a vision model in Ollama (`vision.rs`).
+
+/// Turns a model's reading that wasn't kept into a user-safe error, logging
+/// internal detail. Neither the picture's text nor the model's answer is ever
+/// logged. For a source's pages, the message says the pages already read
+/// were kept.
+fn vision_error(err: VisionError, context: &str, pages: bool) -> CommandError {
+    let either = |picture: &'static str, source: &'static str| if pages { source } else { picture };
+    match err {
+        VisionError::Recognition(err) => recognition_error(err, context),
+        VisionError::Ollama(SuggestError::Unreachable(detail)) => {
+            eprintln!("[synapse] {context}: reaching Ollama failed: {detail}");
+            CommandError::failed(OLLAMA_UNREACHABLE)
+        }
+        VisionError::Ollama(SuggestError::Unexpected(detail)) => {
+            eprintln!("[synapse] {context}: Ollama answered unexpectedly: {detail}");
+            CommandError::failed(OLLAMA_UNEXPECTED)
+        }
+        // The model list on screen is out of date, so React reloads it.
+        VisionError::Ollama(SuggestError::ModelMissing) => CommandError::stale(
+            "That model isn't in Ollama any more, or can't read pictures. Choose another.",
+        ),
+        VisionError::Ollama(SuggestError::NoteOverflowed) => CommandError::failed(either(
+            "The picture left the model no room to write its text. Try another model, or the \
+             built-in reader.",
+            "A page left the model no room to write its text. Pages read before it were kept. \
+             Try another model, or the built-in reader.",
+        )),
+        VisionError::Ollama(SuggestError::TimedOut) => CommandError::failed(either(
+            "The model took over 10 minutes on the picture, so Synapse stopped waiting. Try a \
+             smaller model.",
+            "The model took over 10 minutes on a page, so Synapse stopped waiting. Pages read \
+             before it were kept. Try a smaller model.",
+        )),
+        VisionError::Ollama(SuggestError::ModelFailed(detail)) => {
+            eprintln!("[synapse] {context}: Ollama couldn't run the model: {detail}");
+            CommandError::failed(either(
+                "Ollama couldn't run that model. Try again, or choose another.",
+                "Ollama couldn't run that model. Pages read before it stopped were kept. Try \
+                 again, or choose another.",
+            ))
+        }
+        VisionError::Ollama(other) => {
+            eprintln!("[synapse] {context}: asking Ollama failed: {other:?}");
+            CommandError::failed("Synapse couldn't ask Ollama to read the text.")
+        }
+        VisionError::Empty => CommandError::failed(either(
+            "The model's answer had no text in it. Try again, or choose another model.",
+            "The model's answer for a page had no text in it. Pages read before it were kept. \
+             Try again, or choose another model.",
+        )),
+        VisionError::TooLong => CommandError::failed(either(
+            "The model wrote more than a page can hold, so its answer wasn't kept. It may have \
+             repeated itself: try another model.",
+            "The model wrote more than a page can hold, so its answer wasn't kept. Pages read \
+             before it were kept. It may have repeated itself: try another model.",
+        )),
+    }
+}
+
+/// The models text can be read with besides the built-in engine: Ollama's
+/// local models that can read pictures, by name, sorted. Cloud models are
+/// never listed. Takes no arguments. Returns `["qwen2.5vl:7b", ...]`, empty if
+/// Ollama has none; rejects with kind "failed" if Ollama can't be reached.
+#[tauri::command]
+pub async fn get_vision_models() -> Result<Vec<String>, CommandError> {
+    let ollama = Ollama::local().map_err(suggest_error)?;
+    ollama.vision_models().await.map_err(suggest_error)
+}
+
+/// What reading a picture with a model did: `{ "status": "read",
+/// "recognition": Recognition, "agreement": 87 | null }` or `{ "status":
+/// "stopped" }`.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ModelPictureReading {
+    Read {
+        recognition: Box<Recognition>,
+        agreement: Option<u8>,
+    },
+    Stopped,
+}
+
+/// Reads the text in a kept picture with a vision model in Ollama on this
+/// computer, and keeps it as the picture's text: `{ assetId, model }`, where
+/// `model` is a name from `get_vision_models`. A picture whose text in use
+/// is already that model's isn't sent again. Returns [`ModelPictureReading`];
+/// rejects with kind "stale" if the model is no longer in Ollama. Can be
+/// stopped with `stop_recognition`.
+#[tauri::command]
+pub async fn recognise_picture_with_model(
+    app: AppHandle,
+    database: State<'_, Database>,
+    recognising: State<'_, Recognising>,
+    asset_id: i64,
+    model: String,
+) -> Result<ModelPictureReading, CommandError> {
+    const CONTEXT: &str = "reading a picture's text with a model";
+    let run = recognising.begin();
+    let pool = pool(&app, &database).await?;
+    let store = asset_store(&app, "Synapse couldn't read the text. Try again.")?;
+    let helper = recognition_helper()?;
+    let ollama = Ollama::local().map_err(suggest_error)?;
+    match vision::read_picture(
+        &pool,
+        &store,
+        helper,
+        &ollama,
+        asset_id,
+        &model,
+        run.token(),
+        Utc::now(),
+    )
+    .await
+    {
+        Ok(read) => Ok(ModelPictureReading::Read {
+            recognition: Box::new(read.recognition),
+            agreement: read.agreement,
+        }),
+        Err(VisionError::Recognition(RecognitionError::Stopped)) => {
+            Ok(ModelPictureReading::Stopped)
+        }
+        Err(err) => Err(vision_error(err, CONTEXT, false)),
+    }
+}
+
+/// The pages of a PDF source that reading with `model` would cover when no
+/// pages are named: `{ sourceId, model }`. Returns `[number]`: pages with no
+/// text whose text in use isn't already that model's. Empty for a source
+/// that isn't a PDF.
+#[tauri::command]
+pub async fn get_pages_to_recognise_with_model(
+    app: AppHandle,
+    database: State<'_, Database>,
+    source_id: i64,
+    model: String,
+) -> Result<Vec<u32>, CommandError> {
+    let pool = pool(&app, &database).await?;
+    match vision::pages_to_read(&pool, source_id, &model).await {
+        Err(VisionError::Recognition(RecognitionError::NotReadable)) => Ok(Vec::new()),
+        result => result.map_err(|err| vision_error(err, "finding scanned pages", false)),
+    }
+}
+
+/// Reads the text on pages of an active PDF source with a vision model in
+/// Ollama on this computer: `{ sourceId, pages?, model, onProgress }`.
+/// Without `pages`, every page `get_pages_to_recognise_with_model` lists.
+/// `onProgress` receives `{ page, done, total, problem }` as each page
+/// finishes; each page is kept as it is read. Returns `{ read, skipped,
+/// stopped, agreement: [{ page, percent }] }`; stopping with
+/// `stop_recognition` keeps the pages already read, and so does a failure.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn recognise_source_pages_with_model(
+    app: AppHandle,
+    database: State<'_, Database>,
+    recognising: State<'_, Recognising>,
+    source_id: i64,
+    pages: Option<Vec<u32>>,
+    model: String,
+    on_progress: Channel<PageProgress>,
+) -> Result<ModelSourceReading, CommandError> {
+    const CONTEXT: &str = "reading a source's pages with a model";
+    let run = recognising.begin();
+    let pool = pool(&app, &database).await?;
+    let store = asset_store(&app, "Synapse couldn't read the text. Try again.")?;
+    let helper = recognition_helper()?;
+    let ollama = Ollama::local().map_err(suggest_error)?;
+    match vision::read_source(
+        &pool,
+        &store,
+        helper,
+        &ollama,
+        source_id,
+        pages,
+        &model,
+        run.token(),
+        Utc::now,
+        |progress| {
+            let _ = on_progress.send(progress);
+        },
+    )
+    .await
+    {
+        Ok(result) => Ok(result),
+        Err(VisionError::Recognition(RecognitionError::Stopped)) => Ok(ModelSourceReading {
+            stopped: true,
+            ..ModelSourceReading::default()
+        }),
+        Err(err) => Err(vision_error(err, CONTEXT, true)),
+    }
 }
 
 #[cfg(test)]
@@ -4254,6 +4453,95 @@ mod tests {
                 "{message}"
             );
         }
+    }
+
+    #[test]
+    fn failed_model_readings_are_reported_without_detail_and_say_what_was_kept() {
+        let detail = || -> crate::db::DbError { "http://127.0.0.1:11434/api/chat: secret".into() };
+        let errors = || {
+            [
+                (
+                    VisionError::Ollama(SuggestError::Unreachable(detail())),
+                    "failed",
+                ),
+                (
+                    VisionError::Ollama(SuggestError::Unexpected(detail())),
+                    "failed",
+                ),
+                (VisionError::Ollama(SuggestError::ModelMissing), "stale"),
+                (VisionError::Ollama(SuggestError::NoteOverflowed), "failed"),
+                (VisionError::Ollama(SuggestError::TimedOut), "failed"),
+                (
+                    VisionError::Ollama(SuggestError::ModelFailed(detail())),
+                    "failed",
+                ),
+                (
+                    VisionError::Ollama(SuggestError::Internal(detail())),
+                    "failed",
+                ),
+                (VisionError::Empty, "failed"),
+                (VisionError::TooLong, "failed"),
+                (
+                    VisionError::Recognition(RecognitionError::Internal(detail())),
+                    "failed",
+                ),
+                (VisionError::Recognition(RecognitionError::Deleted), "stale"),
+            ]
+        };
+        for pages in [false, true] {
+            for (err, kind) in errors() {
+                let model_failure = matches!(
+                    err,
+                    VisionError::Empty
+                        | VisionError::TooLong
+                        | VisionError::Ollama(
+                            SuggestError::NoteOverflowed
+                                | SuggestError::TimedOut
+                                | SuggestError::ModelFailed(_)
+                        )
+                );
+                let value = serde_json::to_value(vision_error(err, "test", pages)).unwrap();
+                assert_eq!(value["kind"], kind, "{value}");
+                let message = value["message"].as_str().unwrap();
+                assert!(
+                    !message.contains("secret") && !message.contains("11434"),
+                    "{message}"
+                );
+                assert!(
+                    !message.contains("card") && !message.contains("suggest"),
+                    "{message}"
+                );
+                if model_failure {
+                    assert_eq!(message.contains("Pages read before"), pages, "{message}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn model_readings_serialize_to_the_shape_react_expects() {
+        assert_eq!(
+            serde_json::to_value(ModelPictureReading::Stopped).unwrap(),
+            json!({ "status": "stopped" })
+        );
+        assert_eq!(
+            serde_json::to_value(ModelSourceReading {
+                read: vec![2],
+                skipped: Vec::new(),
+                stopped: false,
+                agreement: vec![vision::PageAgreement {
+                    page: 2,
+                    percent: 67
+                }],
+            })
+            .unwrap(),
+            json!({
+                "read": [2],
+                "skipped": [],
+                "stopped": false,
+                "agreement": [{ "page": 2, "percent": 67 }]
+            })
+        );
     }
 
     #[test]

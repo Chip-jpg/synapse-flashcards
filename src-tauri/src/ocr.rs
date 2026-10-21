@@ -25,6 +25,10 @@
 //! per page as it finishes, so the app can save each page as it comes and
 //! show progress.
 //!
+//! The helper also turns a picture or a PDF page into a PNG for a vision
+//! model in Ollama to read (`vision.rs`), so that PDF parsing and picture
+//! decoding stay in the helper whichever engine reads the text.
+//!
 //! Nothing here logs the text read.
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -33,6 +37,7 @@ use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
 use image::{DynamicImage, GrayImage, ImageFormat, RgbImage};
 use ocrs::{ImageSource, OcrEngine, OcrEngineParams, TextItem};
 use tokio_util::sync::CancellationToken;
@@ -78,6 +83,11 @@ pub const MAX_LINES: usize = 2_000;
 
 /// How long the helper may spend on one page before it's stopped.
 pub const PAGE_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// The longest side, in pixels, of a picture handed to a vision model: larger
+/// ones are scaled down first. Enough for a page's print to stay legible, and
+/// few enough tokens to leave the model room to write the page out.
+pub const MODEL_MAX_SIDE: u32 = 1_600;
 
 /// A rectangle on a picture, in fractions (0 to 1) of its width and height,
 /// rounded to 4 decimals: `{ left, top, width, height }`. The same form as an
@@ -190,6 +200,12 @@ pub enum Job {
     Picture,
     /// The bytes are a PDF; read these pages (from 1), in this order.
     Pdf { pages: Vec<u32> },
+    /// The bytes are a picture; answer it, as page 0, as a PNG no larger than
+    /// [`MODEL_MAX_SIDE`], for a vision model to read. Nothing is recognised.
+    PictureForModel,
+    /// The bytes are a PDF; answer the picture of this page (from 1) as a PNG
+    /// no larger than [`MODEL_MAX_SIDE`]. Nothing is recognised.
+    PageForModel { page: u32 },
 }
 
 /// One line of the helper's answer.
@@ -204,6 +220,11 @@ enum HelperLine {
         page: u32,
         problem: PageProblem,
     },
+    /// The picture of a page, as a base64 PNG, for a vision model.
+    Picture {
+        page: u32,
+        png: String,
+    },
     /// The PDF itself couldn't be opened (damaged, password-protected).
     Unreadable {
         detail: String,
@@ -215,6 +236,8 @@ enum HelperLine {
 pub enum PageOutcome {
     Read(Reading),
     Problem(PageProblem),
+    /// The page's picture as a PNG, for a vision model ([`Job::PageForModel`]).
+    Picture(Vec<u8>),
 }
 
 /// Why a recognition stopped before every page was answered. Pages answered
@@ -315,12 +338,16 @@ pub fn read_picture(picture: RgbImage) -> Result<Reading, String> {
 }
 
 fn scaled_down(picture: RgbImage) -> RgbImage {
+    scaled_to(picture, MAX_SIDE)
+}
+
+fn scaled_to(picture: RgbImage, max_side: u32) -> RgbImage {
     let (width, height) = picture.dimensions();
     let longer = width.max(height);
-    if longer <= MAX_SIDE {
+    if longer <= max_side {
         return picture;
     }
-    let scale = f64::from(MAX_SIDE) / f64::from(longer);
+    let scale = f64::from(max_side) / f64::from(longer);
     let to = |side: u32| ((f64::from(side) * scale).round() as u32).max(1);
     image::imageops::resize(
         &picture,
@@ -766,6 +793,33 @@ pub fn read_pdf_pages(
     Ok(())
 }
 
+/// `picture` as a PNG no larger than [`MODEL_MAX_SIDE`], for a vision model.
+pub fn picture_for_model(picture: RgbImage) -> Result<Vec<u8>, String> {
+    let picture = scaled_to(picture, MODEL_MAX_SIDE);
+    let mut png = Vec::new();
+    picture
+        .write_to(&mut std::io::Cursor::new(&mut png), ImageFormat::Png)
+        .map_err(|err| format!("writing the PNG: {err}"))?;
+    Ok(png)
+}
+
+/// The picture of page `page` of a PDF, as [`picture_for_model`] gives it.
+/// The PDF failing to open at all is the `Err`.
+pub fn pdf_page_for_model(pdf: &[u8], page: u32) -> Result<PageOutcome, String> {
+    let document = Document::load_mem(pdf).map_err(|err| format!("opening the PDF: {err}"))?;
+    Ok(match document.get_pages().get(&page) {
+        None => PageOutcome::Problem(PageProblem::NoSuchPage),
+        Some(id) => match page_picture(&document, *id) {
+            Err(problem) => PageOutcome::Problem(problem),
+            Ok(picture) => PageOutcome::Picture(picture_for_model(picture)?),
+        },
+    })
+}
+
+fn base64_png(png: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(png)
+}
+
 // The helper process.
 
 /// Runs as the recognition helper: reads a [`Job`] line and a file from
@@ -808,11 +862,39 @@ pub fn ocr_helper() -> i32 {
                 written &= write(match outcome {
                     PageOutcome::Read(reading) => HelperLine::Read { page, reading },
                     PageOutcome::Problem(problem) => HelperLine::Problem { page, problem },
+                    PageOutcome::Picture(png) => HelperLine::Picture {
+                        page,
+                        png: base64_png(&png),
+                    },
                 });
             });
             if let Err(detail) = result {
                 written &= write(HelperLine::Unreadable { detail });
             }
+        }
+        Job::PictureForModel => {
+            let line = match decode_picture(&bytes) {
+                Err(problem) => HelperLine::Problem { page: 0, problem },
+                Ok(picture) => match picture_for_model(picture) {
+                    Ok(png) => HelperLine::Picture {
+                        page: 0,
+                        png: base64_png(&png),
+                    },
+                    Err(_) => return 4,
+                },
+            };
+            written &= write(line);
+        }
+        Job::PageForModel { page } => {
+            written &= write(match pdf_page_for_model(&bytes, page) {
+                Err(detail) => HelperLine::Unreadable { detail },
+                Ok(PageOutcome::Picture(png)) => HelperLine::Picture {
+                    page,
+                    png: base64_png(&png),
+                },
+                Ok(PageOutcome::Problem(problem)) => HelperLine::Problem { page, problem },
+                Ok(PageOutcome::Read(_)) => return 4,
+            });
         }
     }
     if written {
@@ -888,6 +970,15 @@ pub fn run_helper(
                     }
                     Ok(HelperLine::Problem { page, problem }) => {
                         answer(page, PageOutcome::Problem(problem))
+                    }
+                    Ok(HelperLine::Picture { page, png }) => {
+                        match base64::engine::general_purpose::STANDARD.decode(png) {
+                            Ok(png) => answer(page, PageOutcome::Picture(png)),
+                            Err(err) => {
+                                stop_child(&mut child);
+                                break Err(failed(format!("the helper's picture: {err}")));
+                            }
+                        }
                     }
                     Ok(HelperLine::Unreadable { detail }) => unreadable = Some(detail),
                     Err(err) => {

@@ -253,7 +253,7 @@ async fn read_by_builtin(pool: &SqlitePool, asset_id: i64) -> Result<Vec<u32>, D
 /// A kept file's bytes, checked against its size and hash. A file that's
 /// missing or changed is an internal error: it was written before its row,
 /// and is never changed.
-fn kept_bytes(store: &AssetStore, asset: &Asset) -> Result<Vec<u8>, RecognitionError> {
+pub(crate) fn kept_bytes(store: &AssetStore, asset: &Asset) -> Result<Vec<u8>, RecognitionError> {
     let missing =
         || RecognitionError::Internal(format!("kept file {}: missing or changed", asset.id).into());
     let path = store.path_of(&asset.sha256).ok_or_else(missing)?;
@@ -282,7 +282,7 @@ impl Helper {
     }
 }
 
-fn run_error(err: RunError) -> RecognitionError {
+pub(crate) fn run_error(err: RunError) -> RecognitionError {
     match err {
         RunError::Stopped => RecognitionError::Stopped,
         RunError::Unreadable(detail) => RecognitionError::Unreadable(detail.into()),
@@ -370,7 +370,7 @@ pub async fn recognise_picture(
                 .map_err(RecognitionError::Internal)
         }
         Some(PageOutcome::Problem(problem)) => Err(RecognitionError::Picture(problem)),
-        None => Err(RecognitionError::Internal(
+        Some(PageOutcome::Picture(_)) | None => Err(RecognitionError::Internal(
             "the helper answered nothing".into(),
         )),
     }
@@ -434,6 +434,21 @@ pub async fn pages_to_read(
         .collect())
 }
 
+/// The pages asked for, each once in the order first asked, if all are pages
+/// of a source of `page_count` pages.
+pub(crate) fn pages_asked(pages: Vec<u32>, page_count: u32) -> Result<Vec<u32>, RecognitionError> {
+    if pages.iter().any(|page| *page == 0 || *page > page_count) {
+        return Err(RecognitionError::NotReadable);
+    }
+    let mut unique = Vec::with_capacity(pages.len());
+    for page in pages {
+        if !unique.contains(&page) {
+            unique.push(page);
+        }
+    }
+    Ok(unique)
+}
+
 /// Reads pages of the active PDF source `source_id` and keeps what each
 /// says, page by page: `pages` in the order given, or, when None, every page
 /// [`pages_to_read`] finds. Each page is saved as it is read and reported to
@@ -454,21 +469,7 @@ pub async fn recognise_source(
         return Err(RecognitionError::NotReadable);
     }
     let pages = match pages {
-        Some(pages) => {
-            if pages
-                .iter()
-                .any(|page| *page == 0 || *page > source.page_count)
-            {
-                return Err(RecognitionError::NotReadable);
-            }
-            let mut unique = Vec::with_capacity(pages.len());
-            for page in pages {
-                if !unique.contains(&page) {
-                    unique.push(page);
-                }
-            }
-            unique
-        }
+        Some(pages) => pages_asked(pages, source.page_count)?,
         None => pages_to_read(pool, source_id).await?,
     };
     let mut result = SourceRecognition::default();
@@ -498,6 +499,13 @@ pub async fn recognise_source(
             PageOutcome::Problem(problem) => {
                 result.skipped.push(PageSkipped { page, problem });
                 Some(problem)
+            }
+            // Only a job for a vision model answers with a picture.
+            PageOutcome::Picture(_) => {
+                saving = Err(RecognitionError::Internal(
+                    "the helper answered with a picture".into(),
+                ));
+                continue;
             }
         };
         progress(PageProgress {

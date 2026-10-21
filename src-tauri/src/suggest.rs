@@ -214,16 +214,28 @@ struct OllamaError {
 /// marks one with a remote host and names it `…:cloud` or `…-cloud`, and
 /// either is enough. Models that can only make embeddings are left out too.
 fn is_local_text_model(model: &ListedModel) -> bool {
+    let writes = model
+        .capabilities
+        .as_ref()
+        .is_none_or(|abilities| abilities.iter().any(|ability| ability == "completion"));
+    is_local(model) && writes
+}
+
+/// Whether `model` runs on this computer rather than Ollama's servers.
+fn is_local(model: &ListedModel) -> bool {
     let tag = model.name.rsplit_once(':').map_or("", |(_, tag)| tag);
     let cloud = model.remote_host.is_some()
         || model.remote_model.is_some()
         || tag == "cloud"
         || tag.ends_with("-cloud");
-    let writes = model
-        .capabilities
-        .as_ref()
-        .is_none_or(|abilities| abilities.iter().any(|ability| ability == "completion"));
-    !cloud && writes
+    !cloud
+}
+
+/// Ollama's `POST /api/show` answer, as far as it's read here.
+#[derive(serde::Deserialize)]
+struct ModelDetails {
+    #[serde(default)]
+    capabilities: Vec<String>,
 }
 
 /// The JSON shape Ollama makes the model's answer follow.
@@ -461,6 +473,22 @@ pub fn part_of(body: &str, part: NotePart) -> Option<&str> {
     (!text.is_empty()).then_some(text)
 }
 
+fn listing_error(err: reqwest::Error) -> SuggestError {
+    if err.is_connect() || err.is_timeout() {
+        SuggestError::Unreachable(err.into())
+    } else {
+        SuggestError::Unexpected(err.into())
+    }
+}
+
+/// Model names sorted as people read them, each once.
+fn sorted(names: impl Iterator<Item = String>) -> Vec<String> {
+    let mut names: Vec<String> = names.collect();
+    names.sort_by_key(|name| name.to_lowercase());
+    names.dedup();
+    names
+}
+
 /// Ollama on this computer.
 pub struct Ollama {
     client: reqwest::Client,
@@ -493,13 +521,61 @@ impl Ollama {
     /// The names of Ollama's local models that can write text, sorted. Empty
     /// if Ollama is running but has none.
     pub async fn models(&self) -> Result<Vec<String>, SuggestError> {
-        let listing = |err: reqwest::Error| {
-            if err.is_connect() || err.is_timeout() {
-                SuggestError::Unreachable(err.into())
-            } else {
-                SuggestError::Unexpected(err.into())
+        let list = self.listed().await?;
+        Ok(sorted(
+            list.into_iter()
+                .filter(is_local_text_model)
+                .map(|model| model.name),
+        ))
+    }
+
+    /// The names of Ollama's local models that can read pictures (their
+    /// capabilities include "vision"), sorted. Empty if Ollama is running but
+    /// has none. A model the listing doesn't describe is asked about with
+    /// `/api/show`, as older versions of Ollama list no capabilities.
+    pub async fn vision_models(&self) -> Result<Vec<String>, SuggestError> {
+        let mut names = Vec::new();
+        for model in self.listed().await? {
+            if !is_local(&model) {
+                continue;
             }
-        };
+            let abilities = match model.capabilities {
+                Some(abilities) => abilities,
+                None => self.capabilities(&model.name).await?,
+            };
+            if abilities.iter().any(|ability| ability == "vision") {
+                names.push(model.name);
+            }
+        }
+        Ok(sorted(names.into_iter()))
+    }
+
+    /// What Ollama says `model` can do. A model it doesn't know can do nothing.
+    async fn capabilities(&self, model: &str) -> Result<Vec<String>, SuggestError> {
+        let response = self
+            .client
+            .post(format!("{}/api/show", self.base))
+            .timeout(LIST_TIMEOUT)
+            .json(&json!({ "model": model }))
+            .send()
+            .await
+            .map_err(listing_error)?;
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(Vec::new());
+        }
+        if !status.is_success() {
+            return Err(SuggestError::Unexpected(
+                format!("describing a model answered HTTP {status}").into(),
+            ));
+        }
+        let details: ModelDetails = response.json().await.map_err(listing_error)?;
+        Ok(details.capabilities)
+    }
+
+    /// Every model Ollama lists, local or not.
+    async fn listed(&self) -> Result<Vec<ListedModel>, SuggestError> {
+        let listing = listing_error;
         let response = self
             .client
             .get(format!("{}/api/tags", self.base))
@@ -514,16 +590,7 @@ impl Ollama {
             ));
         }
         let list: ModelList = response.json().await.map_err(listing)?;
-
-        let mut names: Vec<String> = list
-            .models
-            .into_iter()
-            .filter(is_local_text_model)
-            .map(|model| model.name)
-            .collect();
-        names.sort_by_key(|name| name.to_lowercase());
-        names.dedup();
-        Ok(names)
+        Ok(list.models)
     }
 
     /// Asks `model` for cards from the note `title` and `body`. Reads and
@@ -594,6 +661,58 @@ impl Ollama {
                 "num_predict": answer_tokens
             }
         });
+        self.chat(request, context_tokens, answer_tokens, self.suggest_timeout)
+            .await
+    }
+
+    /// Asks the vision model `model` to follow `instructions` about the
+    /// picture `png`, answering in plain text, and returns what it wrote,
+    /// waiting at most `timeout`. The model is first checked to be one of
+    /// Ollama's local vision models. The picture must leave `answer_tokens`
+    /// of `context_tokens` free, as for [`Ollama::ask`]. Used by `vision.rs`.
+    pub(crate) async fn read_picture(
+        &self,
+        model: &str,
+        instructions: &str,
+        png: &[u8],
+        context_tokens: u64,
+        answer_tokens: u64,
+        timeout: Duration,
+    ) -> Result<Written, SuggestError> {
+        // Checked now rather than trusted from the screen, as in `ask`.
+        if !self.vision_models().await?.iter().any(|name| name == model) {
+            return Err(SuggestError::ModelMissing);
+        }
+        use base64::Engine as _;
+        let request = json!({
+            "model": model,
+            "stream": false,
+            "messages": [
+                { "role": "system", "content": instructions },
+                {
+                    "role": "user",
+                    "content": "Transcribe the text in this picture.",
+                    "images": [base64::engine::general_purpose::STANDARD.encode(png)]
+                }
+            ],
+            "options": {
+                "temperature": 0,
+                "num_ctx": context_tokens,
+                "num_predict": answer_tokens
+            }
+        });
+        self.chat(request, context_tokens, answer_tokens, timeout)
+            .await
+    }
+
+    /// Sends `request` to `/api/chat` and reads the model's answer.
+    async fn chat(
+        &self,
+        request: Value,
+        context_tokens: u64,
+        answer_tokens: u64,
+        timeout: Duration,
+    ) -> Result<Written, SuggestError> {
         let asking = |err: reqwest::Error| {
             if err.is_timeout() {
                 SuggestError::TimedOut
@@ -606,7 +725,7 @@ impl Ollama {
         let response = self
             .client
             .post(format!("{}/api/chat", self.base))
-            .timeout(self.suggest_timeout)
+            .timeout(timeout)
             .json(&request)
             .send()
             .await

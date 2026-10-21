@@ -37,6 +37,7 @@ tauri-plugin-dialog = "2"
 # Asking Ollama, on this computer, to suggest cards. Plain HTTP only: with no
 # TLS backend enabled the client can't reach an `https://` address at all, so
 # a note can't be sent to a cloud service by accident.
+base64 = "0.22"
 reqwest = { version = "0.13", default-features = false, features = ["json"] }
 # Stopping a suggestion the user cancelled, which also closes the connection,
 # so Ollama stops generating.

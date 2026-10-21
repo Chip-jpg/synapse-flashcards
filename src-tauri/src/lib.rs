@@ -25,6 +25,7 @@ mod sources;
 mod stats;
 mod study;
 mod suggest;
+mod vision;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -147,6 +148,10 @@ pub fn run() {
             commands::get_pages_to_recognise,
             commands::recognise_source_pages,
             commands::stop_recognition,
+            commands::get_vision_models,
+            commands::recognise_picture_with_model,
+            commands::get_pages_to_recognise_with_model,
+            commands::recognise_source_pages_with_model,
             commands::rename_source,
             commands::delete_source,
             commands::restore_source,

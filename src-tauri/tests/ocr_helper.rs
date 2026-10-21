@@ -190,3 +190,58 @@ fn a_helper_that_spends_too_long_on_a_page_is_stopped() {
     );
     assert!(matches!(result, Err(RunError::HelperFailed(_))));
 }
+
+#[test]
+fn the_helper_hands_back_pictures_for_a_vision_model_without_reading_them() {
+    let (answers, result) = run(
+        &Job::PictureForModel,
+        &sample_png(),
+        &CancellationToken::new(),
+        ocr::PAGE_TIMEOUT,
+    );
+    result.unwrap();
+    let [(0, PageOutcome::Picture(png))] = answers.as_slice() else {
+        panic!("{answers:?}");
+    };
+    let original = image::load_from_memory(&sample_png()).unwrap();
+    let sent = image::load_from_memory_with_format(png, image::ImageFormat::Png).unwrap();
+    assert_eq!(
+        (sent.width(), sent.height()),
+        (original.width(), original.height())
+    );
+
+    let (answers, result) = run(
+        &Job::PageForModel { page: 2 },
+        &scanned_pdf(2),
+        &CancellationToken::new(),
+        ocr::PAGE_TIMEOUT,
+    );
+    result.unwrap();
+    let [(2, PageOutcome::Picture(png))] = answers.as_slice() else {
+        panic!("{answers:?}");
+    };
+    let page = image::load_from_memory_with_format(png, image::ImageFormat::Png).unwrap();
+    assert!(page.width().max(page.height()) <= ocr::MODEL_MAX_SIDE);
+    assert_eq!(page.width(), original.width());
+
+    let (answers, result) = run(
+        &Job::PageForModel { page: 3 },
+        &scanned_pdf(2),
+        &CancellationToken::new(),
+        ocr::PAGE_TIMEOUT,
+    );
+    result.unwrap();
+    assert_eq!(
+        answers,
+        vec![(3, PageOutcome::Problem(PageProblem::NoSuchPage))]
+    );
+
+    let (answers, result) = run(
+        &Job::PageForModel { page: 1 },
+        b"%PDF-1.7 this is not a PDF",
+        &CancellationToken::new(),
+        ocr::PAGE_TIMEOUT,
+    );
+    assert!(answers.is_empty());
+    assert!(matches!(result, Err(RunError::Unreadable(_))));
+}

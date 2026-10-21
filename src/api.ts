@@ -1614,3 +1614,79 @@ export function recogniseSourcePages(
 export function stopRecognition(): Promise<void> {
   return invoke<void>("stop_recognition");
 }
+
+// Reading text with a vision model in Ollama (`src-tauri/src/vision.rs`).
+
+/**
+ * The models text can be read with besides the built-in engine: Ollama's
+ * local models that can read pictures, by name. Empty if Ollama has none;
+ * rejects with kind "failed" if Ollama can't be reached. Cloud models are
+ * never listed.
+ */
+export function getVisionModels(): Promise<string[]> {
+  return invoke<string[]>("get_vision_models");
+}
+
+export type ModelPictureReading =
+  | {
+      status: "read";
+      recognition: Recognition;
+      /**
+       * The share, in percent, of the built-in engine's words for the same
+       * picture that the model's text has too: a hint that it read the same
+       * thing. Null if the built-in engine hasn't read it.
+       */
+      agreement: number | null;
+    }
+  | { status: "stopped" };
+
+/**
+ * Reads the text in a kept picture with `model`, a vision model in Ollama on
+ * this computer, and keeps it as the picture's text. A picture whose text is
+ * already that model's isn't sent again. `stopRecognition` resolves this with
+ * `{ status: "stopped" }`; rejects with kind "stale" if the model has left
+ * Ollama.
+ */
+export function recognisePictureWithModel(
+  assetId: number,
+  model: string,
+): Promise<ModelPictureReading> {
+  return invoke<ModelPictureReading>("recognise_picture_with_model", { assetId, model });
+}
+
+/**
+ * The pages of a PDF source with no text whose text isn't already `model`'s:
+ * what `recogniseSourcePagesWithModel` reads without `pages`. Empty for
+ * other sources.
+ */
+export function getPagesToRecogniseWithModel(sourceId: number, model: string): Promise<number[]> {
+  return invoke<number[]>("get_pages_to_recognise_with_model", { sourceId, model });
+}
+
+/** How reading a source's pages with a model went, with each page's agreement. */
+export type ModelSourceRecognition = SourceRecognition & {
+  agreement: { page: number; percent: number }[];
+};
+
+/**
+ * Reads the text on pages of an active PDF source with `model`, a vision
+ * model in Ollama, keeping each page as it is read: `pages`, or by default
+ * every page `getPagesToRecogniseWithModel` lists. `onProgress` hears about
+ * each page as it finishes. `stopRecognition` ends it early, keeping the
+ * pages done; a failure keeps them too.
+ */
+export function recogniseSourcePagesWithModel(
+  sourceId: number,
+  pages: number[] | null,
+  model: string,
+  onProgress: (progress: PageProgress) => void,
+): Promise<ModelSourceRecognition> {
+  const channel = new Channel<PageProgress>();
+  channel.onmessage = onProgress;
+  return invoke<ModelSourceRecognition>("recognise_source_pages_with_model", {
+    sourceId,
+    pages,
+    model,
+    onProgress: channel,
+  });
+}
