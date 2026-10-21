@@ -4,6 +4,7 @@ import {
   createNote,
   createNoteFromSource,
   deleteNote,
+  getDeletedNote,
   getDeletedNotes,
   getNote,
   getNoteSource,
@@ -19,6 +20,7 @@ import {
   type Deck,
   type DeckDetail,
   type DeletedNote,
+  type DeletedNoteText,
   type Asset,
   type Note,
   type NoteSummary,
@@ -52,13 +54,15 @@ type LibraryFocus =
   | { to: "new" }
   | { to: "import" }
   | { to: "note"; noteId: number }
+  | { to: "deleted"; noteId: number }
   | { to: "notice" };
 
 /** Where in the notes area the user is. */
 type Place =
   | { screen: "library"; focus: LibraryFocus; notice: string | null }
   | { screen: "new"; imported?: SourceNoteDraft }
-  | { screen: "note"; noteId: number; justCreated: boolean };
+  | { screen: "note"; noteId: number; justCreated: boolean }
+  | { screen: "deleted"; noteId: number };
 
 /**
  * The notes area: the library of the user's typed notes, writing a new one or
@@ -144,6 +148,33 @@ export function NotesArea({
     );
   }
 
+  if (place.screen === "deleted") {
+    const noteId = place.noteId;
+    return (
+      <DeletedNoteScreen
+        key={noteId}
+        noteId={noteId}
+        onBack={() => setPlace({ screen: "library", focus: { to: "deleted", noteId }, notice: null })}
+        // The library takes over and says what happened, as when restoring
+        // from the list.
+        onRestored={(title) =>
+          setPlace({
+            screen: "library",
+            focus: { to: "notice" },
+            notice: `${title} restored. It's back in your notes.`,
+          })
+        }
+        onStale={() =>
+          setPlace({
+            screen: "library",
+            focus: { to: "notice" },
+            notice: "That note wasn't deleted after all. Here's your library as it is now.",
+          })
+        }
+      />
+    );
+  }
+
   return (
     <NoteLibrary
       focus={place.focus}
@@ -151,6 +182,7 @@ export function NotesArea({
       onNew={() => setPlace({ screen: "new" })}
       onImported={(imported) => setPlace({ screen: "new", imported })}
       onOpen={(noteId) => setPlace({ screen: "note", noteId, justCreated: false })}
+      onRead={(noteId) => setPlace({ screen: "deleted", noteId })}
       onBack={onBack}
     />
   );
@@ -183,6 +215,7 @@ function NoteLibrary({
   onNew,
   onImported,
   onOpen,
+  onRead,
   onBack,
 }: {
   focus: LibraryFocus;
@@ -192,6 +225,8 @@ function NoteLibrary({
   /** A file was kept as a source and its text read, to become a new note. */
   onImported: (imported: SourceNoteDraft) => void;
   onOpen: (noteId: number) => void;
+  /** Opens a deleted note to read it. */
+  onRead: (noteId: number) => void;
   onBack: () => void;
 }) {
   const [state, setState] = useState<LibraryState>({ status: "loading" });
@@ -258,6 +293,7 @@ function NoteLibrary({
       onNew={onNew}
       onImported={onImported}
       onOpen={onOpen}
+      onRead={onRead}
       onBack={onBack}
       onRestored={(title) => reload(`${title} restored. It's back in your notes.`)}
       onStale={() =>
@@ -277,6 +313,7 @@ function NoteList({
   onNew,
   onImported,
   onOpen,
+  onRead,
   onBack,
   onRestored,
   onStale,
@@ -288,18 +325,24 @@ function NoteList({
   onNew: () => void;
   onImported: (imported: SourceNoteDraft) => void;
   onOpen: (noteId: number) => void;
+  onRead: (noteId: number) => void;
   onBack: () => void;
   onRestored: (title: string) => void;
   onStale: () => void;
 }) {
-  // A note that's gone from the list (it was deleted) falls back to the
-  // screen, and so does a notice that isn't there.
+  // A note that's gone from its list (it was deleted, or restored) falls back
+  // to the screen, and so does a notice that isn't there.
   const focusNoteId =
     focus.to === "note" && notes.some((note) => note.id === focus.noteId) ? focus.noteId : null;
+  const focusDeletedId =
+    focus.to === "deleted" && deleted.some((note) => note.id === focus.noteId)
+      ? focus.noteId
+      : null;
   const focusNotice = focus.to === "notice" && notice !== null;
   const screenRef = useFocusOnMount<HTMLElement>(
     focus.to === "screen" ||
       (focus.to === "note" && focusNoteId === null) ||
+      (focus.to === "deleted" && focusDeletedId === null) ||
       (focus.to === "notice" && !focusNotice)
   );
   const newRef = useFocusOnMount<HTMLButtonElement>(focus.to === "new");
@@ -421,7 +464,13 @@ function NoteList({
       )}
 
       {deleted.length > 0 && (
-        <DeletedNoteList notes={deleted} onRestored={onRestored} onStale={onStale} />
+        <DeletedNoteList
+          notes={deleted}
+          focusReadId={focusDeletedId}
+          onRead={onRead}
+          onRestored={onRestored}
+          onStale={onStale}
+        />
       )}
     </section>
   );
@@ -546,16 +595,21 @@ function NoteSearchField({ search }: { search: NoteSearch }) {
 }
 
 /**
- * Deleted notes: history, and the only place they appear. They can't be
- * opened or edited, so the body isn't shown; Restore puts one back in the
- * library exactly as it was.
+ * Deleted notes: history, and the only place they appear. One can be opened
+ * to read, but not edited; Restore puts one back in the library exactly as it
+ * was.
  */
 function DeletedNoteList({
   notes,
+  focusReadId,
+  onRead,
   onRestored,
   onStale,
 }: {
   notes: DeletedNote[];
+  /** The note whose *Read note* takes focus (coming back from reading it). */
+  focusReadId: number | null;
+  onRead: (noteId: number) => void;
   onRestored: (title: string) => void;
   onStale: () => void;
 }) {
@@ -570,14 +624,20 @@ function DeletedNoteList({
         </h3>
       </div>
       <p className="field-hint">
-        Kept for your history. A deleted note isn't in your library and can't be opened or edited,
-        but restoring it brings it back with its text unchanged. Cards you wrote from a note are
-        never affected.
+        Kept for your history. A deleted note isn't in your library and can't be edited, but you can
+        read it, and restoring it brings it back with its text unchanged. Cards you wrote from a
+        note are never affected.
       </p>
       <ul className="card-list">
         {notes.map((note) => (
           <li key={note.id}>
-            <DeletedNoteItem note={note} onRestored={onRestored} onStale={onStale} />
+            <DeletedNoteItem
+              note={note}
+              focusRead={note.id === focusReadId}
+              onRead={() => onRead(note.id)}
+              onRestored={onRestored}
+              onStale={onStale}
+            />
           </li>
         ))}
       </ul>
@@ -585,21 +645,20 @@ function DeletedNoteList({
   );
 }
 
-/** One deleted note, with the one action it has: Restore. */
-function DeletedNoteItem({
-  note,
-  onRestored,
-  onStale,
-}: {
-  note: DeletedNote;
-  onRestored: (title: string) => void;
-  onStale: () => void;
-}) {
+/**
+ * Restoring one deleted note, from the list or from reading it. A second
+ * press while restoring sends nothing; "stale" means it wasn't deleted after
+ * all, and `onStale` shows what's really there.
+ */
+function useRestoreNote(
+  note: DeletedNote,
+  onRestored: (title: string) => void,
+  onStale: () => void
+) {
   const [restoring, setRestoring] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Blocks a second restore immediately, before the re-render lands.
   const restoringRef = useRef(false);
-  const titleId = `deleted-note-${note.id}-title`;
 
   async function restore() {
     if (restoringRef.current) return;
@@ -610,11 +669,10 @@ function DeletedNoteItem({
     try {
       await restoreNote(note.id);
       onRestored(note.title);
-      return; // The list is replaced.
+      return; // This screen is replaced.
     } catch (err) {
       const failure = toCommandError(err);
       if (failure.kind === "stale") {
-        // Not deleted after all: reload to show what's really there.
         onStale();
         return;
       }
@@ -624,6 +682,27 @@ function DeletedNoteItem({
     restoringRef.current = false;
     setRestoring(false);
   }
+
+  return { restoring, error, restore };
+}
+
+/** One deleted note, with its two actions: Read and Restore. */
+function DeletedNoteItem({
+  note,
+  focusRead,
+  onRead,
+  onRestored,
+  onStale,
+}: {
+  note: DeletedNote;
+  focusRead: boolean;
+  onRead: () => void;
+  onRestored: (title: string) => void;
+  onStale: () => void;
+}) {
+  const { restoring, error, restore } = useRestoreNote(note, onRestored, onStale);
+  const readRef = useFocusOnMount<HTMLButtonElement>(focusRead);
+  const titleId = `deleted-note-${note.id}-title`;
 
   return (
     <div className="card-item card-item-recovery">
@@ -640,6 +719,18 @@ function DeletedNoteItem({
         </p>
       </div>
       <div className="deck-actions item-actions">
+        <button
+          ref={readRef}
+          type="button"
+          className="button button-small"
+          aria-describedby={titleId}
+          aria-disabled={restoring}
+          onClick={() => {
+            if (!restoring) onRead();
+          }}
+        >
+          Read note
+        </button>
         <button
           type="button"
           className="button button-small"
@@ -1120,6 +1211,161 @@ function NoteView({
         {deleteError && (
           <p className="message-error" role="alert">
             {deleteError}
+          </p>
+        )}
+
+        <NoteReading body={note.body} />
+        <PictureGallery
+          pictures={note.pictures}
+          label="Picture in the note"
+          listLabel="Pictures in the note"
+        />
+      </article>
+    </section>
+  );
+}
+
+type DeletedNoteState =
+  | { status: "loading" }
+  | { status: "error"; message: string }
+  | { status: "ready"; note: DeletedNoteText };
+
+/**
+ * A deleted note, opened from *Deleted notes* to read before deciding whether
+ * to restore it. Reading only: its one action is *Restore note*. Editing,
+ * cards, suggestions and quizzes wait until it's back in the library, and
+ * Rust refuses them for a deleted note anyway.
+ */
+function DeletedNoteScreen({
+  noteId,
+  onBack,
+  onRestored,
+  onStale,
+}: {
+  noteId: number;
+  onBack: () => void;
+  onRestored: (title: string) => void;
+  /** It wasn't deleted after all (restored meanwhile). */
+  onStale: () => void;
+}) {
+  const [state, setState] = useState<DeletedNoteState>({ status: "loading" });
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    let current = true;
+    getDeletedNote(noteId).then(
+      (note) => {
+        if (current) setState({ status: "ready", note });
+      },
+      (err) => {
+        if (current) setState({ status: "error", message: toCommandError(err).message });
+      }
+    );
+    return () => {
+      current = false;
+    };
+  }, [noteId, attempt]);
+
+  if (state.status === "loading") {
+    return (
+      <p className="loading" role="status">
+        Loading the note…
+      </p>
+    );
+  }
+
+  if (state.status === "error") {
+    return (
+      <Message focus tone="alert" text={state.message}>
+        <div className="actions">
+          <button
+            type="button"
+            className="button"
+            onClick={() => {
+              setState({ status: "loading" });
+              setAttempt((n) => n + 1);
+            }}
+          >
+            Retry
+          </button>
+          <button type="button" className="button" onClick={onBack}>
+            Back to notes
+          </button>
+        </div>
+      </Message>
+    );
+  }
+
+  return (
+    <DeletedNoteView
+      note={state.note}
+      onBack={onBack}
+      onRestored={onRestored}
+      onStale={onStale}
+    />
+  );
+}
+
+function DeletedNoteView({
+  note,
+  onBack,
+  onRestored,
+  onStale,
+}: {
+  note: DeletedNoteText;
+  onBack: () => void;
+  onRestored: (title: string) => void;
+  onStale: () => void;
+}) {
+  const screenRef = useFocusOnMount<HTMLElement>(true);
+  const { restoring, error, restore } = useRestoreNote(note, onRestored, onStale);
+  const edited = note.updatedAt !== note.createdAt;
+
+  return (
+    <section
+      ref={screenRef}
+      className="deck-detail note-detail"
+      tabIndex={-1}
+      aria-labelledby="note-heading"
+    >
+      <button type="button" className="button button-quiet back-button" onClick={onBack}>
+        <ArrowLeftIcon />
+        Back to notes
+      </button>
+
+      <article className="card">
+        <div>
+          <h2 id="note-heading" className="page-title">
+            {note.title}
+          </h2>
+          <p className="item-meta">
+            {`Deleted ${formatDateTime(note.deletedAt)} · created ${formatDateTime(note.createdAt)}`}
+            {edited && ` · last edited ${formatDateTime(note.updatedAt)}`}
+          </p>
+        </div>
+
+        <p id="deleted-note-hint" className="field-hint">
+          This note is deleted, so it can only be read. Restore it to edit it, write cards from it,
+          or be quizzed on it. Its text comes back unchanged.
+        </p>
+        <div className="deck-actions note-toolbar">
+          <button
+            type="button"
+            className="button button-primary"
+            aria-describedby="note-heading deleted-note-hint"
+            aria-disabled={restoring}
+            onClick={restore}
+          >
+            <RestoreIcon />
+            Restore note
+          </button>
+        </div>
+        <p className="form-status" role="status">
+          {restoring ? "Restoring…" : ""}
+        </p>
+        {error && (
+          <p className="message-error" role="alert">
+            {error}
           </p>
         )}
 

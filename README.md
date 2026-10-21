@@ -44,7 +44,8 @@ migrations, validation, scheduling, and every business rule; React only calls ty
   has checked the whole file and you've confirmed. It never merges.
 - **Notes** — type up your own plain-text study notes, or import them from a file, keep them in a
   local library, open and edit them, and delete ones you're done with. A deleted note leaves the library but is kept under
-  *Deleted notes*, where *Restore note* brings it back unchanged. A note written in Markdown is
+  *Deleted notes*, where *Read note* shows its text without changing it and *Restore note* brings
+  it back unchanged. A note written in Markdown is
   shown formatted (headings, lists, emphasis, quotes, code, tables), or as its plain text if you
   prefer; it's stored and edited as plain text either way.
 - **Cards from a spreadsheet** — add front/back cards to a deck from a CSV or TSV file, after
@@ -411,9 +412,11 @@ until they're restored. Rust keeps a full-text index (SQLite FTS5) of cards and 
 they're written; it's part of the database, so it travels in backups.
 
 **Delete or restore a note.** Open a note → *Delete note* asks for confirmation, then takes the note
-out of your library: it can't be opened, edited, or used to write a card. Nothing is lost — the note
-appears under *Deleted notes* at the bottom of the library, with when it was deleted, and *Restore
-note* puts it back exactly as it was, in the same place in the list. Deleting a note never touches
+out of your library: it can't be edited or used to write a card. Nothing is lost — the note
+appears under *Deleted notes* at the bottom of the library, with when it was deleted. *Read note*
+opens it read-only (its text, formatted as usual, and its pictures) with *Restore note* as its one
+action: no editing, cards, suggestions or quizzes until it's back. *Restore note*, there or in the
+list, puts it back exactly as it was, in the same place in the list. Deleting a note never touches
 cards you wrote from it, and a note is never removed from the database.
 
 **Write a card from a note.** Open a note → *Create card from note*. The note stays visible while you
@@ -508,8 +511,8 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   search reads every note.
   Importing a file makes a note from its text only: layout and images are left out of the note (the
   original is kept under *Sources*), and there's no OCR for scanned pages. A card doesn't remember the note it was written or suggested from — so
-  deleting a note leaves its cards exactly where they are. A deleted note is listed by title and
-  dates only; there's no way to read its text again without restoring it.
+  deleting a note leaves its cards exactly where they are. A deleted note can be read but not
+  edited; restore it first.
 - **No sync, accounts, cloud, or collaboration.** By design.
 - **Personal scheduling is all or nothing.** One set of parameters is fitted to every review ever
   recorded (deleted cards and archived decks included) and used for every deck; there's no

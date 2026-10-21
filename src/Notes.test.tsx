@@ -122,6 +122,119 @@ describe("restoring a note", () => {
   });
 });
 
+describe("reading a deleted note", () => {
+  const TEXT = {
+    ...MEIOSIS,
+    body: "# Phases\n\nTwo divisions, **four** cells.",
+    pictures: [],
+  };
+
+  async function readMeiosis(handlers: Record<string, Handler> = {}) {
+    const notes = openNotes({
+      get_deleted_notes: () => [MEIOSIS],
+      get_deleted_note: () => TEXT,
+      ...handlers,
+    });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Read note" }));
+    return { notes, user };
+  }
+
+  it("shows its whole text, formatted, with Restore as its only action", async () => {
+    const { notes } = await readMeiosis();
+
+    const heading = await screen.findByRole("heading", { level: 2, name: "Meiosis" });
+    expect(document.activeElement).toBe(heading.closest("section"));
+    expect(notes.argsOf("get_deleted_note")).toEqual([{ noteId: 6 }]);
+    expect(screen.getByRole("heading", { name: "Phases" })).toBeTruthy();
+    expect(screen.getByText("four").tagName).toBe("STRONG");
+    expect(screen.getByText(/^Deleted /)).toBeTruthy();
+    expect(screen.getByText(/can only be read/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Restore note" })).toBeTruthy();
+    for (const name of [
+      "Edit note",
+      "Create card from note",
+      "Suggest cards",
+      "Quiz me",
+      "Delete note",
+    ]) {
+      expect(screen.queryByRole("button", { name })).toBeNull();
+    }
+  });
+
+  it("goes back to the list with focus on the note it came from", async () => {
+    const { user } = await readMeiosis();
+
+    await user.click(await screen.findByRole("button", { name: "Back to notes" }));
+
+    const read = await screen.findByRole("button", { name: "Read note" });
+    expect(document.activeElement).toBe(read);
+  });
+
+  it("restores it from there, and the library says so", async () => {
+    let restored = false;
+    const { notes, user } = await readMeiosis({
+      get_notes: () => (restored ? [MITOSIS, MEIOSIS] : [MITOSIS]),
+      get_deleted_notes: () => (restored ? [] : [MEIOSIS]),
+      restore_note: () => {
+        restored = true;
+        return null;
+      },
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Restore note" }));
+
+    const notice = await screen.findByText("Meiosis restored. It's back in your notes.");
+    expect(document.activeElement).toBe(notice);
+    expect(notes.argsOf("restore_note")).toEqual([{ noteId: 6 }]);
+    expect(screen.getAllByRole("button", { name: "Open note" })).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: "Read note" })).toBeNull();
+  });
+
+  it("sends one restore, however often it's pressed while restoring", async () => {
+    const restoring = deferred();
+    const { notes, user } = await readMeiosis({ restore_note: () => restoring.promise });
+
+    const restore = await screen.findByRole("button", { name: "Restore note" });
+    await user.click(restore);
+    await user.click(restore);
+
+    expect(screen.getByText("Restoring…")).toBeTruthy();
+    expect(notes.argsOf("restore_note")).toEqual([{ noteId: 6 }]);
+    await act(async () => restoring.resolve(null));
+  });
+
+  it("goes back to the library and says why when it wasn't deleted after all", async () => {
+    let reloaded = false;
+    const { user } = await readMeiosis({
+      get_notes: () => (reloaded ? [MITOSIS, MEIOSIS] : [MITOSIS]),
+      get_deleted_notes: () => (reloaded ? [] : [MEIOSIS]),
+      restore_note: () => {
+        reloaded = true;
+        return refuse("stale", "This note isn't deleted.");
+      },
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Restore note" }));
+
+    const notice = await screen.findByText(
+      "That note wasn't deleted after all. Here's your library as it is now.",
+    );
+    expect(document.activeElement).toBe(notice);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("explains a note that can't be loaded, with a way back", async () => {
+    const { user } = await readMeiosis({
+      get_deleted_note: () => refuse("stale", "This note isn't deleted."),
+    });
+
+    expect((await screen.findByRole("alert")).textContent).toContain("This note isn't deleted.");
+    await user.click(screen.getByRole("button", { name: "Back to notes" }));
+    expect(await screen.findByRole("button", { name: "Read note" })).toBeTruthy();
+  });
+});
+
 describe("searching notes", () => {
   const CELLS: NoteSummary = { id: 7, title: "Cell biology", createdAt: CREATED, updatedAt: CREATED };
   const OSMOSIS: NoteSummary = { id: 8, title: "Osmosis", createdAt: CREATED, updatedAt: CREATED };

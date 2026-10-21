@@ -100,6 +100,7 @@ pub fn run() {
             commands::cancel_import,
             commands::get_notes,
             commands::get_deleted_notes,
+            commands::get_deleted_note,
             commands::search_notes,
             commands::search_everything,
             commands::get_note,
