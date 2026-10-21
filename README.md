@@ -240,7 +240,10 @@ It is not reset to a new card, so it becomes due again only on the date it alrea
 review session starts. Cards in an archived deck can't be restored until the deck is unarchived,
 and the Sample deck's cards stay out of this entirely. With two or more deleted cards, *Restore all*
 asks for confirmation, naming how many, then restores every one of them the same way, all together
-or not at all.
+or not at all. To bring back only some, tick *Select* on those deleted cards and choose *Restore
+selected*: it asks first, naming how many, and restores them together or not at all (if any was
+changed meanwhile, nothing happens and the screen reloads). A cloze or picture card that can't come
+back yet has no *Select*.
 
 **Search, select, and change several cards.** With two or more cards, the deck screen has *Search
 cards*, which shows only the cards whose front or back contains what you type (ignoring capitals).
@@ -494,9 +497,10 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   tried only on Linux (WebKitGTK), where the page is handed no picture at all, so there only *Add
   picture* works; on Windows (WebView2) it is expected to work but hasn't been tried. Pictures
   aren't exported to CSV or brought in from Anki.
-- **Restoring is per deck.** *Deleted cards* restores one card, or with *Restore all* every deleted
-  card of that deck at once; there's no choosing several, no undo of a restore beyond deleting the
-  cards again, and no way to move a card to a different deck on the way back.
+- **Restoring is per deck.** *Deleted cards* restores one card, the ones ticked with *Restore
+  selected*, or with *Restore all* every deleted card of that deck at once; there's no *Select all*
+  for deleted cards, no undo of a restore beyond deleting the cards again, and no way to move a card
+  to a different deck on the way back.
 - **Notes are plain text.** Markdown is shown formatted when you read a note, but there's no
   formatting toolbar or live preview while editing, no reference-style links, footnotes or maths, and
   links can't be opened from a note. No attachments, audio, web clips, tags, or folders. Search
@@ -525,8 +529,7 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   50 results. Words are split on anything that isn't a letter or digit, so text in scripts written
   without spaces (Chinese, Japanese) is only found from the start of a run. The deck screen's own
   *Search cards* and the library's *Search notes* are plain contains-text filters.
-- **Bulk actions are delete and move.** There are no tags or folders, and restoring several cards
-  at once is only *Restore all*.
+- **Bulk actions are delete, move and restore.** There are no tags or folders.
 - **Statistics are counts, not scores.** The Study Desk counts today's reviews and the different
   cards they were for; the *Statistics* screen adds the last 30 days, true retention, cards by
   state, and a 14-day due forecast. There are no streaks, XP, or mastery percentages. Review

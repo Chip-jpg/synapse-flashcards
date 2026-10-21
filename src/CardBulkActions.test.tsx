@@ -237,6 +237,120 @@ describe("deleting selected cards", () => {
   });
 });
 
+describe("restoring selected deleted cards", () => {
+  /** Biology with all three cards deleted, most recently deleted first. */
+  function allDeleted(): Deck {
+    const deck = without([10, 11, 12], true);
+    return { ...deck, deletedCards: [...deck.deletedCards].reverse() };
+  }
+
+  /** The Select box of the deleted card whose front is `front`. */
+  async function deletedBox(front: string) {
+    const list = await screen.findByRole("region", { name: /^Deleted cards/ });
+    const item = within(list).getByText(front).closest(".card-item") as HTMLElement;
+    return within(item).getByRole("checkbox", { name: "Select" });
+  }
+
+  it("asks first, then restores only the ticked ones and says so", async () => {
+    const backend = openDeck({
+      get_deck_detail: () => allDeleted(),
+      restore_flashcards: (args) => {
+        const { cardIds } = args as { cardIds: number[] };
+        const deck = threeCards();
+        const back = deck.cards.filter((card) => cardIds.includes(card.id));
+        return {
+          changed: cardIds.length,
+          deck: {
+            ...deck,
+            cards: back,
+            cardCount: back.length,
+            deletedCards: allDeleted().deletedCards.filter((card) => !cardIds.includes(card.id)),
+          },
+        } satisfies ChangedCards;
+      },
+    });
+    const user = userEvent.setup();
+
+    await user.click(await deletedBox("What is a cell?"));
+    await user.click(await deletedBox("Where is DNA kept?"));
+    expect(screen.getByText("2 cards selected.")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Restore selected" }));
+
+    expect(document.activeElement).toBe(screen.getByText(/^Restore these 2 cards\?/));
+    expect(backend.argsOf("restore_flashcards")).toEqual([]);
+
+    await user.click(screen.getByRole("button", { name: "Keep deleted" }));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Restore selected" }));
+
+    await user.click(screen.getByRole("button", { name: "Restore selected" }));
+    await user.click(screen.getByRole("button", { name: "Restore 2 cards" }));
+
+    const notice = await screen.findByText(
+      "2 cards restored. They're back in this deck, with their schedules unchanged.",
+    );
+    expect(document.activeElement).toBe(notice);
+    // In the list's order: most recently deleted first.
+    expect(backend.argsOf("restore_flashcards")).toEqual([{ deckId: 1, cardIds: [12, 10] }]);
+    expect(screen.getAllByRole("button", { name: "Restore card" })).toHaveLength(1);
+    expect(screen.queryByText(/selected\./)).toBeNull();
+  });
+
+  it("sends one restore, however often it's confirmed while restoring", async () => {
+    const restoring = deferred<ChangedCards>();
+    const backend = openDeck({
+      get_deck_detail: () => allDeleted(),
+      restore_flashcards: () => restoring.promise,
+    });
+    const user = userEvent.setup();
+
+    await user.click(await deletedBox("What is a cell?"));
+    await user.click(screen.getByRole("button", { name: "Restore selected" }));
+    await user.click(screen.getByRole("button", { name: "Restore 1 card" }));
+    await user.click(screen.getByRole("button", { name: "Restore 1 card" }));
+
+    expect(screen.getByText("Restoring…")).toBeTruthy();
+    restoring.resolve({ changed: 1, deck: without([12, 11], true) });
+    await screen.findByText(/^1 card restored\. It's back/);
+    expect(backend.argsOf("restore_flashcards")).toHaveLength(1);
+  });
+
+  it("reloads and explains when the selection is out of date", async () => {
+    let loads = 0;
+    const backend = openDeck({
+      get_deck_detail: () => (++loads === 1 ? allDeleted() : without([12, 11], true)),
+      restore_flashcards: () => refuse("stale", "Some of the selected cards have changed."),
+    });
+    const user = userEvent.setup();
+
+    await user.click(await deletedBox("What is a cell?"));
+    await user.click(screen.getByRole("button", { name: "Restore selected" }));
+    await user.click(screen.getByRole("button", { name: "Restore 1 card" }));
+
+    const notice = await screen.findByText(
+      "Some of the selected cards have changed. Nothing was changed. Here's this deck as it is now.",
+    );
+    expect(document.activeElement).toBe(notice);
+    expect(backend.argsOf("get_deck_detail")).toHaveLength(2);
+  });
+
+  it("keeps the question open with the error when restoring fails", async () => {
+    openDeck({
+      get_deck_detail: () => allDeleted(),
+      restore_flashcards: () => refuse("failed", "Synapse couldn't restore the cards."),
+    });
+    const user = userEvent.setup();
+
+    await user.click(await deletedBox("What is a cell?"));
+    await user.click(screen.getByRole("button", { name: "Restore selected" }));
+    await user.click(screen.getByRole("button", { name: "Restore 1 card" }));
+
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Synapse couldn't restore the cards.",
+    );
+    expect(screen.getByRole("button", { name: "Restore 1 card" })).toBeTruthy();
+  });
+});
+
 describe("moving selected cards", () => {
   it("offers only the other normal decks, then moves them and names the deck", async () => {
     const backend = openDeck({

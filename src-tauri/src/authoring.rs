@@ -40,7 +40,8 @@
 //! *Restore all* ([`restore_deleted_cards`]) restores every deleted card of
 //! one deck in a single transaction, by the same rules: each card loses only
 //! its `deleted_at`, and the deck is refused exactly as a single restore
-//! refuses a card's deck.
+//! refuses a card's deck. *Restore selected* ([`restore_flashcards`]) does
+//! the same for the deleted cards the user ticked.
 //!
 //! Several of a deck's cards can be changed at once, as the user selected
 //! them on the deck's screen: [`delete_flashcards`] soft-deletes them exactly
@@ -98,8 +99,8 @@ pub const CARD_TEXT_MAX_CHARS: usize = 2_000;
 /// suggestion offers, but a bound on what the frontend can ask for.
 pub const CARD_BATCH_MAX: usize = 100;
 
-/// The most cards one bulk delete or move takes ([`delete_flashcards`],
-/// [`move_flashcards`]): more than any deck is likely to hold, but a bound on
+/// The most cards one bulk delete, move or restore takes
+/// ([`delete_flashcards`], [`move_flashcards`], [`restore_flashcards`]): more than any deck is likely to hold, but a bound on
 /// what the frontend can send.
 pub const CARD_SELECTION_MAX: usize = 10_000;
 
@@ -1125,8 +1126,82 @@ pub async fn restore_deleted_cards(
     })
 }
 
-/// What a bulk delete or move did: `{ changed, deck }`, the number of cards
-/// deleted or moved, and the deck they were selected in, now without them.
+/// Restores several soft-deleted cards of one active normal deck at once, as
+/// the user selected them under *Deleted cards*, and returns how many with the
+/// deck, now listing them among its cards.
+///
+/// Each card is restored exactly as [`restore_flashcard`] restores one: only
+/// `deleted_at` is cleared (a cloze or picture card then has its front and
+/// back rewritten), so every card keeps its id, text, FSRS state, `due` date,
+/// `reps`, `lapses`, `last_review`, and review logs, and no review session is
+/// started, resumed, or reopened. All of them come back in one transaction, or
+/// none do.
+///
+/// The deck is refused as a single restore refuses a card's deck: missing,
+/// the sample deck, or archived. `card_ids` are the cards the user selected
+/// and confirmed; if any is no longer a deleted card of this deck,
+/// [`AuthoringError::SelectionChanged`] is returned with nothing written. A
+/// cloze or picture card that can't come back now is refused as
+/// [`restore_flashcard`] refuses it, also with nothing written.
+pub async fn restore_flashcards(
+    pool: &SqlitePool,
+    deck_id: i64,
+    card_ids: &[i64],
+    now: DateTime<Utc>,
+) -> Result<ChangedCards, AuthoringError> {
+    check_selection(card_ids)?;
+    let now = to_db_time(now);
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+
+    // Stops here, before writing anything, if the deck can't change or the
+    // selection is out of date. Returning early drops `tx`, which rolls it
+    // back.
+    let deck = load_deck_detail(&mut tx, deck_id, &now).await?;
+    let deleted: std::collections::HashSet<i64> =
+        deck.deleted_cards.iter().map(|card| card.id).collect();
+    if !card_ids.iter().all(|id| deleted.contains(id)) {
+        return Err(AuthoringError::SelectionChanged);
+    }
+
+    for &card_id in card_ids {
+        // Checked card by card, as each restore before it may have changed
+        // what this one may do (two deleted cards with one cloze number: only
+        // one of them can come back).
+        if let Some(block) = cloze::restore_block(&mut tx, card_id).await? {
+            return Err(AuthoringError::ClozeNotRestorable(block));
+        }
+        if let Some(block) = occlusion::restore_block(&mut tx, card_id).await? {
+            return Err(AuthoringError::OcclusionNotRestorable(block));
+        }
+        // The same statement as `restore_deleted_cards`: it sets `deleted_at`
+        // and nothing else, and migration 0010's triggers check each row.
+        let restored = sqlx::query(
+            "UPDATE flashcards SET deleted_at = NULL
+             WHERE id = ?1 AND deck_id = ?2 AND deleted_at IS NOT NULL",
+        )
+        .bind(card_id)
+        .bind(deck_id)
+        .execute(&mut *tx)
+        .await?;
+        // Checked above inside this same transaction, so never report a
+        // restore that didn't happen.
+        if restored.rows_affected() != 1 {
+            return Err(AuthoringError::SelectionChanged);
+        }
+        cloze::refresh_restored(&mut tx, card_id, &now).await?;
+        occlusion::refresh_restored(&mut tx, card_id, &now).await?;
+    }
+
+    let deck = load_deck_detail(&mut tx, deck_id, &now).await?;
+    tx.commit().await?;
+    Ok(ChangedCards {
+        changed: card_ids.len(),
+        deck,
+    })
+}
+
+/// What a bulk delete, move or restore did: `{ changed, deck }`, the number of
+/// cards changed, and the deck they were selected in, as it is now.
 #[derive(Debug, PartialEq, serde::Serialize)]
 pub struct ChangedCards {
     pub changed: usize,
@@ -4559,6 +4634,169 @@ mod tests {
             ));
             assert_eq!(all_card_rows(&pool).await, before);
             assert_eq!(deleted_card_ids(&pool, deck, now).await.len(), 2);
+        });
+    }
+
+    // Restore selected
+
+    #[test]
+    fn restoring_selected_cards_restores_only_them_exactly() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let now = at(NOW);
+            let (deck, cards) =
+                deck_with_cards(&pool, "Biology", &[("A", "a"), ("B", "b"), ("C", "c")]).await;
+
+            // Card A gets real FSRS state and a log row before it's deleted.
+            let session = start(&pool, deck, now).await;
+            study::record_review(&pool, session, cards[0], 0, Rating::Good, now)
+                .await
+                .unwrap();
+            delete_flashcards(&pool, deck, &cards, now + TimeDelta::minutes(1))
+                .await
+                .unwrap();
+            let deleted = [
+                stored_card(&pool, cards[0]).await,
+                stored_card(&pool, cards[2]).await,
+            ];
+            let b_before = stored_card(&pool, cards[1]).await;
+            let logs = review_logs(&pool).await;
+            let sessions = all_sessions(&pool).await;
+
+            let later = now + TimeDelta::hours(1);
+            let outcome = restore_flashcards(&pool, deck, &[cards[2], cards[0]], later)
+                .await
+                .unwrap();
+            assert_eq!(outcome.changed, 2);
+
+            // Each lost its `deleted_at` and nothing else.
+            for (card, before) in [cards[0], cards[2]].iter().zip(&deleted) {
+                assert_eq!(&stored_card(&pool, *card).await, before);
+                assert_eq!(deleted_at(&pool, *card).await, None);
+            }
+            assert_eq!(review_logs(&pool).await, logs);
+            assert_eq!(all_sessions(&pool).await, sessions);
+
+            // B wasn't ticked, so it stays deleted.
+            assert_eq!(stored_card(&pool, cards[1]).await, b_before);
+            assert!(deleted_at(&pool, cards[1]).await.is_some());
+            assert_eq!(
+                active_card_ids(&pool, deck, later).await,
+                vec![cards[0], cards[2]]
+            );
+            assert_eq!(deleted_card_ids(&pool, deck, later).await, vec![cards[1]]);
+            assert_eq!(outcome.deck, deck_detail(&pool, deck, later).await.unwrap());
+            // A is scheduled ahead, so only C is due.
+            assert_eq!((outcome.deck.card_count, outcome.deck.due_count), (2, 1));
+        });
+    }
+
+    #[test]
+    fn restoring_selected_refuses_bad_decks_and_selections_and_writes_nothing() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let now = at(NOW);
+            let (deck, cards) =
+                deck_with_cards(&pool, "Biology", &[("A", "a"), ("B", "b"), ("C", "c")]).await;
+            let (chemistry, other) = deck_with_cards(&pool, "Chemistry", &[("Na", "Sodium")]).await;
+            let sample = sample_deck_id(&pool).await;
+            let seed_card = card_ids(&pool, sample).await[0];
+            delete_flashcards(&pool, deck, &cards[..2], now)
+                .await
+                .unwrap();
+            delete_flashcard(&pool, other[0], now).await.unwrap();
+            sqlx::query("UPDATE flashcards SET deleted_at = ?1 WHERE id = ?2")
+                .bind("2026-09-15T11:00:00.000Z")
+                .bind(seed_card)
+                .execute(&pool)
+                .await
+                .unwrap();
+            let before = all_card_rows(&pool).await;
+
+            // No card, too many, or one twice: refused before anything opens.
+            assert!(matches!(
+                restore_flashcards(&pool, deck, &[], now).await,
+                Err(AuthoringError::NoneSelected)
+            ));
+            let too_many: Vec<i64> = (1..=CARD_SELECTION_MAX as i64 + 1).collect();
+            assert!(matches!(
+                restore_flashcards(&pool, deck, &too_many, now).await,
+                Err(AuthoringError::TooManySelected)
+            ));
+            assert!(matches!(
+                restore_flashcards(&pool, deck, &[cards[0], cards[0]], now).await,
+                Err(AuthoringError::DuplicateSelected)
+            ));
+
+            // Any card that isn't a deleted card of this deck: an active one,
+            // another deck's deleted one, a missing one. Even alongside cards
+            // that could come back, nothing is restored.
+            for stray in [cards[2], other[0], 999] {
+                assert!(
+                    matches!(
+                        restore_flashcards(&pool, deck, &[cards[0], stray], now).await,
+                        Err(AuthoringError::SelectionChanged)
+                    ),
+                    "stray {stray}"
+                );
+            }
+            assert!(matches!(
+                restore_flashcards(&pool, 999, &[cards[0]], now).await,
+                Err(AuthoringError::DeckNotFound)
+            ));
+            assert!(matches!(
+                restore_flashcards(&pool, sample, &[seed_card], now).await,
+                Err(AuthoringError::SampleDeck)
+            ));
+            assert_eq!(all_card_rows(&pool).await, before);
+
+            // An archived deck must be unarchived first.
+            archive_deck(&pool, deck, now).await.unwrap();
+            let archived = all_card_rows(&pool).await;
+            assert!(matches!(
+                restore_flashcards(&pool, deck, &cards[..2], now).await,
+                Err(AuthoringError::DeckArchived)
+            ));
+            assert_eq!(all_card_rows(&pool).await, archived);
+
+            unarchive_deck(&pool, deck).await.unwrap();
+            restore_flashcards(&pool, deck, &cards[..2], now)
+                .await
+                .unwrap();
+            // Pressing it again finds them no longer deleted.
+            let after = all_card_rows(&pool).await;
+            assert!(matches!(
+                restore_flashcards(&pool, deck, &cards[..2], now).await,
+                Err(AuthoringError::SelectionChanged)
+            ));
+            assert_eq!(all_card_rows(&pool).await, after);
+            assert_eq!(deleted_card_ids(&pool, chemistry, now).await, other);
+        });
+    }
+
+    #[test]
+    fn a_failed_restore_of_selected_cards_restores_none() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let now = at(NOW);
+            let (deck, cards) = deck_with_cards(&pool, "Biology", &[("A", "a"), ("B", "b")]).await;
+            delete_flashcards(&pool, deck, &cards, now).await.unwrap();
+            let before = all_card_rows(&pool).await;
+
+            sqlx::query(
+                "CREATE TRIGGER fail_restore BEFORE UPDATE OF deleted_at ON flashcards
+                 WHEN NEW.deleted_at IS NULL AND OLD.front = 'B'
+                 BEGIN SELECT RAISE(ABORT, 'simulated failure'); END",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            assert!(matches!(
+                restore_flashcards(&pool, deck, &cards, now).await,
+                Err(AuthoringError::Internal(_))
+            ));
+            assert_eq!(all_card_rows(&pool).await, before);
         });
     }
 

@@ -653,7 +653,8 @@ mod tests {
     use super::*;
     use crate::authoring::{
         archive_deck, create_deck, create_flashcard, delete_flashcard, delete_flashcards,
-        move_flashcards, restore_deleted_cards, restore_flashcard, update_flashcard, DeckCard,
+        move_flashcards, restore_deleted_cards, restore_flashcard, restore_flashcards,
+        update_flashcard, DeckCard,
     };
     use crate::db::migrate_and_seed;
     use crate::db::test_support::*;
@@ -1154,6 +1155,59 @@ mod tests {
                 .unwrap();
             assert_eq!(restored.restored, 3);
             assert_eq!(restored.deck.card_count, 3);
+        });
+    }
+
+    #[test]
+    fn restoring_selected_cloze_cards_follows_the_single_restore_rules() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let biology = deck(&pool, "Biology").await;
+            let deck = create_cloze(&pool, biology, "{{c1::A}} {{c2::B}} {{c3::C}}", at(NOW))
+                .await
+                .unwrap();
+            let (one, two, three) = (
+                card_of(&deck.cards, 1),
+                card_of(&deck.cards, 2),
+                card_of(&deck.cards, 3),
+            );
+            delete_flashcards(&pool, biology, &[two, three], at(NOW))
+                .await
+                .unwrap();
+            // 3 leaves the text and 2 is reworded while both are deleted.
+            update_cloze(&pool, one, "{{c1::A}} {{c2::Bee}}", at(NOW))
+                .await
+                .unwrap();
+            let rows = |pool: SqlitePool| async move {
+                sqlx::query_as::<_, (i64, String, String, Option<String>)>(
+                    "SELECT id, front, back, deleted_at FROM flashcards ORDER BY id",
+                )
+                .fetch_all(&pool)
+                .await
+                .unwrap()
+            };
+            let before = rows(pool.clone()).await;
+
+            // 3 can't come back, so neither does 2 alongside it.
+            assert!(matches!(
+                restore_flashcards(&pool, biology, &[two, three], at(NOW)).await,
+                Err(AuthoringError::ClozeNotRestorable(RestoreBlock::NumberGone))
+            ));
+            assert_eq!(rows(pool.clone()).await, before);
+
+            // 2 alone comes back with the text as it is now.
+            let outcome = restore_flashcards(&pool, biology, &[two], at(NOW))
+                .await
+                .unwrap();
+            assert_eq!(outcome.changed, 1);
+            assert_eq!(
+                cloze_cards(&outcome.deck.cards),
+                vec![
+                    (1, "[...] Bee".into(), "A".into()),
+                    (2, "A [...]".into(), "Bee".into()),
+                ]
+            );
+            assert_eq!(outcome.deck.deleted_cards[0].id, three);
         });
     }
 
