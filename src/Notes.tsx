@@ -722,7 +722,7 @@ function DeletedNoteItem({
         <button
           ref={readRef}
           type="button"
-          className="button button-small button-quiet"
+          className="button button-small"
           aria-describedby={titleId}
           aria-disabled={restoring}
           onClick={() => {
