@@ -324,6 +324,19 @@ where words are far apart, as labels side by side are) or each word, a little la
 remove before saving; text already under a box with the same label is skipped, and the 200-box and
 200-character label limits hold. *Stop*, or leaving the screen, ends a reading.
 
+**Reading with a local model.** For what the built-in engine can't read (accents, handwriting),
+every place that reads text offers *Read with*: *Built in*, or a vision model you've installed in
+Ollama on this computer (one whose capabilities include "vision", such as qwen2.5vl or
+llama3.2-vision). Your choice is remembered on this computer. As with suggested cards, only
+`http://127.0.0.1:11434` is asked, only local models are listed (checked again before a picture is
+sent), and nothing is sent unless you ask. The picture, or the picture a PDF page draws, is
+prepared by the same helper process, at most 1,600 pixels on its longer side. A model can invent
+text, so its answer is cleaned of wrapping ("Here is the text:", code fences), refused if empty or
+longer than a note, and, where the built-in engine has read the same picture or page, shown with how
+many of its words the model's text shares. The text is kept as the newest reading, marked as read by
+that model. A model is much slower than the built-in engine (minutes a page on a CPU). *Find
+labels* always uses the built-in engine, since only it says where the text is.
+
 **Sources.** *Sources* in the sidebar lists the documents Synapse keeps (kind, pages or slides,
 size, and date), newest first, with deleted ones underneath and *Restore*. *Add source* keeps a file
 without writing a note. Opening one shows its text a page (or slide) at a time, with previous, next
@@ -667,6 +680,9 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
     `--recognise-text`) that does both. `tests/ocr_helper.rs` runs the real binary as the helper.
   - `recognition.rs` — what was read from each kept picture or PDF page (`recognitions`), reading
     a picture or a source's scanned pages through the helper, and stopping it.
+  - `vision.rs` — reading a picture or a source's pages with a local vision model in Ollama
+    (through `suggest.rs`'s client): cleaning and checking its answer, and its agreement with the
+    built-in engine.
   - `export.rs` / `import.rs` — writing a `.zip` backup with every kept file, and checking and
     restoring one (kept files included).
 - **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0019`), embedded in the

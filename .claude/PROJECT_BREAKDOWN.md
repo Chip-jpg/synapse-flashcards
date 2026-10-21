@@ -606,7 +606,7 @@ Released in v0.8.0 (written on branch `claude/sources-screen-9yz936`): phase 2 o
 
 ## 4.17 Text recognition (foundation)
 
-Written on branch `claude/project-thread-50ujao` (not yet released): the shared foundation of the "Text recognition" major feature. No screen uses it yet; the contract for the pieces built on it is `/mnt/project-files/planning/text-recognition-contract.md` (project files).
+Written on branch `claude/project-thread-50ujao` (not yet released): the shared foundation of the "Text recognition" major feature. Sections 4.18–4.20 are the screens built on it; the contract for the pieces built on it is `/mnt/project-files/planning/text-recognition-contract.md` (project files).
 
 - **Engine** (`ocr.rs`). [ocrs](https://github.com/robertknight/ocrs) 0.13, pure Rust on `rten`; its two models (`src-tauri/models/`, CC BY-SA 4.0, unchanged, hashes checked by a test) are compiled in with `include_bytes!`, so no DLL, resource or download. About half a second for a page on a laptop-class CPU. Reads the Latin alphabet without accents ("è" → "e", some → "?") and handwriting poorly: Samu chose (2026-10-21) the built-in engine plus an optional local vision model in Ollama for accents and handwriting.
 - **Scanned PDF pages.** The largest image a page draws (through forms too), decoded in Rust: DCT (JPEG), raw/Flate/LZW 8-bit grey, RGB, CMYK (ICCBased by its N), 1-bit and image masks, CCITT G4 and G3 1-D (`fax` crate); `/Rotate` applied. JPX and JBIG2 are `unreadablePicture`. No page rendering: vector text on a page is extraction's job.
@@ -615,7 +615,7 @@ Written on branch `claude/project-thread-50ujao` (not yet released): the shared 
 - **Sources.** `source_pages` stays as extraction read it; `SourcePage.recognised` offers the page's recognised text beside it, and `readable()` (extracted text, or recognised where blank) is what `locate_quotes`/`quoted_page` search. `import_source` now keeps a PDF with no text at all (body empty, every page in `pagesWithoutText`); `import_file` still refuses it.
 - **Commands.** `recognise_picture` (cached: a picture read by today's models isn't read again), `get_picture_recognition`, `get_pages_to_recognise`, `recognise_source_pages` (pages or all unread blank pages; a `Channel` of `{page, done, total, problem}`; each page saved as read; stop keeps them), `stop_recognition` (`Recognising` state, one at a time).
 - **Text.** Lines in reading order; a blank line where a gap is over 1.6× the usual one; lines in a paragraph joined as an imported PDF's are (`extract::unwrap_lines`).
-- **Not done here:** any screen, the Ollama engine, searching recognised text, OCR of text drawn as vector shapes, languages beyond unaccented Latin. Not checked on Windows.
+- **Not done here:** searching recognised text, OCR of text drawn as vector shapes, languages beyond unaccented Latin. Not checked on Windows.
 
 ## 4.18 Scanned pages on the Sources screen
 
@@ -634,7 +634,19 @@ Written on branch `claude/project-thread-abrm8t` (not yet released), on top of 4
 - **Note from a photo** (Notes library). `choosePicture`, then `recognisePicture`; the new-note form opens with the text as the body, the picture attached and a notice to check it (`PhotoDraft`, `PhotoSummary`); no title is guessed. A photo with no text, or a reading stopped or refused, still opens the form with the picture.
 - **Find labels** (`Occlusion.tsx`, `labelBoxes`). One box per recognised line, or per word; a line is split where a gap between words is wider than the line is tall (`labelRuns`), since the engine reads two labels side by side on a diagram as one line; padded by a fifth of the text's height (scaled by the picture's aspect ratio sideways), clamped to the picture, rounded to 4 decimals, labelled with the text cut to 200 characters, each a new card number. Text whose centre is already under a box with the same label is skipped. At most 200 boxes; the rest are counted in the message.
 - **Checked** in the real app on Linux (Xvfb, scratch database): a typed-text photo read word for word; a diagram's four labels found (after the line split), plus one stray "S" read from a drawn circle, removed by hand; the boxes saved as four cards.
-- **Not done:** the Ollama engine choice (`ReadWith`, piece 3, wires in after this merges); no text in review pictures or in a deleted note's pictures; *Note from a photo* doesn't take a pasted picture.
+- **Not done:** no text in review pictures or in a deleted note's pictures; *Note from a photo* doesn't take a pasted picture.
+
+## 4.20 Reading text with a local vision model
+
+Written on branch `claude/project-thread-y4d3wh` (not yet released), on top of 4.17–4.19: the second engine Samu chose, for accents and handwriting. No migration (readings are `recognitions` rows with `engine = 'ollama'` and the model's name).
+
+- **Models** (`vision.rs`, through `suggest.rs`'s `Ollama`: 127.0.0.1 only, no proxies or redirects). `get_vision_models` lists local models whose capabilities include `vision` (asking `/api/show` when the listing doesn't say); the chosen one is checked again before a picture is sent.
+- **The picture.** The helper prepares it: a new `Job` returns a kept picture, or the picture a PDF page draws, as a PNG at most `ocr::MODEL_MAX_SIDE` (1,600 px) long, so PDF parsing stays out of the app. Sent through `/api/chat` with `images`, temperature 0, asking for a verbatim transcription; 10 minutes a page at most (`READ_TIMEOUT`).
+- **Checking the answer** (`transcription`). Wrapping ("Here is the text:", code fences) is removed; an empty answer or one over 100,000 characters is refused; the model's "[no text]" is an empty reading. `agreement` gives the share of the built-in reading's words the model's text has (case and accents ignored; words it read with a "?" skipped) as a hint; the text is kept anyway.
+- **Commands.** `get_vision_models`, `recognise_picture_with_model`, `get_pages_to_recognise_with_model`, `recognise_source_pages_with_model`; same `Recognising` state, so `stop_recognition` stops either engine. A page with no picture is stored as the same empty built-in reading as in 4.17.
+- **Foundation change.** `recognise_picture`'s cache returns the built-in engine's own newest reading (`latest_by_builtin`), not the newest row, so *Find labels* keeps its boxes after a model has read the picture.
+- **Frontend** (`ReadWith.tsx`). *Read with*: *Built in* or a vision model, remembered in web storage (`synapse.readWith`). Wired into *Read scanned pages*, *Read this page*, reading a scanned PDF on import, *Text in picture* (with *Read again* and the agreement shown) and *Note from a photo*. *Find labels* always uses the built-in engine (only it gives positions).
+- **Checked** with Ollama 0.40.6 on CPU and qwen2.5vl:3b, in the real app on Linux with a scratch database: an Italian scanned page read with every accent right (about 4 minutes a page on CPU; 8 s warm in a direct call); a photo read again agreed 96% with the built-in reading. Not checked on Windows.
 
 ______________________________________________________________________
 
@@ -853,6 +865,7 @@ Current README identifies these main files:
 | `pictureText.tsx` | Reading the text in a kept picture, and the panel that shows it as recognised text |
 | `deckChoices.ts` | The decks a card can be added to, for both card-from-note screens |
 | `ScannedPages.tsx` | Reading a PDF source's scanned pages: progress and Stop, the summary, and the label on recognised text |
+| `ReadWith.tsx` | Choosing the reader (built in or a local vision model in Ollama), remembered per computer, and the agreement hint |
 | `Search.tsx` | Search: every card and note at once, with snippets and filters |
 | `Statistics.tsx` | Statistics: reviews per day, true retention, cards by state, due forecast (plain SVG charts) |
 | `ArchivedDecks.tsx` | Archived-deck recovery |
@@ -897,6 +910,7 @@ For example, hiding a Restore button is useful UX, but the Rust command must sti
 | `sources.rs` | Imported documents kept as sources, with each page's text, and the note saved from each |
 | `ocr.rs` | The built-in text recognition engine, the scanned picture on a PDF page, and the `--recognise-text` helper process |
 | `recognition.rs` | What was read from each kept picture or PDF page, and reading them through the helper (stoppable) |
+| `vision.rs` | Reading a picture or a source's pages with a local vision model in Ollama, and checking its answer |
 | `export.rs` | Backup creation (format 2: the database and every kept file) |
 | `import.rs` | Backup checking and replacement, kept files included |
 
