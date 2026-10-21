@@ -469,6 +469,7 @@ The flow: open a note → *Suggest cards* → choose a model → wait (with *Sto
 - **Drafts, not writes.** Nothing is stored until the user saves. Drafts aren't kept anywhere, so the schema and backup format are unchanged (no migration). Suggested cards count as unsaved changes.
 - **Kept to the note.** A model can't be made to forget what it knows, so what's checked is where each card says it came from. The model must quote, for each card, the passage its answer comes from. `suggest.rs` keeps a card only if the quote is in the note word for word (`quoted_from`), its answer is drawn from the quote (`drawn_from`: at least half its significant words), and the answer doesn't just repeat the question. Each kept card shows its quote, and lists answer words the note never uses (`unfamiliar`). These checks catch most outside facts, not all; the user still reads every card.
 - **Saving is all or nothing.** `create_flashcards` (in `authoring.rs`) checks every card as a typed card is checked and saves them in one transaction. A refused card comes back with its `index` and `field`, and the frontend keeps that error on the right draft by its key.
+- **How many cards** (branch `claude/nightly-2026-10-21-suggest-count-pvsjt5`, not yet released). *Number of cards* beside the model, 1 to 10, 10 unless chosen (the last choice is remembered in web storage, `synapse.suggestionCount`). `suggest_cards` takes an optional `count`; Rust holds it as `suggest::CardCount` (anything outside 1–10 is refused as invalid) and uses it for the prompt ("Write at most N cards"), the JSON schema's `maxItems`, and `read_answer`, which leaves out and counts cards past it. With 10 the prompt and schema are as before.
 - **Limits.** Up to 10 cards; notes up to 12,000 characters (`SUGGESTION_NOTE_MAX_CHARS`). Longer notes are refused, not cut, and so is a prompt that fills the 16,384-token context. Temperature is 0.
 - **Stopping.** *Stop*, or leaving the screen, drops the request, and Ollama cancels the generation. Checked in Ollama's log.
 - **Checked against real models.** Ollama 0.40.6 with qwen2.5:0.5b, llama3.2:1b and llama3.2:3b. Every quote was verbatim, and the stricter instructions alone stopped the 1B model adding facts the note doesn't state. Small models still write weak cards; 3B and up are noticeably better. A skipped test (`real_ollama_lists_the_model_and_suggests_cards`) asks a real Ollama.
@@ -1163,7 +1164,7 @@ The current README is explicit about these gaps.
 
 ### AI
 
-- Flashcard generation beyond v0.4.0's local suggestions: no cloud providers, no choice of card count, and no suggestions from notes over 12,000 characters.
+- Flashcard generation beyond v0.4.0's local suggestions: no cloud providers, no more than 10 cards at once, and no suggestions from notes over 12,000 characters.
 - Summaries.
 - Quizzes beyond multiple choice on one note (section 4.9).
 - Memory aids beyond help with a card after repeated Agains (section 4.8).

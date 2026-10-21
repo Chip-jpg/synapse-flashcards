@@ -421,9 +421,10 @@ you to the deck the card went into.
 
 **Have cards suggested from a note.** This needs [Ollama](https://ollama.com) installed and running
 on the same computer, with at least one model downloaded (for example `ollama pull llama3.2`;
-larger models write better cards but take longer). Open a note → *Suggest cards* → choose a model →
-*Suggest cards*. The model reads the note and suggests up to ten cards; this can take a minute or
-more without a fast graphics card, and *Stop* ends it. Then check every card, because models get
+larger models write better cards but take longer). Open a note → *Suggest cards* → choose a model
+and how many cards you want (up to ten; Synapse remembers your choice) → *Suggest cards*. The model
+reads the note and suggests at most that many cards; this can take a minute or more without a
+fast graphics card, and *Stop* ends it. Then check every card, because models get
 things wrong: edit the front or back, *Remove card* for any you don't want, choose a deck, and
 *Save*.
 
@@ -547,9 +548,9 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   a second set of decks; nothing is merged or deduplicated.
 - **Suggestions are a first step.** They come only from Ollama on this computer, from one note
   at a time, and from one part of up to 12,000 characters of a longer note, as front/back cards.
-  A file is suggested from once it's imported as a note. There's no cloud option, no choice of how
-  many cards, and no way to choose the parts yourself or to suggest from several at once. Synapse
-  doesn't remember which parts you've used. Suggested cards aren't linked to the note, and
+  A file is suggested from once it's imported as a note. There's no cloud option, no way to ask for
+  more than ten cards at once, and no way to choose the parts yourself or to suggest from several
+  at once. Synapse doesn't remember which parts you've used. Suggested cards aren't linked to the note, and
   suggestions aren't kept: once you leave without saving, they're gone.
   How good they are depends on the model: small ones often copy the passage as the answer. The
   check that a card comes from your note compares words, so it's loosest for languages written

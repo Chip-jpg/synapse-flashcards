@@ -955,20 +955,27 @@ export function getModels(): Promise<string[]> {
   return invoke<string[]>("get_models");
 }
 
+/** The most cards one suggestion offers. Mirrors `MAX_SUGGESTIONS` in `suggest.rs`. */
+export const MAX_SUGGESTIONS = 10;
+
 /**
  * Asks `model`, in Ollama on this computer, to suggest cards from a note, or
  * from `part` of one too long to use whole (see `noteParts.ts`). Nothing is
- * saved. Resolves with `{ status: "stopped" }` if `stopSuggesting` is called
- * first; rejects with kind "stale" if the model has left Ollama, or the note
- * was deleted or no longer has that part.
+ * saved. `count`, 1 to `MAX_SUGGESTIONS`, is the most cards to suggest; left
+ * out, it's `MAX_SUGGESTIONS`. Resolves with `{ status: "stopped" }` if
+ * `stopSuggesting` is called first; rejects with kind "invalid" for any other
+ * count, and with kind "stale" if the model has left Ollama, or the note was
+ * deleted or no longer has that part.
  */
 export function suggestCards(
   noteId: number,
   model: string,
-  part?: { start: number; end: number }
+  part?: { start: number; end: number },
+  count?: number
 ): Promise<SuggestOutcome> {
   const where = part && { part: { start: part.start, end: part.end } };
-  return invoke<SuggestOutcome>("suggest_cards", { noteId, model, ...where });
+  const most = count === undefined ? undefined : { count };
+  return invoke<SuggestOutcome>("suggest_cards", { noteId, model, ...where, ...most });
 }
 
 /** Stops the suggestion being worked on, if any, which frees up the model. */

@@ -70,7 +70,7 @@ describe("suggesting cards from a note", () => {
       "2 more suggestions were left out because they couldn't be traced back to your note."
     );
     expect(notice.textContent).toContain("1 more was left out because it was empty");
-    expect(argsOf("suggest_cards")).toEqual([{ noteId: 5, model: "qwen3:4b" }]);
+    expect(argsOf("suggest_cards")).toEqual([{ noteId: 5, model: "qwen3:4b", count: 10 }]);
 
     // Edit the first card, and remove the second.
     const firstFront = screen.getAllByLabelText("Front")[0];
@@ -183,8 +183,43 @@ describe("suggesting cards from a note", () => {
 
     const start = Array.from(body).length - Array.from(page(3)).length;
     expect(argsOf("suggest_cards")).toEqual([
-      { noteId: 5, model: "llama3.2:3b", part: { start, end: Array.from(body).length } },
+      {
+        noteId: 5,
+        model: "llama3.2:3b",
+        part: { start, end: Array.from(body).length },
+        count: 10,
+      },
     ]);
+  });
+
+  it("asks for as many cards as the user chooses, and offers that number next time", async () => {
+    const { user, argsOf, unmount } = await openSuggestions({
+      get_models: () => ["llama3.2:3b"],
+      suggest_cards: () => suggested([PHASES]),
+    });
+
+    const countList = screen.getByLabelText("Number of cards") as HTMLSelectElement;
+    expect(countList.value).toBe("10");
+    const options = within(countList)
+      .getAllByRole("option")
+      .map((option) => option.textContent);
+    expect(options).toEqual([
+      "Choose how many",
+      ...Array.from({ length: 10 }, (_, index) =>
+        index === 9 ? "Up to 1 card" : `Up to ${10 - index} cards`
+      ),
+    ]);
+    await user.selectOptions(countList, "3");
+    // The empty choice keeps the number chosen.
+    await user.selectOptions(countList, "");
+    expect(countList.value).toBe("3");
+    await user.click(screen.getByRole("button", { name: "Suggest cards" }));
+    await screen.findByText(/^llama3\.2:3b suggested 1 card\./);
+    expect(argsOf("suggest_cards")).toEqual([{ noteId: 5, model: "llama3.2:3b", count: 3 }]);
+    unmount();
+
+    await openSuggestions({ get_models: () => ["llama3.2:3b"] });
+    expect((screen.getByLabelText("Number of cards") as HTMLSelectElement).value).toBe("3");
   });
 
   it("goes back to the note on Cancel, with focus on Suggest cards", async () => {

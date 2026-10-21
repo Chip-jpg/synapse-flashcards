@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   createFlashcards,
   getModels,
+  MAX_SUGGESTIONS,
   stopSuggesting,
   suggestCards,
   toCommandError,
@@ -21,6 +22,8 @@ import { useUnsavedChanges } from "./unsaved";
 
 /** Where the model last used is remembered, in this computer's web storage. */
 const MODEL_KEY = "synapse.suggestionModel";
+/** And how many cards were last asked for. */
+const COUNT_KEY = "synapse.suggestionCount";
 
 /** "1 card", "3 cards". */
 function cardCount(count: number): string {
@@ -40,6 +43,27 @@ function rememberedModel(): string | null {
 export function rememberModel(model: string) {
   try {
     localStorage.setItem(MODEL_KEY, model);
+  } catch {
+    // As above.
+  }
+}
+
+/** How many cards to ask for first: as many as last time, or the most. */
+export function preferredCount(): number {
+  try {
+    const remembered = Number(localStorage.getItem(COUNT_KEY));
+    if (Number.isInteger(remembered) && remembered >= 1 && remembered <= MAX_SUGGESTIONS) {
+      return remembered;
+    }
+  } catch {
+    // As above.
+  }
+  return MAX_SUGGESTIONS;
+}
+
+function rememberCount(count: number) {
+  try {
+    localStorage.setItem(COUNT_KEY, String(count));
   } catch {
     // As above.
   }
@@ -240,6 +264,7 @@ function Suggester({
   const part = split ? parts[partIndex] : null;
   const [models, setModels] = useState(initialModels);
   const [model, setModel] = useState(() => preferredModel(initialModels));
+  const [count, setCount] = useState(preferredCount);
   const [stage, setStage] = useState<Stage>(() => choose(split ? "part" : "model"));
   // Bumped with every stage, so each one remounts and takes focus.
   const [round, setRound] = useState(0);
@@ -297,11 +322,12 @@ function Suggester({
 
     let next: Stage;
     try {
-      const outcome = await suggestCards(note.id, model, part ?? undefined);
+      const outcome = await suggestCards(note.id, model, part ?? undefined, count);
       if (outcome.status === "stopped") {
         next = choose("notice", { notice: "Stopped. No cards were suggested." });
       } else {
         rememberModel(model);
+        rememberCount(count);
         next = {
           step: "review",
           model,
@@ -337,11 +363,11 @@ function Suggester({
         <p className="note-body">{part ? part.text : note.body}</p>
       </section>
       <p id="suggest-hint" className="field-hint">
-        A model in Ollama, on this computer, reads the note and suggests up to 10 cards, each with
-        the passage of your note it comes from. Cards that can't be traced back to your note are
-        left out. The note doesn't leave this computer, and nothing is saved until you save the
-        cards. Models still get things wrong, so check each card against its passage before you
-        save it.
+        A model in Ollama, on this computer, reads the note and suggests as many cards as you
+        choose, up to 10, each with the passage of your note it comes from. Cards that can't be
+        traced back to your note are left out. The note doesn't leave this computer, and nothing is
+        saved until you save the cards. Models still get things wrong, so check each card against
+        its passage before you save it.
       </p>
 
       {stage.step === "choose" && (
@@ -359,6 +385,8 @@ function Suggester({
           }
           models={models}
           model={model}
+          count={count}
+          onCount={setCount}
           stage={stage}
           onModel={(value) => {
             setModel(value);
@@ -418,6 +446,8 @@ function ChooseModel({
   parts,
   models,
   model,
+  count,
+  onCount,
   stage,
   onModel,
   onSuggest,
@@ -426,6 +456,9 @@ function ChooseModel({
   parts: PartChoice | null;
   models: string[];
   model: string;
+  /** The most cards to ask for. */
+  count: number;
+  onCount: (count: number) => void;
   stage: ChooseStage;
   onModel: (model: string) => void;
   onSuggest: (event: FormEvent<HTMLFormElement>) => void;
@@ -470,6 +503,21 @@ function ChooseModel({
         required
         autoFocus={stage.focus === "model"}
         onChange={onModel}
+      />
+      <SelectField
+        id="suggest-count"
+        label="Number of cards"
+        hint="The most cards to suggest. The model may write fewer, if the note has fewer ideas to ask about."
+        value={String(count)}
+        options={Array.from({ length: MAX_SUGGESTIONS }, (_, index) => {
+          const most = MAX_SUGGESTIONS - index;
+          return { value: String(most), label: `Up to ${cardCount(most)}` };
+        })}
+        placeholder="Choose how many"
+        required
+        onChange={(value) => {
+          if (value !== "") onCount(Number(value));
+        }}
       />
       <div className="form-actions">
         <button ref={suggestRef} type="submit" className="button button-primary">

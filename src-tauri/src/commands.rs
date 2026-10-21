@@ -34,7 +34,7 @@ use crate::search::{self, Scope, SearchResults};
 use crate::sources::{self, InvalidTitle, Source, SourceError, SourcePage};
 use crate::stats::{self, Statistics};
 use crate::study::{self, DeckSummary, SessionCard, StartedSession, StudyError, TodaySummary};
-use crate::suggest::{self, NotePart, Ollama, SuggestError, SuggestedCard, Suggesting};
+use crate::suggest::{self, CardCount, NotePart, Ollama, SuggestError, SuggestedCard, Suggesting};
 
 /// Error sent to React: `{ "kind": "failed" | "stale" | "invalid", "message": "..." }`,
 /// plus `"field": "name" | "description" | "front" | "back" | "title" | "body"`
@@ -1313,11 +1313,13 @@ pub enum SuggestOutcome {
 /// the user may save with `create_flashcards`. Starting another suggestion,
 /// or `stop_suggesting`, stops this one.
 ///
-/// Arguments: `{ noteId, model, part? }`, where `model` is a name from
-/// `get_models`, and `part`, `{ start, end }` in characters, is the part of a
-/// note too long to use whole that cards are suggested from. Returns
-/// [`SuggestOutcome`]; rejects with kind "stale" if the note was deleted, no
-/// longer has that part, or the model is no longer in Ollama.
+/// Arguments: `{ noteId, model, part?, count? }`, where `model` is a name from
+/// `get_models`, `part`, `{ start, end }` in characters, is the part of a
+/// note too long to use whole that cards are suggested from, and `count` is
+/// the most cards to suggest, 1 to 10 (10 if left out). Returns
+/// [`SuggestOutcome`]; rejects with kind "invalid" for any other count, and
+/// with kind "stale" if the note was deleted, no longer has that part, or the
+/// model is no longer in Ollama.
 #[tauri::command]
 pub async fn suggest_cards(
     app: AppHandle,
@@ -1326,10 +1328,17 @@ pub async fn suggest_cards(
     note_id: i64,
     model: String,
     part: Option<NotePart>,
+    count: Option<usize>,
 ) -> Result<SuggestOutcome, CommandError> {
     if note_id < 1 {
         return Err(CommandError::invalid(NOTE_NOT_FOUND));
     }
+    let count = match count {
+        None => CardCount::default(),
+        Some(count) => CardCount::new(count).ok_or_else(|| {
+            CommandError::invalid("Choose how many cards to suggest: from 1 to 10.")
+        })?,
+    };
     // Tracked from the start, so a stop while the note loads counts too.
     let suggestion = suggesting.begin();
     let work = async {
@@ -1351,7 +1360,7 @@ pub async fn suggest_cards(
         };
         let ollama = Ollama::local().map_err(suggest_error)?;
         ollama
-            .suggest(&model, &note.title, body)
+            .suggest(&model, &note.title, body, count)
             .await
             .map_err(suggest_error)
     };
