@@ -20,7 +20,13 @@ import {
   type DeckDetail as Deck,
   type DeletedCard,
 } from "./api";
-import { CardSearchField, cardCount, matchingCards, SelectionActions } from "./CardBulkActions";
+import {
+  CardSearchField,
+  cardCount,
+  matchingCards,
+  RestoreSelected,
+  SelectionActions,
+} from "./CardBulkActions";
 import { FormActions, TextField, useFormSave } from "./forms";
 import {
   ArchiveIcon,
@@ -238,6 +244,12 @@ export function DeckDetail({
         // the deck was archived meanwhile. Nothing was restored.
         reload("The deleted cards couldn't be restored. Here's this deck as it is now.")
       }
+      onRestoredSelected={(deck, restored) =>
+        showSaved(
+          deck,
+          `${cardCount(restored)} restored. ${restored === 1 ? "It's" : "They're"} back in this deck, with ${restored === 1 ? "its schedule" : "their schedules"} unchanged.`,
+        )
+      }
       onBulkDeleted={(deck, deleted) =>
         showSaved(
           deck,
@@ -276,6 +288,7 @@ function DeckView({
   onRestoreStale,
   onRestoredAll,
   onRestoreAllStale,
+  onRestoredSelected,
   onBulkDeleted,
   onBulkMoved,
   onBulkStale,
@@ -300,6 +313,8 @@ function DeckView({
   onRestoredAll: (deck: Deck, restored: number) => void;
   /** *Restore all* was refused because this screen is out of date. */
   onRestoreAllStale: () => void;
+  /** The selected deleted cards were restored. */
+  onRestoredSelected: (deck: Deck, restored: number) => void;
   /** The selected cards were deleted. */
   onBulkDeleted: (deck: Deck, deleted: number) => void;
   /** The selected cards were moved to the deck named `toDeckName`. */
@@ -514,6 +529,8 @@ function DeckView({
           onStale={onRestoreStale}
           onRestoredAll={onRestoredAll}
           onRestoreAllStale={onRestoreAllStale}
+          onRestoredSelected={onRestoredSelected}
+          onSelectionStale={onBulkStale}
         />
       )}
 
@@ -937,8 +954,9 @@ function CardItem({
 /**
  * Deleted cards: this deck's history, and the only place they appear. They
  * can't be edited or reviewed while they're deleted; *Restore card* puts one
- * back in the deck above exactly as it was, and *Restore all* (offered when
- * there are two or more) puts every one back the same way.
+ * back in the deck above exactly as it was, *Restore selected* puts back the
+ * ones ticked, and *Restore all* (offered when there are two or more) puts
+ * every one back the same way.
  */
 function DeletedCardList({
   deckId,
@@ -947,6 +965,8 @@ function DeletedCardList({
   onStale,
   onRestoredAll,
   onRestoreAllStale,
+  onRestoredSelected,
+  onSelectionStale,
 }: {
   deckId: number;
   cards: DeletedCard[];
@@ -954,10 +974,25 @@ function DeletedCardList({
   onStale: () => void;
   onRestoredAll: (deck: Deck, restored: number) => void;
   onRestoreAllStale: () => void;
+  onRestoredSelected: (deck: Deck, restored: number) => void;
+  /** *Restore selected* was refused because this screen is out of date. */
+  onSelectionStale: (message: string) => void;
 }) {
   // A cloze card whose number has left its text (or a picture card whose box
-  // was removed) can't come back yet.
-  const restorable = cards.filter((card) => !card.cloze?.blocked && !card.occlusion?.blocked).length;
+  // was removed) can't come back yet, so it can't be selected either.
+  const restorable = cards.filter(canRestore).length;
+  // Lasts as long as the deck view: any change to the deck remounts it.
+  const [selected, setSelected] = useState<ReadonlySet<number>>(new Set());
+  // In the list's order, which is the order they are sent in.
+  const selectedIds = cards.map((card) => card.id).filter((id) => selected.has(id));
+
+  function toggle(cardId: number) {
+    setSelected((previous) => {
+      const next = new Set(previous);
+      if (!next.delete(cardId)) next.add(cardId);
+      return next;
+    });
+  }
   return (
     <section className="cards section-quiet" aria-labelledby="deleted-cards-heading">
       <div className="section-heading">
@@ -985,10 +1020,25 @@ function DeletedCardList({
       <ul className="card-list">
         {cards.map((card) => (
           <li key={card.id}>
-            <DeletedCardItem card={card} onRestored={onRestored} onStale={onStale} />
+            <DeletedCardItem
+              card={card}
+              selected={selected.has(card.id)}
+              onToggle={canRestore(card) ? () => toggle(card.id) : undefined}
+              onRestored={onRestored}
+              onStale={onStale}
+            />
           </li>
         ))}
       </ul>
+      {selectedIds.length > 0 && (
+        <RestoreSelected
+          deckId={deckId}
+          selected={selectedIds}
+          onClear={() => setSelected(new Set())}
+          onRestored={onRestoredSelected}
+          onStale={onSelectionStale}
+        />
+      )}
     </section>
   );
 }
@@ -1110,13 +1160,27 @@ function RestoreAll({
   );
 }
 
-/** One deleted card, with the one action it has: a two-step Restore. */
+/** Whether a deleted card can be restored now, as far as the screen knows. */
+function canRestore(card: DeletedCard): boolean {
+  return !card.cloze?.blocked && !card.occlusion?.blocked;
+}
+
+/**
+ * One deleted card, with a two-step Restore and, when it can be restored, a
+ * Select box for restoring several at once.
+ */
 function DeletedCardItem({
   card,
+  selected,
+  onToggle,
   onRestored,
   onStale,
 }: {
   card: DeletedCard;
+  /** Whether the card is selected for restoring several at once. */
+  selected: boolean;
+  /** Ticks or unticks the card; left out when it can't be restored. */
+  onToggle?: () => void;
   onRestored: (deck: Deck) => void;
   onStale: () => void;
 }) {
@@ -1223,6 +1287,17 @@ function DeletedCardItem({
         </div>
       ) : (
         <div className="deck-actions item-actions">
+          {onToggle && (
+            <label className="card-select">
+              <input
+                type="checkbox"
+                checked={selected}
+                aria-describedby={frontId}
+                onChange={onToggle}
+              />
+              Select
+            </label>
+          )}
           <button
             ref={restoreRef}
             type="button"

@@ -281,6 +281,10 @@ The user must unarchive a deck before restoring one of its deleted cards.
 
 With two or more deleted cards in a deck, *Restore all* (`restore_deleted_cards` in `authoring.rs`) restores every one of them in one transaction, by the same preservation rules and deck refusals. It sends the number the user confirmed; if the deck no longer has exactly that many deleted cards, it is refused as stale and nothing is written.
 
+### Restore selected
+
+Added on branch `claude/nightly-2026-10-21-restore-selected-58koby` (not yet released). Under *Deleted cards*, each card that can be restored has a *Select* box; *Restore selected* (`restore_flashcards` in `authoring.rs`) restores the ticked ones in one transaction, by `restore_flashcard`'s rules (Sample deck, archived deck, `cloze::restore_block` and `occlusion::restore_block`, checked card by card; cloze and picture fronts and backs rewritten). It sends the ids the user confirmed; if any is no longer a deleted card of that deck, it is refused as stale (`SelectionChanged`) and nothing is written. No migration.
+
 ### Several cards at once
 
 Added after v0.6.0. On the deck screen, *Search cards* filters the deck's active cards by exact text in front or back, ignoring case (in React: the cards are already loaded and nothing is written). Cards are ticked one by one or with *Select all* (the cards the search shows), then *Delete selected* (`delete_flashcards`) or *Move selected* (`move_flashcards`, both in `authoring.rs`). Each sends the ids the user confirmed and works in one transaction; if any of them is no longer an active card of that deck, it is refused as stale and nothing is written. A move changes only `deck_id` and `updated_at`, so FSRS state, due date, counts and review logs carry over. The Sample deck and archived decks are refused on either side. No migration: 0006 already refuses moves into or out of an archived deck, and 0010 a move of a deleted card.
@@ -1179,7 +1183,7 @@ The current README is explicit about these gaps.
 - Fuzzy or meaning-based search. *Search* (section 4.10) matches word prefixes across all active cards and notes; within one deck, cards can also be filtered by exact text (section 4.2), and notes by exact text.
 - Tags.
 - Folders.
-- Bulk actions beyond deleting and moving a deck's selected cards (and *Restore all*).
+- Bulk actions beyond deleting, moving and restoring a deck's selected cards (and *Restore all*).
 - Card movement between decks through restoration.
 - External deck formats beyond CSV/TSV and Anki packages (Anki: front/back and cloze text only, section 4.7b).
 

@@ -567,9 +567,9 @@ export function restoreDeletedCards(deckId: number, expected: number): Promise<R
 
 /** Mirrors `ChangedCards` in `src-tauri/src/authoring.rs`. */
 export type ChangedCards = {
-  /** How many cards were deleted or moved. */
+  /** How many cards were deleted, moved or restored. */
   changed: number;
-  /** The deck they were selected in, now without them. */
+  /** The deck they were selected in, as it is now. */
   deck: DeckDetail;
 };
 
@@ -581,6 +581,17 @@ export type ChangedCards = {
  */
 export function deleteFlashcards(deckId: number, cardIds: number[]): Promise<ChangedCards> {
   return invoke<ChangedCards>("delete_flashcards", { deckId, cardIds });
+}
+
+/**
+ * Restores several deleted cards of a deck at once, each exactly as
+ * `restoreFlashcard` restores one. `cardIds` are the cards the user confirmed.
+ * Rejects with kind "stale", having written nothing, if any of them is no
+ * longer a deleted card of the deck, can't be restored now, or the deck was
+ * archived meanwhile.
+ */
+export function restoreFlashcards(deckId: number, cardIds: number[]): Promise<ChangedCards> {
+  return invoke<ChangedCards>("restore_flashcards", { deckId, cardIds });
 }
 
 /**
