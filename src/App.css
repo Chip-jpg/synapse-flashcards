@@ -2762,6 +2762,7 @@ textarea.field-input {
   gap: 1.25rem;
 }
 
+.scanned-pages,
 .source-notes,
 .source-pages {
   display: grid;
@@ -2804,6 +2805,19 @@ textarea.field-input {
 .source-page-text {
   max-width: 72ch;
   overflow-wrap: anywhere;
+}
+
+/* Text recognised on a scanned page: set apart from text the page held, so
+   it reads as a reading, not as the page itself. */
+.recognised-text {
+  padding-left: 0.75rem;
+  border-left: 3px solid var(--amber-line);
+}
+
+/* "Reading page 3 of 12…", with its bar and Stop. */
+.reading-progress .progress-bar {
+  flex: none;
+  max-width: 28rem;
 }
 
 /* The words of a quote on its page. */

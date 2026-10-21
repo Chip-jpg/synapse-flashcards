@@ -617,6 +617,15 @@ Written on branch `claude/project-thread-50ujao` (not yet released): the shared 
 - **Text.** Lines in reading order; a blank line where a gap is over 1.6× the usual one; lines in a paragraph joined as an imported PDF's are (`extract::unwrap_lines`).
 - **Not done here:** any screen, the Ollama engine, searching recognised text, OCR of text drawn as vector shapes, languages beyond unaccented Latin. Not checked on Windows.
 
+## 4.18 Scanned pages on the Sources screen
+
+Written on branch `claude/project-thread-sh8b9z` (not yet released), on top of 4.17: the first screen that uses text recognition. Frontend only (`ScannedPages.tsx`, `Sources.tsx`, `Notes.tsx`); no command, no migration.
+
+- **Read scanned pages (N).** A PDF source with pages `get_pages_to_recognise` lists offers to read them all, with "Reading page 3 of 12…", a bar and *Stop* (`stop_recognition`); leaving the screen stops it too. Then a summary: pages read, pages where nothing was found, and pages skipped with a plain reason per `PageProblem`. Skipped pages aren't offered again on that screen (Rust would list them again: `pages_to_read` only leaves out pages it read).
+- **The page viewer.** A page with no text of its own shows its recognised text, set apart, under "Recognised text, check for mistakes", saying which engine read it and when (and, for the built-in one, that it doesn't read accents). *Read this page* / *Read this page again* reads one page (`pages: [n]`). The page dialog of a quote's link carries the same label.
+- **Notes.** `draftFromPages` uses `readable` text, `pagesWithoutText` counts only pages still without text, and the new-note form says which pages were recognised.
+- **Importing a scan.** When *Import file* keeps a PDF with no text at all, a step before the note form offers *Read scanned pages*, *Write the note myself* or *Cancel*; after reading, the form opens with the text. A scan whose file was read before (readings belong to the file) goes straight to the form. *Add source* opens the source with a notice pointing at *Read scanned pages*.
+
 ______________________________________________________________________
 
 ## 5. FSRS and personalization
@@ -832,6 +841,7 @@ Current README identifies these main files:
 | `Quiz.tsx` | A multiple-choice quiz on a note, and adding missed questions as cards |
 | `Occlusion.tsx` | Picture cards (image occlusion): the form to draw boxes, and the picture shown in review |
 | `deckChoices.ts` | The decks a card can be added to, for both card-from-note screens |
+| `ScannedPages.tsx` | Reading a PDF source's scanned pages: progress and Stop, the summary, and the label on recognised text |
 | `Search.tsx` | Search: every card and note at once, with snippets and filters |
 | `Statistics.tsx` | Statistics: reviews per day, true retention, cards by state, due forecast (plain SVG charts) |
 | `ArchivedDecks.tsx` | Archived-deck recovery |
