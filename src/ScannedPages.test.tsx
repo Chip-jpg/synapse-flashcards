@@ -296,6 +296,20 @@ describe("importing a scanned PDF", () => {
     ]);
   });
 
+  it("opens the note straight away when the same scan was read before", async () => {
+    const { user, calls } = openNotes({
+      get_source_pages: () => [
+        { number: 1, text: "", recognised: recognised("Page 1 text.") },
+        { number: 2, text: "", recognised: recognised("Page 2 text.") },
+      ],
+      get_pages_to_recognise: () => [],
+    });
+    await user.click(await screen.findByRole("button", { name: "Import file" }));
+    const body = (await screen.findByLabelText("Note")) as HTMLTextAreaElement;
+    expect(body.value).toBe("Page 1 text.\n\nPage 2 text.");
+    expect(calls).not.toContain("recognise_source_pages");
+  });
+
   it("lets the user write the note without reading, or go back", async () => {
     const { user, calls } = openNotes();
     await user.click(await screen.findByRole("button", { name: "Import file" }));

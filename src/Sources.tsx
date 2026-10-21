@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   deleteSource,
   getDeletedSources,
@@ -1290,6 +1290,16 @@ function PageViewer({
   );
 }
 
+/** What a scan's import says first; focus goes to it, so it's read out first. */
+function ScanIntro({ children }: { children: ReactNode }) {
+  const ref = useFocusOnMount<HTMLParagraphElement>(true);
+  return (
+    <p ref={ref} className="import-warning" tabIndex={-1}>
+      {children}
+    </p>
+  );
+}
+
 /** The pages skipped so far, after `result`: those it skipped, less those it read. */
 function withSkipped(skipped: number[], result: SourceRecognition): number[] {
   const now = new Set(skipped);
@@ -1300,6 +1310,7 @@ function withSkipped(skipped: number[], result: SourceRecognition): number[] {
 
 /** Where reading a just-imported scan has got to. */
 type ScanStep =
+  | { step: "checking" }
   | { step: "offer" }
   | { step: "after"; summary: string; draft: SourceNoteDraft; toRead: number[] }
   | { step: "error"; message: string };
@@ -1321,12 +1332,33 @@ export function ReadScannedImport({
   onCancel: () => void;
 }) {
   const reader = useSourceReading();
-  const [scan, setScan] = useState<ScanStep>({ step: "offer" });
-  const introRef = useFocusOnMount<HTMLParagraphElement>(true);
+  const [scan, setScan] = useState<ScanStep>({ step: "checking" });
   const pageCount = kept.text.pagesWithoutText.length;
   const left = scan.step === "after" ? scan.toRead : kept.text.pagesWithoutText;
   // As on the source screen: pages skipped once aren't offered again.
   const skippedRef = useRef<number[]>([]);
+  const onReadRef = useRef(onRead);
+  onReadRef.current = onRead;
+
+  // Readings belong to the file, so the same scan imported again is read
+  // already: its text goes straight to the note form.
+  useEffect(() => {
+    let current = true;
+    loadSource(kept.source.id).then((next) => {
+      if (!current) return;
+      if (next.status === "ready" && next.toRead.length === 0) {
+        const draft = { ...draftFromPages(next.source, next.pages), justKept: true };
+        if (draft.body.trim() !== "") {
+          onReadRef.current(draft);
+          return;
+        }
+      }
+      setScan({ step: "offer" });
+    });
+    return () => {
+      current = false;
+    };
+  }, [kept.source.id]);
 
   async function read() {
     const result = await reader.start(kept.source.id, left);
@@ -1354,16 +1386,24 @@ export function ReadScannedImport({
   const reading = reader.reading.status === "reading" ? reader.reading : null;
   const found = scan.step === "after" && scan.draft.body.trim() !== "";
 
+  if (scan.step === "checking") {
+    return (
+      <p className="loading" role="status">
+        {`Opening ${kept.source.fileName}…`}
+      </p>
+    );
+  }
+
   return (
     <section className="card" aria-labelledby="read-scan-heading">
       <h2 id="read-scan-heading" className="form-title">
         {`New note from ${kept.source.fileName}`}
       </h2>
-      <p ref={introRef} className="import-warning" tabIndex={-1}>
+      <ScanIntro>
         {`Synapse kept ${kept.source.fileName} under Sources, but none of its ${
           pageCount === 1 ? "page has" : `${pageCount} pages have`
         } text it could read: it looks like a scan. Synapse can read the text in the pages' pictures first, on this computer, so the note doesn't start empty. Recognised text can hold mistakes, and the built-in reader doesn't read accents (è comes out as e), so check it before you save.`}
-      </p>
+      </ScanIntro>
 
       {reading ? (
         <ReadingProgress reading={reading} single={null} onStop={reader.stop} />
