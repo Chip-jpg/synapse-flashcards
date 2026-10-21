@@ -407,7 +407,8 @@ pub struct SourceRecognition {
 
 /// The pages of the active PDF source `source_id` that recognition would
 /// read when no pages are named: those whose extracted text is blank and
-/// that the built-in engine hasn't read with today's models.
+/// that the built-in engine hasn't read with today's models. A page found
+/// to draw no picture counts as read (an empty reading is kept for it).
 pub async fn pages_to_read(
     pool: &SqlitePool,
     source_id: i64,
@@ -496,6 +497,40 @@ pub async fn recognise_source(
                 None
             }
             PageOutcome::Problem(problem) => {
+                // A page that draws no picture has nothing to read, however
+                // often it's asked: keep an empty reading, so it isn't
+                // offered again. A picture Synapse couldn't decode is left
+                // unread, for another engine or a later version.
+                if problem == PageProblem::NoPicture {
+                    let empty = Reading {
+                        width: 0,
+                        height: 0,
+                        lines: Vec::new(),
+                    };
+                    let mut conn = match pool.acquire().await {
+                        Ok(conn) => conn,
+                        Err(err) => {
+                            saving = Err(err.into());
+                            continue;
+                        }
+                    };
+                    if let Err(err) = insert(
+                        &mut conn,
+                        source.asset.id,
+                        page,
+                        Engine::Ocrs,
+                        ocr::MODEL,
+                        &empty.text(),
+                        &empty.lines,
+                        None,
+                        now(),
+                    )
+                    .await
+                    {
+                        saving = Err(RecognitionError::Internal(err));
+                        continue;
+                    }
+                }
                 result.skipped.push(PageSkipped { page, problem });
                 Some(problem)
             }
@@ -898,6 +933,47 @@ mod tests {
             assert_eq!(count(&pool, "SELECT COUNT(*) FROM recognitions").await, 2);
             let newest = latest(&pool, source.asset.id, 2).await.unwrap().unwrap();
             assert_eq!(newest.created_at, "2026-10-21T10:00:00.000Z");
+            let _ = std::fs::remove_dir_all(store.dir());
+        });
+    }
+
+    #[test]
+    fn a_page_without_a_picture_is_kept_as_read_and_not_offered_again() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let store = scratch_store("recognition-no-picture");
+            // Page 1 draws only vector text that extraction didn't find.
+            let mut document = scanned_pdf();
+            document.bytes = pages::pdf(&[TestPage::TextOnly, TestPage::Jpeg]);
+            document.pages = vec![String::new(), String::new()];
+            document.text.pages = Some(2);
+            let source = sources::create_source(&pool, &store, &document, at(NOW))
+                .await
+                .unwrap();
+            assert_eq!(pages_to_read(&pool, source.id).await.unwrap(), vec![1, 2]);
+            let result = recognise_source(
+                &pool,
+                &store,
+                helper(),
+                source.id,
+                None,
+                CancellationToken::new(),
+                || at(NOW),
+                |_| {},
+            )
+            .await
+            .unwrap();
+            assert_eq!(result.read, vec![2]);
+            assert_eq!(
+                result.skipped,
+                vec![PageSkipped {
+                    page: 1,
+                    problem: PageProblem::NoPicture
+                }]
+            );
+            assert!(pages_to_read(&pool, source.id).await.unwrap().is_empty());
+            let empty = latest(&pool, source.asset.id, 1).await.unwrap().unwrap();
+            assert_eq!((empty.text.as_str(), empty.width), ("", None));
             let _ = std::fs::remove_dir_all(store.dir());
         });
     }
