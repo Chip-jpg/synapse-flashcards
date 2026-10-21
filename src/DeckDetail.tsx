@@ -40,6 +40,7 @@ import {
 import { OcclusionForm } from "./Occlusion";
 import { formatDateTime, Message, useFocusOnMount } from "./ui";
 import { useUnsavedChanges } from "./unsaved";
+import { appendText } from "./pictureText";
 import { PictureField, PictureGallery, samePictures, usePictureAdder } from "./pictures";
 
 /** A card with no pictures, as cards from before pictures (and tests) arrive. */
@@ -1611,6 +1612,14 @@ function CardForm({
               adder={frontAdder}
               error={fieldError("frontPictures")}
               disabled={saving}
+              addText={{
+                label: "Add to front",
+                done: "Added to the end of the front.",
+                onAdd: (text) => {
+                  setFront((current) => appendText(current, text));
+                  edited("front");
+                },
+              }}
             />
           </div>
           <div className="card-form-side" onPaste={backAdder.onPaste}>
@@ -1636,6 +1645,14 @@ function CardForm({
               adder={backAdder}
               error={fieldError("backPictures")}
               disabled={saving}
+              addText={{
+                label: "Add to back",
+                done: "Added to the end of the back.",
+                onAdd: (text) => {
+                  setBack((current) => appendText(current, text));
+                  edited("back");
+                },
+              }}
             />
           </div>
         </>

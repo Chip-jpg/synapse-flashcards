@@ -1,13 +1,16 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   getQuotedPage,
+  getSourcePages,
   locateQuotes,
   toCommandError,
   type QuoteSpot,
   type QuotedSource,
+  type RecognisedText,
   type SnippetPiece,
 } from "./api";
 import { ArrowLeftIcon, ArrowRightIcon, NoteIcon } from "./icons";
+import { RecognisedLabel } from "./ScannedPages";
 
 /** "PDF", "Word document": what kind of file a source is, said plainly. */
 export const KIND_NAMES = {
@@ -157,7 +160,28 @@ export function SourcePageDialog({
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [page, setPage] = useState(firstPage);
   const [state, setState] = useState<PageState>({ status: "loading" });
+  // The text recognised on each page without text of its own, so a scanned
+  // page's text is labelled as recognised. Unlabelled if they can't be had.
+  const [recognised, setRecognised] = useState<Map<number, RecognisedText>>(new Map());
   const thing = slides ? "Slide" : "Page";
+
+  useEffect(() => {
+    let current = true;
+    getSourcePages(sourceId).then(
+      (pages) => {
+        if (!current) return;
+        const found = new Map<number, RecognisedText>();
+        for (const each of pages) {
+          if (each.text.trim() === "" && each.recognised) found.set(each.number, each.recognised);
+        }
+        setRecognised(found);
+      },
+      () => {},
+    );
+    return () => {
+      current = false;
+    };
+  }, [sourceId]);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -198,6 +222,9 @@ export function SourcePageDialog({
         </h2>
         <p className="item-meta">{title}</p>
       </div>
+      {recognised.has(page) && !empty && (
+        <RecognisedLabel recognised={recognised.get(page) as RecognisedText} />
+      )}
       <div className="source-page-scroll" tabIndex={0} aria-label={`${thing} ${page} text`}>
         {state.status === "loading" && (
           <p className="loading" role="status">

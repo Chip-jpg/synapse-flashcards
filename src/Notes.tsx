@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  choosePicture,
   createFlashcard,
   createNote,
   createNoteFromSource,
@@ -24,6 +25,8 @@ import {
   type Asset,
   type Note,
   type NoteSummary,
+  type Recognition,
+  type SourceImport,
 } from "./api";
 import { loadDeckChoices, type DeckChoices } from "./deckChoices";
 import { MarkdownView } from "./NoteMarkdown";
@@ -34,6 +37,7 @@ import {
   ArrowRightIcon,
   NoteIcon,
   PencilIcon,
+  PictureIcon,
   PlusIcon,
   RestoreIcon,
   SparkleIcon,
@@ -43,9 +47,15 @@ import {
 import { Quiz } from "./Quiz";
 import { SuggestCards } from "./SuggestCards";
 import { SUGGESTION_NOTE_MAX_CHARS } from "./noteParts";
-import { draftFromImport, type SourceNoteDraft } from "./Sources";
+import {
+  draftFromImport,
+  looksScanned,
+  ReadScannedImport,
+  type SourceNoteDraft,
+} from "./Sources";
 import { formatDateTime, Message, useFocusOnMount } from "./ui";
 import { useUnsavedChanges } from "./unsaved";
+import { appendText, readBy, usePictureReading } from "./pictureText";
 import { PictureField, PictureGallery, samePictures, usePictureAdder } from "./pictures";
 
 /** What takes focus when the library appears. */
@@ -53,14 +63,19 @@ type LibraryFocus =
   | { to: "screen" }
   | { to: "new" }
   | { to: "import" }
+  | { to: "photo" }
   | { to: "note"; noteId: number }
   | { to: "deleted"; noteId: number }
   | { to: "notice" };
 
+/** A file *Import file* just kept as a source. */
+type KeptFile = SourceImport & { status: "imported" };
+
 /** Where in the notes area the user is. */
 type Place =
   | { screen: "library"; focus: LibraryFocus; notice: string | null }
-  | { screen: "new"; imported?: SourceNoteDraft }
+  | { screen: "new"; imported?: SourceNoteDraft; photo?: PhotoDraft }
+  | { screen: "scanned"; kept: KeptFile }
   | { screen: "note"; noteId: number; justCreated: boolean }
   | { screen: "deleted"; noteId: number };
 
@@ -103,19 +118,31 @@ export function NotesArea({
 
   if (place.screen === "new") {
     const imported = place.imported;
+    const photo = place.photo;
     return (
       <NoteForm
         imported={imported}
+        photo={photo}
         onCancel={() =>
           newFromSource && imported === newFromSource.draft
             ? newFromSource.onCancel()
             : setPlace({
                 screen: "library",
-                focus: { to: imported ? "import" : "new" },
+                focus: { to: imported ? "import" : photo ? "photo" : "new" },
                 notice: null,
               })
         }
         onSaved={(note) => setPlace({ screen: "note", noteId: note.id, justCreated: true })}
+      />
+    );
+  }
+
+  if (place.screen === "scanned") {
+    return (
+      <ReadScannedImport
+        kept={place.kept}
+        onRead={(imported) => setPlace({ screen: "new", imported })}
+        onCancel={() => setPlace({ screen: "library", focus: { to: "import" }, notice: null })}
       />
     );
   }
@@ -180,7 +207,14 @@ export function NotesArea({
       focus={place.focus}
       notice={place.notice}
       onNew={() => setPlace({ screen: "new" })}
-      onImported={(imported) => setPlace({ screen: "new", imported })}
+      onImported={(kept) =>
+        setPlace(
+          looksScanned(kept)
+            ? { screen: "scanned", kept }
+            : { screen: "new", imported: draftFromImport(kept) }
+        )
+      }
+      onPhoto={(photo) => setPlace({ screen: "new", photo })}
       onOpen={(noteId) => setPlace({ screen: "note", noteId, justCreated: false })}
       onRead={(noteId) => setPlace({ screen: "deleted", noteId })}
       onBack={onBack}
@@ -214,6 +248,7 @@ function NoteLibrary({
   notice,
   onNew,
   onImported,
+  onPhoto,
   onOpen,
   onRead,
   onBack,
@@ -223,7 +258,9 @@ function NoteLibrary({
   notice: string | null;
   onNew: () => void;
   /** A file was kept as a source and its text read, to become a new note. */
-  onImported: (imported: SourceNoteDraft) => void;
+  onImported: (kept: KeptFile) => void;
+  /** A photo was kept and its text read, to become a new note. */
+  onPhoto: (photo: PhotoDraft) => void;
   onOpen: (noteId: number) => void;
   /** Opens a deleted note to read it. */
   onRead: (noteId: number) => void;
@@ -292,6 +329,7 @@ function NoteLibrary({
       focus={view.focus}
       onNew={onNew}
       onImported={onImported}
+      onPhoto={onPhoto}
       onOpen={onOpen}
       onRead={onRead}
       onBack={onBack}
@@ -312,6 +350,7 @@ function NoteList({
   focus,
   onNew,
   onImported,
+  onPhoto,
   onOpen,
   onRead,
   onBack,
@@ -323,7 +362,8 @@ function NoteList({
   notice: string | null;
   focus: LibraryFocus;
   onNew: () => void;
-  onImported: (imported: SourceNoteDraft) => void;
+  onImported: (kept: KeptFile) => void;
+  onPhoto: (photo: PhotoDraft) => void;
   onOpen: (noteId: number) => void;
   onRead: (noteId: number) => void;
   onBack: () => void;
@@ -347,11 +387,15 @@ function NoteList({
   );
   const newRef = useFocusOnMount<HTMLButtonElement>(focus.to === "new");
   const importRef = useFocusOnMount<HTMLButtonElement>(focus.to === "import");
+  const photoRef = useFocusOnMount<HTMLButtonElement>(focus.to === "photo");
   const noticeRef = useFocusOnMount<HTMLParagraphElement>(focusNotice);
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
   // Blocks a second file window immediately, before the re-render lands.
   const importingRef = useRef(false);
+  const [photoStep, setPhotoStep] = useState<"none" | "choosing" | "reading">("none");
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  const photoReading = usePictureReading();
   const search = useNoteSearch();
   const searching = search.query.trim() !== "";
   // While a new answer is on its way, the last one stays up, so the list
@@ -371,7 +415,7 @@ function NoteList({
     try {
       const result = await importSource();
       if (result.status === "imported") {
-        onImported(draftFromImport(result));
+        onImported(result);
         return; // This screen is replaced.
       }
     } catch (err) {
@@ -380,6 +424,38 @@ function NoteList({
 
     importingRef.current = false;
     setImporting(false);
+  }
+
+  /**
+   * Chooses a photo, keeps it and reads its text; the text opens as a new
+   * note with the photo attached. A photo that couldn't be read still opens,
+   * with the note left for the user to write.
+   */
+  async function chooseNotePhoto() {
+    if (importingRef.current) return;
+    importingRef.current = true;
+    setPhotoStep("choosing");
+    setPhotoError(null);
+
+    try {
+      const chosen = await choosePicture();
+      if (chosen.status === "added") {
+        setPhotoStep("reading");
+        const read = await photoReading.read(chosen.asset.id);
+        if (read === null) return; // Left the library meanwhile.
+        onPhoto({
+          picture: chosen.asset,
+          recognition: read.status === "read" ? read.recognition : null,
+          problem: read.status === "error" ? read.message : null,
+        });
+        return; // This screen is replaced.
+      }
+    } catch (err) {
+      setPhotoError(toCommandError(err).message);
+    }
+
+    importingRef.current = false;
+    setPhotoStep("none");
   }
 
   return (
@@ -411,6 +487,17 @@ function NoteList({
             <UploadIcon />
             Import file
           </button>
+          <button
+            ref={photoRef}
+            type="button"
+            className="button"
+            aria-disabled={importing || photoStep !== "none"}
+            aria-describedby="import-hint"
+            onClick={chooseNotePhoto}
+          >
+            <PictureIcon />
+            Note from a photo
+          </button>
           <button ref={newRef} type="button" className="button button-primary" onClick={onNew}>
             <PlusIcon />
             New note
@@ -420,14 +507,33 @@ function NoteList({
       <p id="import-hint" className="field-hint">
         Import a PDF, text, Markdown, Word, or PowerPoint file to make a note from its text. You
         check the text before it's saved. The file itself is kept under Sources, so cards and
-        quizzes from the note can show the page they came from.
+        quizzes from the note can show the page they came from. A note from a photo, such as of
+        a page or a whiteboard, starts with the text Synapse recognises in it, for you to check.
       </p>
-      <p className="form-status" role="status">
-        {importing ? "Choose a file. Synapse then reads its text…" : ""}
-      </p>
+      <div className="picture-text-row">
+        <p className="form-status" role="status">
+          {importing
+            ? "Choose a file. Synapse then reads its text…"
+            : photoStep === "choosing"
+              ? "Choose a photo. Synapse then reads its text…"
+              : photoStep === "reading"
+                ? "Reading the text in the photo…"
+                : ""}
+        </p>
+        {photoStep === "reading" && (
+          <button type="button" className="button button-small" onClick={photoReading.stop}>
+            Stop
+          </button>
+        )}
+      </div>
       {importError && (
         <p className="message-error" role="alert">
           {importError}
+        </p>
+      )}
+      {photoError && (
+        <p className="message-error" role="alert">
+          {photoError}
         </p>
       )}
       {notice && (
@@ -1219,6 +1325,7 @@ function NoteView({
           pictures={note.pictures}
           label="Picture in the note"
           listLabel="Pictures in the note"
+          readText
         />
       </article>
     </section>
@@ -1518,20 +1625,25 @@ function NoteReading({ body }: { body: string }) {
 function NoteForm({
   note,
   imported,
+  photo,
   onCancel,
   onSaved,
 }: {
   note?: Note;
   imported?: SourceNoteDraft;
+  /** A new note from a photo: its text as read, and the photo attached. */
+  photo?: PhotoDraft;
   onCancel: () => void;
   onSaved: (note: Note) => void;
 }) {
   const [title, setTitle] = useState(imported?.title ?? note?.title ?? "");
-  const [body, setBody] = useState(imported?.body ?? note?.body ?? "");
+  const [body, setBody] = useState(
+    imported?.body ?? note?.body ?? photo?.recognition?.text.trim() ?? ""
+  );
   const savedPictures = note?.pictures ?? [];
-  const [pictures, setPictures] = useState<Asset[]>(savedPictures);
-  // Compared with what's saved: imported text isn't saved anywhere yet, so it
-  // counts as unsaved from the start.
+  const [pictures, setPictures] = useState<Asset[]>(photo ? [photo.picture] : savedPictures);
+  // Compared with what's saved: imported text, or a photo and its text, isn't
+  // saved anywhere yet, so it counts as unsaved from the start.
   useUnsavedChanges(
     title !== (note?.title ?? "") ||
       body !== (note?.body ?? "") ||
@@ -1568,9 +1680,16 @@ function NoteForm({
       onPaste={adder.onPaste}
     >
       <h2 id="note-form-heading" className="form-title">
-        {note ? "Edit note" : imported ? `New note from ${imported.fileName}` : "New note"}
+        {note
+          ? "Edit note"
+          : imported
+            ? `New note from ${imported.fileName}`
+            : photo
+              ? "New note from a photo"
+              : "New note"}
       </h2>
       {imported && <ImportSummary imported={imported} length={[...body].length} />}
+      {photo && <PhotoSummary photo={photo} />}
 
       <TextField
         id="note-title"
@@ -1579,7 +1698,7 @@ function NoteForm({
         value={title}
         error={fieldError("title")}
         required
-        autoFocus={!imported}
+        autoFocus={!imported && !photo}
         onChange={(value) => {
           setTitle(value);
           edited("title");
@@ -1608,6 +1727,14 @@ function NoteForm({
         adder={adder}
         error={fieldError("pictures")}
         disabled={saving}
+        addText={{
+          label: "Add to note",
+          done: "Added to the end of the note.",
+          onAdd: (text) => {
+            setBody((current) => appendText(current, text));
+            edited("body");
+          },
+        }}
       />
 
       <FormActions
@@ -1617,6 +1744,40 @@ function NoteForm({
         onCancel={onCancel}
       />
     </form>
+  );
+}
+
+/**
+ * A new note from a photo: the kept picture, what was read in it (null if
+ * reading stopped or failed), and why it failed.
+ */
+export type PhotoDraft = {
+  picture: Asset;
+  recognition: Recognition | null;
+  problem: string | null;
+};
+
+/**
+ * What came of reading a photo, said before the user checks the note. Focus
+ * goes to it, so it's read out first.
+ */
+function PhotoSummary({ photo }: { photo: PhotoDraft }) {
+  const summaryRef = useFocusOnMount<HTMLParagraphElement>(true);
+  const { recognition } = photo;
+  const found = recognition !== null && recognition.text.trim() !== "";
+  return (
+    <>
+      <p ref={summaryRef} className="notice" role="status" tabIndex={-1}>
+        {found
+          ? "The note below is the text Synapse recognised in the photo, which is attached. Recognised text can have mistakes: check it against the photo and correct it, then give the note a title and save it."
+          : recognition !== null
+            ? "No text found in the photo. It's attached below: write the note yourself, and give it a title."
+            : photo.problem
+              ? `${photo.problem} The photo is attached below: write the note yourself, and give it a title.`
+              : "Reading stopped before any text was found. The photo is attached below: write the note yourself, and give it a title."}
+      </p>
+      {found && <p className="field-hint">{readBy(recognition)}</p>}
+    </>
   );
 }
 
@@ -1647,6 +1808,7 @@ function ImportSummary({ imported, length }: { imported: SourceNoteDraft; length
       ? ""
       : ` (${counted(imported.pages, imported.kind === "powerPoint" ? "slide" : "page")})`;
   const missing = imported.pagesWithoutText;
+  const recognised = imported.recognisedPages;
 
   return (
     <>
@@ -1655,6 +1817,15 @@ function ImportSummary({ imported, length }: { imported: SourceNoteDraft; length
           ? `Synapse kept ${imported.fileName} under Sources and read its text${parts}. Check it and edit it as you like, then save it as a note. The source itself doesn't change.`
           : `This is the text of ${imported.fileName}${parts}, kept under Sources. Check it and edit it as you like, then save it as a note. The source itself doesn't change.`}
       </p>
+      {recognised.length > 0 && (
+        <p className="import-warning">
+          {`${
+            recognised.length > 12
+              ? `${recognised.length} pages were`
+              : `${recognised.length === 1 ? "Page" : "Pages"} ${listed(recognised)} ${recognised.length === 1 ? "was" : "were"}`
+          } scanned, so their text was recognised from the picture. Recognised text can hold mistakes, and the built-in reader doesn't read accents (è comes out as e). Check it against the original before you save.`}
+        </p>
+      )}
       {missing.length > 0 && (
         <p className="import-warning">
           {`${
