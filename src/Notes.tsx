@@ -24,6 +24,7 @@ import {
   type Asset,
   type Note,
   type NoteSummary,
+  type SourceImport,
 } from "./api";
 import { loadDeckChoices, type DeckChoices } from "./deckChoices";
 import { MarkdownView } from "./NoteMarkdown";
@@ -43,7 +44,12 @@ import {
 import { Quiz } from "./Quiz";
 import { SuggestCards } from "./SuggestCards";
 import { SUGGESTION_NOTE_MAX_CHARS } from "./noteParts";
-import { draftFromImport, type SourceNoteDraft } from "./Sources";
+import {
+  draftFromImport,
+  looksScanned,
+  ReadScannedImport,
+  type SourceNoteDraft,
+} from "./Sources";
 import { formatDateTime, Message, useFocusOnMount } from "./ui";
 import { useUnsavedChanges } from "./unsaved";
 import { PictureField, PictureGallery, samePictures, usePictureAdder } from "./pictures";
@@ -57,10 +63,14 @@ type LibraryFocus =
   | { to: "deleted"; noteId: number }
   | { to: "notice" };
 
+/** A file *Import file* just kept as a source. */
+type KeptFile = SourceImport & { status: "imported" };
+
 /** Where in the notes area the user is. */
 type Place =
   | { screen: "library"; focus: LibraryFocus; notice: string | null }
   | { screen: "new"; imported?: SourceNoteDraft }
+  | { screen: "scanned"; kept: KeptFile }
   | { screen: "note"; noteId: number; justCreated: boolean }
   | { screen: "deleted"; noteId: number };
 
@@ -116,6 +126,16 @@ export function NotesArea({
               })
         }
         onSaved={(note) => setPlace({ screen: "note", noteId: note.id, justCreated: true })}
+      />
+    );
+  }
+
+  if (place.screen === "scanned") {
+    return (
+      <ReadScannedImport
+        kept={place.kept}
+        onRead={(imported) => setPlace({ screen: "new", imported })}
+        onCancel={() => setPlace({ screen: "library", focus: { to: "import" }, notice: null })}
       />
     );
   }
@@ -180,7 +200,13 @@ export function NotesArea({
       focus={place.focus}
       notice={place.notice}
       onNew={() => setPlace({ screen: "new" })}
-      onImported={(imported) => setPlace({ screen: "new", imported })}
+      onImported={(kept) =>
+        setPlace(
+          looksScanned(kept)
+            ? { screen: "scanned", kept }
+            : { screen: "new", imported: draftFromImport(kept) }
+        )
+      }
       onOpen={(noteId) => setPlace({ screen: "note", noteId, justCreated: false })}
       onRead={(noteId) => setPlace({ screen: "deleted", noteId })}
       onBack={onBack}
@@ -223,7 +249,7 @@ function NoteLibrary({
   notice: string | null;
   onNew: () => void;
   /** A file was kept as a source and its text read, to become a new note. */
-  onImported: (imported: SourceNoteDraft) => void;
+  onImported: (kept: KeptFile) => void;
   onOpen: (noteId: number) => void;
   /** Opens a deleted note to read it. */
   onRead: (noteId: number) => void;
@@ -323,7 +349,7 @@ function NoteList({
   notice: string | null;
   focus: LibraryFocus;
   onNew: () => void;
-  onImported: (imported: SourceNoteDraft) => void;
+  onImported: (kept: KeptFile) => void;
   onOpen: (noteId: number) => void;
   onRead: (noteId: number) => void;
   onBack: () => void;
@@ -371,7 +397,7 @@ function NoteList({
     try {
       const result = await importSource();
       if (result.status === "imported") {
-        onImported(draftFromImport(result));
+        onImported(result);
         return; // This screen is replaced.
       }
     } catch (err) {
@@ -1647,6 +1673,7 @@ function ImportSummary({ imported, length }: { imported: SourceNoteDraft; length
       ? ""
       : ` (${counted(imported.pages, imported.kind === "powerPoint" ? "slide" : "page")})`;
   const missing = imported.pagesWithoutText;
+  const recognised = imported.recognisedPages;
 
   return (
     <>
@@ -1655,6 +1682,15 @@ function ImportSummary({ imported, length }: { imported: SourceNoteDraft; length
           ? `Synapse kept ${imported.fileName} under Sources and read its text${parts}. Check it and edit it as you like, then save it as a note. The source itself doesn't change.`
           : `This is the text of ${imported.fileName}${parts}, kept under Sources. Check it and edit it as you like, then save it as a note. The source itself doesn't change.`}
       </p>
+      {recognised.length > 0 && (
+        <p className="import-warning">
+          {`${
+            recognised.length > 12
+              ? `${recognised.length} pages were`
+              : `${recognised.length === 1 ? "Page" : "Pages"} ${listed(recognised)} ${recognised.length === 1 ? "was" : "were"}`
+          } scanned, so their text was recognised from the picture. Recognised text can hold mistakes, and the built-in reader doesn't read accents (è comes out as e). Check it against the original before you save.`}
+        </p>
+      )}
       {missing.length > 0 && (
         <p className="import-warning">
           {`${

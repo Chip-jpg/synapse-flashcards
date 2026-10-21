@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   deleteSource,
   getDeletedSources,
+  getPagesToRecognise,
   getSource,
   getSourceNotes,
   getSourcePages,
@@ -17,6 +18,7 @@ import {
   type Source,
   type SourceImport,
   type SourcePage,
+  type SourceRecognition,
 } from "./api";
 import { FormActions, TextField, useFormSave } from "./forms";
 import {
@@ -31,6 +33,16 @@ import {
   TrashIcon,
   UploadIcon,
 } from "./icons";
+import {
+  isRecognised,
+  readable,
+  ReadingProgress,
+  readingSummary,
+  RecognisedLabel,
+  scannedHint,
+  useSourceReading,
+  type Reading,
+} from "./ScannedPages";
 import { KIND_NAMES } from "./SourcePages";
 import { formatDateTime, Message, useFocusOnMount } from "./ui";
 import { useUnsavedChanges } from "./unsaved";
@@ -49,6 +61,8 @@ export type SourceNoteDraft = {
   /** Pages of a PDF or slides of a presentation; null for other documents. */
   pages: number | null;
   pagesWithoutText: number[];
+  /** Pages whose text was recognised from their picture, so may hold mistakes. */
+  recognisedPages: number[];
   justKept: boolean;
 };
 
@@ -62,14 +76,28 @@ export function draftFromImport(kept: SourceImport & { status: "imported" }): So
     body: kept.text.body,
     pages: kept.text.pages,
     pagesWithoutText: kept.text.pagesWithoutText,
+    recognisedPages: [],
     justKept: true,
   };
 }
 
 /**
+ * Whether a file just kept is a PDF with no text at all, as a scan is: its
+ * pages are better read before a note is written from it.
+ */
+export function looksScanned(kept: SourceImport & { status: "imported" }): boolean {
+  return (
+    kept.text.kind === "pdf" &&
+    kept.text.body.trim() === "" &&
+    kept.text.pagesWithoutText.length > 0
+  );
+}
+
+/**
  * A note from a source kept earlier: its pages, in order, as importing it
  * gave them (a PDF's pages and a presentation's slides already say where one
- * ends), under the source's title.
+ * ends), under the source's title. A page without text gives the text
+ * recognised on it, if it was read.
  */
 export function draftFromPages(source: Source, pages: SourcePage[]): SourceNoteDraft {
   const paged = source.kind === "pdf" || source.kind === "powerPoint";
@@ -79,14 +107,15 @@ export function draftFromPages(source: Source, pages: SourcePage[]): SourceNoteD
     kind: source.kind,
     title: source.title,
     body: pages
-      .map((page) => page.text.trim())
+      .map((page) => readable(page).trim())
       .filter((text) => text !== "")
       .join("\n\n"),
     pages: paged ? source.pageCount : null,
     pagesWithoutText:
       source.kind === "pdf"
-        ? pages.filter((page) => page.text.trim() === "").map((page) => page.number)
+        ? pages.filter((page) => readable(page).trim() === "").map((page) => page.number)
         : [],
+    recognisedPages: pages.filter(isRecognised).map((page) => page.number),
     justKept: false,
   };
 }
@@ -175,7 +204,9 @@ export function SourcesArea({
         setPlace({
           screen: "source",
           sourceId: kept.source.id,
-          notice: `Kept ${kept.source.fileName}. Its text is below, page by page, and the original file is kept as it was. Make a note from it to edit the text and study it.`,
+          notice: looksScanned(kept)
+            ? `Kept ${kept.source.fileName}, as it was. None of its pages has text Synapse could read, so it looks like a scan. Choose Read scanned pages to read the text in its pictures, then make a note from it.`
+            : `Kept ${kept.source.fileName}. Its text is below, page by page, and the original file is kept as it was. Make a note from it to edit the text and study it.`,
         })
       }
       onOpen={(sourceId) => setPlace({ screen: "source", sourceId, notice: null })}
@@ -551,17 +582,28 @@ function DeletedSourceItem({
 type SourceState =
   | { status: "loading" }
   | { status: "error"; message: string }
-  | { status: "ready"; source: Source; pages: SourcePage[]; notes: NoteSummary[] };
+  | {
+      status: "ready";
+      source: Source;
+      pages: SourcePage[];
+      notes: NoteSummary[];
+      /** Pages without text not read yet: what *Read scanned pages* reads. */
+      toRead: number[];
+    };
 
-/** Fetches a source, its pages, and the notes written from it; never rejects. */
+/**
+ * Fetches a source, its pages, the notes written from it, and the pages left
+ * to read; never rejects.
+ */
 async function loadSource(sourceId: number): Promise<SourceState> {
   try {
-    const [source, pages, notes] = await Promise.all([
+    const [source, pages, notes, toRead] = await Promise.all([
       getSource(sourceId),
       getSourcePages(sourceId),
       getSourceNotes(sourceId),
+      getPagesToRecognise(sourceId),
     ]);
-    return { status: "ready", source, pages, notes };
+    return { status: "ready", source, pages, notes, toRead };
   } catch (err) {
     return { status: "error", message: toCommandError(err).message };
   }
@@ -594,6 +636,13 @@ function SourceScreen({
   const [attempt, setAttempt] = useState(0);
   const [mode, setMode] = useState<Mode>("view");
   const [notice, setNotice] = useState(initialNotice);
+  const reader = useSourceReading();
+  // Which run is going or last finished: every page left, or one page from
+  // the page viewer. Its progress and summary show where it was started.
+  const [run, setRun] = useState<{ single: number | null; summary: string | null } | null>(null);
+  // Pages a run here skipped (no picture, say): reading them again would
+  // only skip them again, so they aren't offered again on this screen.
+  const [skipped, setSkipped] = useState<number[]>([]);
 
   useEffect(() => {
     let current = true;
@@ -636,6 +685,24 @@ function SourceScreen({
   }
 
   const { source, pages, notes } = state;
+  const toRead = state.toRead.filter((page) => !skipped.includes(page));
+
+  /**
+   * Reads `single`, or every page left, then shows the pages as they are now
+   * and says how it went, where the run was started.
+   */
+  async function read(single: number | null) {
+    setRun({ single, summary: null });
+    const result = await reader.start(sourceId, single === null ? toRead : [single]);
+    if (result === null) return;
+    setSkipped((now) => withSkipped(now, result));
+    const next = await loadSource(sourceId);
+    setState(next);
+    if (next.status === "ready") setRun({ single, summary: readingSummary(result, next.pages) });
+  }
+
+  const reading = reader.reading.status === "reading" ? reader.reading : null;
+  const runHere = (single: boolean) => run !== null && (run.single !== null) === single;
 
   return (
     <section className="deck-detail note-detail source-detail" aria-labelledby="source-heading">
@@ -668,8 +735,38 @@ function SourceScreen({
           />
         )}
 
+        {source.kind === "pdf" && (
+          <ScannedPanel
+            toRead={toRead.length}
+            progress={runHere(false) ? reading : null}
+            summary={runHere(false) ? (run?.summary ?? null) : null}
+            error={
+              runHere(false) && reader.reading.status === "error" ? reader.reading.message : null
+            }
+            busy={reading !== null}
+            onRead={() => read(null)}
+            onStop={reader.stop}
+          />
+        )}
+
         <SourceNotes notes={notes} onOpenNote={onOpenNote} />
-        <PageViewer source={source} pages={pages} />
+        <PageViewer
+          source={source}
+          pages={pages}
+          reading={reading !== null}
+          pageRun={
+            runHere(true) && run?.single != null
+              ? {
+                  page: run.single,
+                  summary: run.summary,
+                  error: reader.reading.status === "error" ? reader.reading.message : null,
+                  progress: reading,
+                }
+              : null
+          }
+          onRead={read}
+          onStop={reader.stop}
+        />
       </article>
     </section>
   );
@@ -972,10 +1069,107 @@ function SourceNotes({
 }
 
 /**
- * A source's pages, one at a time: the text extraction read from each, as it
- * was, with the pages before and after a press away.
+ * Reading a PDF's scanned pages: the offer to read every page left, the
+ * progress of that run, and how it went. Nothing when there's nothing to say.
  */
-function PageViewer({ source, pages }: { source: Source; pages: SourcePage[] }) {
+function ScannedPanel({
+  toRead,
+  progress,
+  summary,
+  error,
+  busy,
+  onRead,
+  onStop,
+}: {
+  /** How many pages are left to read. */
+  toRead: number;
+  progress: (Reading & { status: "reading" }) | null;
+  summary: string | null;
+  error: string | null;
+  /** Whether any run is going, here or on one page. */
+  busy: boolean;
+  onRead: () => void;
+  onStop: () => void;
+}) {
+  if (toRead === 0 && !progress && !summary && !error) return null;
+
+  return (
+    <section className="scanned-pages" aria-labelledby="scanned-pages-heading">
+      <h3 id="scanned-pages-heading" className="section-title">
+        Scanned pages
+      </h3>
+      {progress ? (
+        <ReadingProgress reading={progress} single={null} onStop={onStop} />
+      ) : (
+        <>
+          {summary && <ReadingSummary key={summary} text={summary} />}
+          {error && (
+            <p className="message-error" role="alert">
+              {error}
+            </p>
+          )}
+          {toRead > 0 && (
+            <>
+              <p className="field-hint">{scannedHint(toRead)}</p>
+              <div className="deck-actions">
+                <button
+                  type="button"
+                  className="button"
+                  aria-disabled={busy}
+                  onClick={() => {
+                    if (!busy) onRead();
+                  }}
+                >
+                  {`Read scanned pages (${toRead})`}
+                </button>
+              </div>
+            </>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+/** How a run went, announced and focused once it ends. */
+function ReadingSummary({ text }: { text: string }) {
+  const ref = useFocusOnMount<HTMLParagraphElement>(true);
+  return (
+    <p ref={ref} className="notice" role="status" tabIndex={-1}>
+      {text}
+    </p>
+  );
+}
+
+/** A run reading one page, started from the page viewer. */
+type PageRun = {
+  page: number;
+  summary: string | null;
+  error: string | null;
+  progress: (Reading & { status: "reading" }) | null;
+};
+
+/**
+ * A source's pages, one at a time: the text extraction read from each, as it
+ * was, with the pages before and after a press away. A PDF page without text
+ * shows the text recognised on it, labelled as such, and can be read (again).
+ */
+function PageViewer({
+  source,
+  pages,
+  reading,
+  pageRun,
+  onRead,
+  onStop,
+}: {
+  source: Source;
+  pages: SourcePage[];
+  /** Whether a run is going, so another can't start. */
+  reading: boolean;
+  pageRun: PageRun | null;
+  onRead: (page: number) => void;
+  onStop: () => void;
+}) {
   const [index, setIndex] = useState(0);
   const textRef = useRef<HTMLDivElement>(null);
   const slides = source.kind === "powerPoint";
@@ -990,6 +1184,11 @@ function PageViewer({ source, pages }: { source: Source; pages: SourcePage[] }) 
   }
 
   if (!page) return null;
+
+  const blank = page.text.trim() === "";
+  const recognised = blank ? page.recognised : null;
+  const readable = source.kind === "pdf" && blank;
+  const thisRun = pageRun?.page === page.number ? pageRun : null;
 
   return (
     <section className="source-pages" aria-labelledby="source-page-heading">
@@ -1034,6 +1233,21 @@ function PageViewer({ source, pages }: { source: Source; pages: SourcePage[] }) 
           </div>
         )}
       </div>
+
+      {thisRun?.progress ? (
+        <ReadingProgress reading={thisRun.progress} single={page.number} onStop={onStop} />
+      ) : (
+        <>
+          {thisRun?.summary && <ReadingSummary key={thisRun.summary} text={thisRun.summary} />}
+          {thisRun?.error && (
+            <p className="message-error" role="alert">
+              {thisRun.error}
+            </p>
+          )}
+          {recognised && <RecognisedLabel recognised={recognised} />}
+        </>
+      )}
+
       {/* Focusable so keyboard users can scroll a long page. */}
       <div
         ref={textRef}
@@ -1041,14 +1255,154 @@ function PageViewer({ source, pages }: { source: Source; pages: SourcePage[] }) 
         tabIndex={0}
         aria-labelledby="source-page-heading"
       >
-        {page.text.trim() === "" ? (
+        {!blank ? (
+          <p className="note-body source-page-text">{page.text}</p>
+        ) : recognised && recognised.text.trim() !== "" ? (
+          <p className="note-body source-page-text recognised-text">{recognised.text}</p>
+        ) : recognised ? (
           <p className="empty">
-            {`Synapse found no text on this ${thing.toLowerCase()}. It may be a scanned image; open the original to see it.`}
+            {`Synapse read this page's picture but found no text in it. Open the original to see it.`}
           </p>
         ) : (
-          <p className="note-body source-page-text">{page.text}</p>
+          <p className="empty">
+            {readable
+              ? "Synapse found no text on this page. It may be a scanned image: read it to recognise its text, or open the original to see it."
+              : `Synapse found no text on this ${thing.toLowerCase()}. It may be a scanned image; open the original to see it.`}
+          </p>
         )}
       </div>
+
+      {readable && !thisRun?.progress && (
+        <div className="deck-actions">
+          <button
+            type="button"
+            className="button button-small"
+            aria-disabled={reading}
+            onClick={() => {
+              if (!reading) onRead(page.number);
+            }}
+          >
+            {recognised ? "Read this page again" : "Read this page"}
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** The pages skipped so far, after `result`: those it skipped, less those it read. */
+function withSkipped(skipped: number[], result: SourceRecognition): number[] {
+  const now = new Set(skipped);
+  for (const { page } of result.skipped) now.add(page);
+  for (const page of result.read) now.delete(page);
+  return [...now];
+}
+
+/** Where reading a just-imported scan has got to. */
+type ScanStep =
+  | { step: "offer" }
+  | { step: "after"; summary: string; draft: SourceNoteDraft; toRead: number[] }
+  | { step: "error"; message: string };
+
+/**
+ * After *Import file* kept a PDF with no text at all: rather than open an
+ * empty note, offers to read its scanned pages first. Once they're read the
+ * note form opens with their text (`onRead`). The source is kept already,
+ * whatever the user chooses here.
+ */
+export function ReadScannedImport({
+  kept,
+  onRead,
+  onCancel,
+}: {
+  kept: SourceImport & { status: "imported" };
+  /** Opens the new-note form with `draft`. */
+  onRead: (draft: SourceNoteDraft) => void;
+  onCancel: () => void;
+}) {
+  const reader = useSourceReading();
+  const [scan, setScan] = useState<ScanStep>({ step: "offer" });
+  const introRef = useFocusOnMount<HTMLParagraphElement>(true);
+  const pageCount = kept.text.pagesWithoutText.length;
+  const left = scan.step === "after" ? scan.toRead : kept.text.pagesWithoutText;
+  // As on the source screen: pages skipped once aren't offered again.
+  const skippedRef = useRef<number[]>([]);
+
+  async function read() {
+    const result = await reader.start(kept.source.id, left);
+    if (result === null) return;
+    skippedRef.current = withSkipped(skippedRef.current, result);
+    const next = await loadSource(kept.source.id);
+    if (next.status === "error") {
+      setScan({ step: "error", message: next.message });
+      return;
+    }
+    if (next.status !== "ready") return;
+    const draft = { ...draftFromPages(next.source, next.pages), justKept: true };
+    if (!result.stopped && draft.body.trim() !== "") {
+      onRead(draft);
+      return; // This screen is replaced.
+    }
+    setScan({
+      step: "after",
+      summary: readingSummary(result, next.pages),
+      draft,
+      toRead: next.toRead.filter((page) => !skippedRef.current.includes(page)),
+    });
+  }
+
+  const reading = reader.reading.status === "reading" ? reader.reading : null;
+  const found = scan.step === "after" && scan.draft.body.trim() !== "";
+
+  return (
+    <section className="card" aria-labelledby="read-scan-heading">
+      <h2 id="read-scan-heading" className="form-title">
+        {`New note from ${kept.source.fileName}`}
+      </h2>
+      <p ref={introRef} className="import-warning" tabIndex={-1}>
+        {`Synapse kept ${kept.source.fileName} under Sources, but none of its ${
+          pageCount === 1 ? "page has" : `${pageCount} pages have`
+        } text it could read: it looks like a scan. Synapse can read the text in the pages' pictures first, on this computer, so the note doesn't start empty. Recognised text can hold mistakes, and the built-in reader doesn't read accents (è comes out as e), so check it before you save.`}
+      </p>
+
+      {reading ? (
+        <ReadingProgress reading={reading} single={null} onStop={reader.stop} />
+      ) : (
+        <>
+          {scan.step === "after" && <ReadingSummary key={scan.summary} text={scan.summary} />}
+          {scan.step === "error" && (
+            <p className="message-error" role="alert">
+              {scan.message}
+            </p>
+          )}
+          {reader.reading.status === "error" && (
+            <p className="message-error" role="alert">
+              {reader.reading.message}
+            </p>
+          )}
+          <div className="form-actions">
+            {left.length > 0 && (
+              <button type="button" className="button button-primary" onClick={read}>
+                {scan.step === "after"
+                  ? `Carry on reading (${left.length})`
+                  : `Read scanned pages (${left.length})`}
+              </button>
+            )}
+            <button
+              type="button"
+              className={left.length > 0 ? "button" : "button button-primary"}
+              onClick={() =>
+                onRead(found && scan.step === "after" ? scan.draft : draftFromImport(kept))
+              }
+            >
+              {found ? "Write the note with what was read" : "Write the note myself"}
+            </button>
+            <button type="button" className="button" onClick={onCancel}>
+              Cancel
+            </button>
+          </div>
+        </>
+      )}
     </section>
   );
 }
