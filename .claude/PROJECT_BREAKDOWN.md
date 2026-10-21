@@ -331,7 +331,7 @@ The library is ordered with recently edited notes first. These limits and preser
 
 A deleted note is removed from ordinary navigation and cannot be opened or edited through normal note commands.
 
-The recovery list shows its identifying information and dates. To read its full body again, the user restores it.
+The recovery list shows its identifying information and dates. Since branch `claude/nightly-2026-10-21-deleted-note-preview-tcxs3m` (not yet released), *Read note* opens it read-only (`get_deleted_note`, `notes::deleted_note`: title, body, dates, pictures; refused as stale once restored), formatted as an active note is, with *Restore note* as its only action. Editing, card from note, suggestions and quizzes still need it restored, and Rust still refuses edits to a deleted note. No migration.
 
 Deletion and restoration preserve the note’s content and original edit timestamps.
 

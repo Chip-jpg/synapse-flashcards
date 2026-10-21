@@ -23,7 +23,7 @@ use crate::db::Database;
 use crate::export::{self, ExportError};
 use crate::extract::{self, ExtractError, ExtractedText, FileKind};
 use crate::import::{self, ImportError, ImportState, RestoreError};
-use crate::notes::{self, DeletedNote, InvalidNote, Note, NoteError, NoteSummary};
+use crate::notes::{self, DeletedNote, DeletedNoteText, InvalidNote, Note, NoteError, NoteSummary};
 use crate::occlusion::{self, Mode, OcclusionBox, OcclusionView};
 use crate::optimizer::{self, IntervalChange, Optimized, OptimizerError, Optimizing, Settings};
 use crate::pictures::{CardPictureIds, PictureProblem};
@@ -1107,6 +1107,29 @@ pub async fn get_deleted_notes(
     notes::deleted_notes(&pool).await.map_err(|err| {
         eprintln!("[synapse] loading deleted notes failed: {err}");
         CommandError::failed("Synapse couldn't load your deleted notes.")
+    })
+}
+
+/// One whole deleted note, to read from the library's history. Arguments:
+/// `{ noteId }`. Returns `{ id, title, body, createdAt, updatedAt, deletedAt,
+/// pictures }`; rejects with kind "stale" if the note isn't deleted (it was
+/// restored meanwhile). Writes nothing.
+#[tauri::command]
+pub async fn get_deleted_note(
+    app: AppHandle,
+    database: State<'_, Database>,
+    note_id: i64,
+) -> Result<DeletedNoteText, CommandError> {
+    if note_id < 1 {
+        return Err(CommandError::invalid(NOTE_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    notes::deleted_note(&pool, note_id).await.map_err(|err| {
+        note_error(
+            err,
+            "loading a deleted note",
+            "Synapse couldn't load this deleted note.",
+        )
     })
 }
 

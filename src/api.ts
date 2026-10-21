@@ -263,6 +263,17 @@ export type DeletedNote = {
   deletedAt: string;
 };
 
+/**
+ * Mirrors `DeletedNoteText` in `src-tauri/src/notes.rs`: a deleted note opened
+ * from *Deleted notes* to be read. Nothing can change it until it's restored.
+ */
+export type DeletedNoteText = DeletedNote & {
+  /** Plain text with its line breaks. */
+  body: string;
+  /** The pictures it showed under its text, in order. */
+  pictures: Asset[];
+};
+
 /** Mirrors `Note` in `src-tauri/src/notes.rs`. `body` is plain text with its line breaks. */
 export type Note = {
   id: number;
@@ -901,6 +912,14 @@ export function searchEverything(
 /** Every deleted note, most recently deleted first. Read-only history. */
 export function getDeletedNotes(): Promise<DeletedNote[]> {
   return invoke<DeletedNote[]>("get_deleted_notes");
+}
+
+/**
+ * One whole deleted note, to read. Rejects with kind "invalid" if it doesn't
+ * exist, or kind "stale" if it isn't deleted (it was restored meanwhile).
+ */
+export function getDeletedNote(noteId: number): Promise<DeletedNoteText> {
+  return invoke<DeletedNoteText>("get_deleted_note", { noteId });
 }
 
 /**

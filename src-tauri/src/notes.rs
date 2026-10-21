@@ -8,8 +8,9 @@
 //! folders.
 //!
 //! Deleting a note is a soft delete (migration 0008): the row gets a
-//! `deleted_at` time and the note leaves the library, so it can't be opened,
-//! edited, or used to write a card. Nothing is removed, and unlike a deleted
+//! `deleted_at` time and the note leaves the library, so it can't be edited or
+//! used to write a card; it can only be read, from the library's history
+//! ([`deleted_note`]). Nothing is removed, and unlike a deleted
 //! card or an archived deck a deleted note can be restored, which is why it
 //! must come back exactly as it was:
 //! - Deleting writes only `deleted_at`. The title, body, `created_at`, and
@@ -84,6 +85,27 @@ pub struct DeletedNote {
     pub deleted_at: String,
 }
 
+/// A deleted note opened from the library's history to be read:
+/// `{ id, title, body, createdAt, updatedAt, deletedAt, pictures }`.
+///
+/// Reading only: nothing takes a deleted note's id to change it, so it must be
+/// restored before it can be edited or used to write a card.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletedNoteText {
+    pub id: i64,
+    pub title: String,
+    /// The plain text, with its line breaks.
+    pub body: String,
+    pub created_at: String,
+    /// When its text was last saved, before it was deleted (ISO-8601 UTC).
+    pub updated_at: String,
+    /// When it was deleted (ISO-8601 UTC).
+    pub deleted_at: String,
+    /// The pictures it showed under its text, in order (kept while deleted).
+    pub pictures: Vec<Asset>,
+}
+
 /// What was wrong with a note the user wrote. Nothing was saved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InvalidNote {
@@ -101,9 +123,11 @@ pub enum NoteError {
     Invalid(InvalidNote),
     /// No note has this id.
     NotFound,
-    /// The note was deleted, so it can't be read, edited, or deleted again.
+    /// The note was deleted, so it can't be opened as an active note, edited,
+    /// or deleted again.
     Deleted,
-    /// The note isn't deleted, so there's nothing to restore.
+    /// The note isn't deleted, so there's nothing to restore, and it isn't in
+    /// the history to be read from there.
     NotDeleted,
     /// Anything else (a database failure). Detail is for logs only.
     Internal(DbError),
@@ -278,6 +302,34 @@ async fn load_active_note(conn: &mut SqliteConnection, note_id: i64) -> Result<N
 pub async fn note(pool: &SqlitePool, note_id: i64) -> Result<Note, NoteError> {
     let mut conn = pool.acquire().await?;
     load_active_note(&mut conn, note_id).await
+}
+
+/// One whole deleted note, to read before deciding whether to restore it.
+/// Reads only: an active note is refused (`NotDeleted`), since it belongs in
+/// the library and the screen asking is out of date.
+pub async fn deleted_note(pool: &SqlitePool, note_id: i64) -> Result<DeletedNoteText, NoteError> {
+    let mut conn = pool.acquire().await?;
+    let row = sqlx::query_as::<_, NoteRow>(
+        "SELECT id, title, body, created_at, updated_at, deleted_at FROM notes WHERE id = ?1",
+    )
+    .bind(note_id)
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(NoteError::NotFound)?;
+    let Some(deleted_at) = row.deleted_at else {
+        return Err(NoteError::NotDeleted);
+    };
+    Ok(DeletedNoteText {
+        pictures: pictures::note_pictures(&mut conn, note_id)
+            .await
+            .map_err(NoteError::Internal)?,
+        id: row.id,
+        title: row.title,
+        body: row.body,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        deleted_at,
+    })
 }
 
 /// Saves a new note, with no pictures, and returns it.
@@ -1290,6 +1342,74 @@ mod tests {
                 ));
             }
             assert_eq!(all_notes(&pool).await, before);
+        });
+    }
+
+    #[test]
+    fn a_deleted_note_can_be_read_but_still_not_changed() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let note = create_note(&pool, "Lecture", "# Cells\n\n  Genes *and* DNA", at(NOW))
+                .await
+                .unwrap();
+            update_note(&pool, note.id, "Lecture", "# Cells\n\n  Genes", at(LATER))
+                .await
+                .unwrap();
+            let active = create_note(&pool, "Active", "here", at(NOW)).await.unwrap();
+
+            // An active note isn't in the history, and a missing one isn't anywhere.
+            assert!(matches!(
+                failure(deleted_note(&pool, note.id).await),
+                NoteError::NotDeleted
+            ));
+            for missing in [active.id + 1, 0, -1] {
+                assert!(matches!(
+                    failure(deleted_note(&pool, missing).await),
+                    NoteError::NotFound
+                ));
+            }
+
+            delete_note(&pool, note.id, at(DELETED)).await.unwrap();
+            let before = all_notes(&pool).await;
+
+            // The whole text, as last saved, with both times and the deletion.
+            assert_eq!(
+                deleted_note(&pool, note.id).await.unwrap(),
+                DeletedNoteText {
+                    id: note.id,
+                    title: "Lecture".into(),
+                    body: "# Cells\n\n  Genes".into(),
+                    created_at: to_db_time(at(NOW)),
+                    updated_at: to_db_time(at(LATER)),
+                    deleted_at: to_db_time(at(DELETED)),
+                    pictures: Vec::new(),
+                }
+            );
+            // Reading wrote nothing, and the note is still out of the library.
+            assert_eq!(all_notes(&pool).await, before);
+            assert_eq!(library(&pool).await, vec!["Active".to_string()]);
+
+            // Everything that changes a note, or reads it as active, still refuses.
+            assert!(matches!(
+                failure(super::note(&pool, note.id).await),
+                NoteError::Deleted
+            ));
+            assert!(matches!(
+                failure(update_note(&pool, note.id, "New", "text", at(LATER)).await),
+                NoteError::Deleted
+            ));
+            assert!(matches!(
+                failure(delete_note(&pool, note.id, at(LATER)).await),
+                NoteError::Deleted
+            ));
+            assert_eq!(all_notes(&pool).await, before);
+
+            // Once restored, it's an active note again and leaves the history.
+            restore_note(&pool, note.id).await.unwrap();
+            assert!(matches!(
+                failure(deleted_note(&pool, note.id).await),
+                NoteError::NotDeleted
+            ));
         });
     }
 

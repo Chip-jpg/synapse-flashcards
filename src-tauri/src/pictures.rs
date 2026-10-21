@@ -504,6 +504,11 @@ mod tests {
                 assert!(err.to_string().contains("note"), "{sql}: {err}");
             }
             assert_eq!(note_rows(&pool).await, before);
+            // It can still be read from the history, pictures included.
+            assert_eq!(
+                notes::deleted_note(&pool, note.id).await.unwrap().pictures,
+                vec![added[0].clone()]
+            );
 
             notes::restore_note(&pool, note.id).await.unwrap();
             assert_eq!(
