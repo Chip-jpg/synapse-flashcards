@@ -7,7 +7,7 @@ Those are two different levels of maturity, and keeping them separate is essenti
 - The current application is real, released, and usable without AI.
 - The broader study-companion vision is the roadmap, not a list of features already implemented.
 
-As of this update, the latest published release is v0.8.1, released from `main` by the Release workflow on October 21, 2026 (the `v0.8.1` tag names the commit): restoring selected deleted cards and reading a deleted note (sections 4.2 and 4.3). v0.8.0 (October 20, 2026) was the first major feature, "Sources and pictures" (sections 4.13–4.16): kept originals, pictures, image occlusion, and backup format 2. Since v0.5.0 (October 18, 2026), the 2026-10-19 and 2026-10-20 rounds shipped v0.5.1, v0.6.0, v0.7.0, v0.7.1, v0.7.2, v0.7.3 and v0.8.0, and the 2026-10-21 round v0.8.1 (section 13); their features are described in sections 4 and 5, some still marked with the branch they were written on. v0.5.0 added importing files as notes (section 4.7). v0.4.0 added the first AI feature: cards suggested from a note by a model in Ollama on the user's computer (section 4.6). v0.3.2 added unsaved-changes protection and the first frontend test suite (sections 4.5 and 12). The rest of this breakdown was first written against v0.3.1 and has been updated wherever those changes reach.
+As of this update, the latest published release is v0.9.0, released from `main` by the Release workflow on October 21, 2026 (the `v0.9.0` tag names the commit): the second major feature, "Text recognition" (sections 4.17–4.20): a built-in OCR engine, scanned PDF pages, text from pictures, and reading with a local vision model in Ollama (migration 0019). v0.8.1 (October 21, 2026) added restoring selected deleted cards and reading a deleted note (sections 4.2 and 4.3). v0.8.0 (October 20, 2026) was the first major feature, "Sources and pictures" (sections 4.13–4.16): kept originals, pictures, image occlusion, and backup format 2. Since v0.5.0 (October 18, 2026), the 2026-10-19 and 2026-10-20 rounds shipped v0.5.1, v0.6.0, v0.7.0, v0.7.1, v0.7.2, v0.7.3 and v0.8.0, and 2026-10-21 v0.8.1 and v0.9.0 (section 13); their features are described in sections 4 and 5, some still marked with the branch they were written on. v0.5.0 added importing files as notes (section 4.7). v0.4.0 added the first AI feature: cards suggested from a note by a model in Ollama on the user's computer (section 4.6). v0.3.2 added unsaved-changes protection and the first frontend test suite (sections 4.5 and 12). The rest of this breakdown was first written against v0.3.1 and has been updated wherever those changes reach.
 
 This breakdown combines that current repository documentation, your implementation reports, and the original product/specification documents. The older specification is useful for architecture and intent, but parts of its feature-status descriptions are outdated—for example, it predates the restore/unarchive work.
 
@@ -88,14 +88,14 @@ ______________________________________________________________________
 | Repository | `Chip-jpg/synapse-flashcards` |
 | Visibility | Public, by your deliberate choice |
 | Development environments | Your local Windows setup, and Claude Code cloud sessions (Linux) |
-| Latest published release | v0.8.1 (October 21, 2026) |
-| Release commit | The commit the `v0.8.1` tag points at, on `main` |
-| Windows installer | `Synapse_0.8.1_x64-setup.exe` |
-| Windows MSI | `Synapse_0.8.1_x64_en-US.msi` |
+| Latest published release | v0.9.0 (October 21, 2026) |
+| Release commit | The commit the `v0.9.0` tag points at, on `main` |
+| Windows installer | `Synapse_0.9.0_x64-setup.exe` |
+| Windows MSI | `Synapse_0.9.0_x64_en-US.msi` |
 | Installer signing | Release notes say the installers are unsigned |
 | How releases are built | The manual **Release** GitHub Actions workflow on `windows-latest` (since v0.3.2; section 13) |
-| Database migrations documented in current README | `0001`–`0018` |
-| Frontend tests | Vitest + Testing Library: 271 tests at v0.8.1 (`npm test`; section 12.4) |
+| Database migrations documented in current README | `0001`–`0019` |
+| Frontend tests | Vitest + Testing Library: 310 tests at v0.9.0 (`npm test`; section 12.4) |
 | AI generation | Cards suggested from a note by a local model in Ollama, since v0.4.0 (section 4.6) |
 | File import | PDF, TXT, MD, DOCX, PPTX as notes, since v0.5.0 (section 4.7); originals kept as sources since v0.8.0 (sections 4.13, 4.16) |
 
@@ -604,6 +604,50 @@ Released in v0.8.0 (written on branch `claude/sources-screen-9yz936`): phase 2 o
 - **Originals.** `open_source_original` copies the kept file to `<temp>/synapse-originals/<hash prefix>/<name>` and opens it with the opener plugin; `save_source_copy` writes a copy where the user chooses. Both check the file's hash first (`sources::original`); the kept file is never handed out.
 - **Not checked** in the real window, on Windows, or *Open original* on a real desktop.
 
+## 4.17 Text recognition (foundation)
+
+Released in v0.9.0 (written on branch `claude/project-thread-50ujao`): the shared foundation of the "Text recognition" major feature. Sections 4.18–4.20 are the screens built on it; the contract for the pieces built on it is `/mnt/project-files/planning/text-recognition-contract.md` (project files).
+
+- **Engine** (`ocr.rs`). [ocrs](https://github.com/robertknight/ocrs) 0.13, pure Rust on `rten`; its two models (`src-tauri/models/`, CC BY-SA 4.0, unchanged, hashes checked by a test) are compiled in with `include_bytes!`, so no DLL, resource or download. About half a second for a page on a laptop-class CPU. Reads the Latin alphabet without accents ("è" → "e", some → "?") and handwriting poorly: Samu chose (2026-10-21) the built-in engine plus an optional local vision model in Ollama for accents and handwriting.
+- **Scanned PDF pages.** The largest image a page draws (through forms too), decoded in Rust: DCT (JPEG), raw/Flate/LZW 8-bit grey, RGB, CMYK (ICCBased by its N), 1-bit and image masks, CCITT G4 and G3 1-D (`fax` crate); `/Rotate` applied. JPX and JBIG2 are `unreadablePicture`. No page rendering: vector text on a page is extraction's job.
+- **Helper process.** Synapse started with `--recognise-text` (`main.rs`): a JSON job line then the bytes on stdin, one JSON line per page on stdout. A crash, or 90 s on one page (`PAGE_TIMEOUT`), is a failed recognition; stopping kills the child. Pictures over 80 MP are refused before decoding; longer sides over 4,000 px are scaled down.
+- **Schema (migration 0019).** `recognitions (asset_id, page, engine 'ocrs'|'ollama', model, text ≤100,000, lines JSON, width, height, created_at)`. Page 0 for a picture, 1+ for a PDF (trigger); never updated or deleted; the newest row per (asset, page) is in use. By file, not by note/card/source, so equal files are read once. Backups carry it unchanged (format 2 still); an older Synapse refuses a schema-19 backup as newer.
+- **Sources.** `source_pages` stays as extraction read it; `SourcePage.recognised` offers the page's recognised text beside it, and `readable()` (extracted text, or recognised where blank) is what `locate_quotes`/`quoted_page` search. `import_source` now keeps a PDF with no text at all (body empty, every page in `pagesWithoutText`); `import_file` still refuses it.
+- **Commands.** `recognise_picture` (cached: a picture read by today's models isn't read again), `get_picture_recognition`, `get_pages_to_recognise`, `recognise_source_pages` (pages or all unread blank pages; a `Channel` of `{page, done, total, problem}`; each page saved as read; stop keeps them), `stop_recognition` (`Recognising` state, one at a time).
+- **Text.** Lines in reading order; a blank line where a gap is over 1.6× the usual one; lines in a paragraph joined as an imported PDF's are (`extract::unwrap_lines`).
+- **Not done here:** searching recognised text, OCR of text drawn as vector shapes, languages beyond unaccented Latin. Not checked on Windows.
+
+## 4.18 Scanned pages on the Sources screen
+
+Released in v0.9.0 (written on branch `claude/project-thread-sh8b9z`), on top of 4.17: the first screen that uses text recognition. Frontend only (`ScannedPages.tsx`, `Sources.tsx`, `Notes.tsx`); no command, no migration.
+
+- **Read scanned pages (N).** A PDF source with pages `get_pages_to_recognise` lists offers to read them all, with "Reading page 3 of 12…", a bar and *Stop* (`stop_recognition`); leaving the screen stops it too. Then a summary: pages read, pages where nothing was found, and pages skipped with a plain reason per `PageProblem`. Skipped pages aren't offered again on that screen; a page that draws no picture is kept by Rust as an empty reading, so it isn't offered on later visits either, while a picture Synapse couldn't decode is.
+- **The page viewer.** A page with no text of its own shows its recognised text, set apart, under "Recognised text, check for mistakes", saying which engine read it and when (and, for the built-in one, that it doesn't read accents). *Read this page* / *Read this page again* reads one page (`pages: [n]`). The page dialog of a quote's link carries the same label.
+- **Notes.** `draftFromPages` uses `readable` text, `pagesWithoutText` counts only pages still without text, and the new-note form says which pages were recognised.
+- **Importing a scan.** When *Import file* keeps a PDF with no text at all, a step before the note form offers *Read scanned pages*, *Write the note myself* or *Cancel*; after reading, the form opens with the text. A scan whose file was read before (readings belong to the file) goes straight to the form. *Add source* opens the source with a notice pointing at *Read scanned pages*.
+
+## 4.19 Text from pictures, and boxes for image occlusion
+
+Released in v0.9.0 (written on branch `claude/project-thread-abrm8t`), on top of 4.17. Frontend only: no command, no migration.
+
+- **Text in picture** (`src/pictureText.tsx`: `usePictureReading`, `PictureTextPanel`). On each picture in the note view's gallery and in the note and card forms' picture fields (`PictureGallery readText`, `PictureField addText`). The panel says "Recognised text: check it for mistakes" and which engine read it; *Copy* everywhere, *Add to note* / *Add to front* / *Add to back* in forms (appended after a blank line, counted as an unsaved edit). "No text found." for an empty reading. *Stop*, and leaving the screen stops it, but only if no newer reading has started (`newestRun`), since starting one stops the last.
+- **Note from a photo** (Notes library). `choosePicture`, then `recognisePicture`; the new-note form opens with the text as the body, the picture attached and a notice to check it (`PhotoDraft`, `PhotoSummary`); no title is guessed. A photo with no text, or a reading stopped or refused, still opens the form with the picture.
+- **Find labels** (`Occlusion.tsx`, `labelBoxes`). One box per recognised line, or per word; a line is split where a gap between words is wider than the line is tall (`labelRuns`), since the engine reads two labels side by side on a diagram as one line; padded by a fifth of the text's height (scaled by the picture's aspect ratio sideways), clamped to the picture, rounded to 4 decimals, labelled with the text cut to 200 characters, each a new card number. Text whose centre is already under a box with the same label is skipped. At most 200 boxes; the rest are counted in the message.
+- **Checked** in the real app on Linux (Xvfb, scratch database): a typed-text photo read word for word; a diagram's four labels found (after the line split), plus one stray "S" read from a drawn circle, removed by hand; the boxes saved as four cards.
+- **Not done:** no text in review pictures or in a deleted note's pictures; *Note from a photo* doesn't take a pasted picture.
+
+## 4.20 Reading text with a local vision model
+
+Released in v0.9.0 (written on branch `claude/project-thread-y4d3wh`), on top of 4.17–4.19: the second engine Samu chose, for accents and handwriting. No migration (readings are `recognitions` rows with `engine = 'ollama'` and the model's name).
+
+- **Models** (`vision.rs`, through `suggest.rs`'s `Ollama`: 127.0.0.1 only, no proxies or redirects). `get_vision_models` lists local models whose capabilities include `vision` (asking `/api/show` when the listing doesn't say); the chosen one is checked again before a picture is sent.
+- **The picture.** The helper prepares it: a new `Job` returns a kept picture, or the picture a PDF page draws, as a PNG at most `ocr::MODEL_MAX_SIDE` (1,600 px) long, so PDF parsing stays out of the app. Sent through `/api/chat` with `images`, temperature 0, asking for a verbatim transcription; 10 minutes a page at most (`READ_TIMEOUT`).
+- **Checking the answer** (`transcription`). Wrapping ("Here is the text:", code fences) is removed; an empty answer or one over 100,000 characters is refused; the model's "[no text]" is an empty reading. `agreement` gives the share of the built-in reading's words the model's text has (case and accents ignored; words it read with a "?" skipped) as a hint; the text is kept anyway.
+- **Commands.** `get_vision_models`, `recognise_picture_with_model`, `get_pages_to_recognise_with_model`, `recognise_source_pages_with_model`; same `Recognising` state, so `stop_recognition` stops either engine. A page with no picture is stored as the same empty built-in reading as in 4.17.
+- **Foundation change.** `recognise_picture`'s cache returns the built-in engine's own newest reading (`latest_by_builtin`), not the newest row, so *Find labels* keeps its boxes after a model has read the picture.
+- **Frontend** (`ReadWith.tsx`). *Read with*: *Built in* or a vision model, remembered in web storage (`synapse.readWith`). Wired into *Read scanned pages*, *Read this page*, reading a scanned PDF on import, *Text in picture* (with *Read again* and the agreement shown) and *Note from a photo*. *Find labels* always uses the built-in engine (only it gives positions).
+- **Checked** with Ollama 0.40.6 on CPU and qwen2.5vl:3b, in the real app on Linux with a scratch database: an Italian scanned page read with every accent right (about 4 minutes a page on CPU; 8 s warm in a direct call); a photo read again agreed 96% with the built-in reading. Not checked on Windows.
+
 ______________________________________________________________________
 
 ## 5. FSRS and personalization
@@ -817,8 +861,11 @@ Current README identifies these main files:
 | `markdown.ts`, `NoteMarkdown.tsx` | Reading a note's Markdown and showing it formatted, never as HTML (section 4.12) |
 | `SuggestCards.tsx` | Suggesting cards from a note and checking them before saving |
 | `Quiz.tsx` | A multiple-choice quiz on a note, and adding missed questions as cards |
-| `Occlusion.tsx` | Picture cards (image occlusion): the form to draw boxes, and the picture shown in review |
+| `Occlusion.tsx` | Picture cards (image occlusion): the form to draw boxes (and *Find labels*), and the picture shown in review |
+| `pictureText.tsx` | Reading the text in a kept picture, and the panel that shows it as recognised text |
 | `deckChoices.ts` | The decks a card can be added to, for both card-from-note screens |
+| `ScannedPages.tsx` | Reading a PDF source's scanned pages: progress and Stop, the summary, and the label on recognised text |
+| `ReadWith.tsx` | Choosing the reader (built in or a local vision model in Ollama), remembered per computer, and the agreement hint |
 | `Search.tsx` | Search: every card and note at once, with snippets and filters |
 | `Statistics.tsx` | Statistics: reviews per day, true retention, cards by state, due forecast (plain SVG charts) |
 | `ArchivedDecks.tsx` | Archived-deck recovery |
@@ -861,6 +908,9 @@ For example, hiding a Restore button is useful UX, but the Rust command must sti
 | `anki.rs` | Reading an Anki package's collection read-only and adding its front/back, cloze and image occlusion notes (with pictures) as new decks |
 | `assets.rs` | Files kept by hash in `assets/` beside the database, and the `synapse:` scheme that shows them |
 | `sources.rs` | Imported documents kept as sources, with each page's text, and the note saved from each |
+| `ocr.rs` | The built-in text recognition engine, the scanned picture on a PDF page, and the `--recognise-text` helper process |
+| `recognition.rs` | What was read from each kept picture or PDF page, and reading them through the helper (stoppable) |
+| `vision.rs` | Reading a picture or a source's pages with a local vision model in Ollama, and checking its answer |
 | `export.rs` | Backup creation (format 2: the database and every kept file) |
 | `import.rs` | Backup checking and replacement, kept files included |
 
@@ -1012,6 +1062,7 @@ The project history gives this high-level progression:
 | `0016` | Kept files (`assets`), sources with their pages, and the note saved from each (branch `claude/sources-foundation-yugkjq`; section 4.13) |
 | `0017` | Pictures in notes and on card sides (`note_pictures`, `card_pictures`; branch `claude/sources-pictures-04zgws`; section 4.14) |
 | `0018` | Image occlusion: `occlusions`, and `occlusion_id`/`occlusion_number` on `flashcards` (branch `claude/sources-image-occlusion-8pmk5r`; section 4.15) |
+| `0019` | Text recognition: `recognitions`, what was read from each kept picture or PDF page (branch `claude/project-thread-50ujao`; section 4.17) |
 
 The first seven are described in the original specification. The final three are established by your later feature reports and repository history.
 
@@ -1157,8 +1208,7 @@ The current README is explicit about these gaps.
 
 - Keeping originals of anything but imported documents (v0.8.0 keeps imported documents as sources, section 4.16, and pictures in notes and on cards, section 4.14).
 - Pictures in CSV, pictures from Anki notes other than image occlusion, and dropping files into the window.
-- OCR.
-- Handwritten-note recognition.
+- OCR beyond v0.9.0's (section 4.17): no searching recognised text, no text drawn as vector shapes, no accents in the built-in engine (a local vision model reads them, section 4.20).
 - Audio transcription.
 - YouTube transcript import.
 - Web clipping.
@@ -1338,6 +1388,7 @@ ______________________________________________________________________
 | v0.7.3 | Speed on long review histories: `review_logs` indexes (0015), next card without sorting the deck, lighter deck checks and Settings count |
 | v0.8.0 | Sources and pictures: kept files and sources (0016), backup format 2, the Sources screen with page links, pictures in notes and on cards (0017), image occlusion cards and Anki image occlusion import (0018) |
 | v0.8.1 | Restore selected deleted cards, and read a deleted note without restoring it |
+| v0.9.0 | Text recognition: built-in OCR engine and `recognitions` (0019), scanned PDF pages on the Sources screen and on import, text from pictures and *Note from a photo*, *Find labels* for picture cards, reading with a local vision model in Ollama |
 
 Not every feature was committed at the same time as its release bump. Session progress and keyboard ratings were committed September 22 and packaged later.
 
@@ -1759,7 +1810,7 @@ ______________________________________________________________________
 | Visual fidelity | Must still be judged against your reference in the real app |
 | Frontend regression testing | Started in v0.3.2: 59 interaction tests; no visual or real-window tests |
 | Unsaved work protection | Implemented in v0.3.2 (a prompt, not autosave) |
-| Material ingestion | Text-only file import (PDF, TXT, MD, DOCX, PPTX) since v0.5.0 |
+| Material ingestion | File import (PDF, TXT, MD, DOCX, PPTX) since v0.5.0; scanned pages and pictures read by OCR since v0.9.0 |
 | AI study assistance | Local card suggestions from notes since v0.4.0, kept to the note by verified quotes |
 | Public distribution | Windows releases built and published by the Release workflow |
 | Signing and wider platform validation | Not established |

@@ -8,9 +8,9 @@ import { CREATED, deferred, fakeBackend, refuse, source, type Handler } from "./
 const LATER = "2026-10-02T09:00:00Z";
 
 const PAGES: SourcePage[] = [
-  { number: 1, text: "Mitosis is cell division." },
-  { number: 2, text: "" },
-  { number: 3, text: "Metaphase: chromosomes line up." },
+  { number: 1, text: "Mitosis is cell division.", recognised: null },
+  { number: 2, text: "", recognised: null },
+  { number: 3, text: "Metaphase: chromosomes line up.", recognised: null },
 ];
 
 function sidebar() {
@@ -153,8 +153,8 @@ describe("the Sources screen", () => {
     const { user, argsOf } = openApp({
       get_source: () => slides,
       get_source_pages: () => [
-        { number: 1, text: "Slide 1\nCells" },
-        { number: 2, text: "Slide 2\nDivision" },
+        { number: 1, text: "Slide 1\nCells", recognised: null },
+        { number: 2, text: "Slide 2\nDivision", recognised: null },
       ],
     });
     await openLecture(user);

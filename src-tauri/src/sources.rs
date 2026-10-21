@@ -21,6 +21,7 @@ use crate::authoring::required_text;
 use crate::db::{to_db_time, DbError};
 use crate::extract::{Document, FileKind};
 use crate::notes::{self, Note, NoteError, NoteSummary, NOTE_TITLE_MAX_CHARS};
+use crate::recognition::{self, Engine};
 use crate::search::Piece;
 use crate::suggest;
 
@@ -45,13 +46,38 @@ pub struct Source {
     pub deleted_at: Option<String>,
 }
 
-/// The text of one page (or slide) of a source: `{ number, text }`, numbered
-/// from 1. A page without text has empty text.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, sqlx::FromRow)]
+/// The text of one page (or slide) of a source: `{ number, text, recognised }`,
+/// numbered from 1. `text` is what extraction read, empty for a page without
+/// text (a scan). `recognised` is the text recognition read from the page's
+/// picture (`recognition.rs`), or null when the page hasn't been read.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourcePage {
     pub number: u32,
     pub text: String,
+    pub recognised: Option<RecognisedText>,
+}
+
+/// Text recognised on a page: `{ text, engine, model, createdAt }`. It may
+/// hold mistakes, and is shown as recognised wherever it appears.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecognisedText {
+    pub text: String,
+    pub engine: Engine,
+    pub model: String,
+    pub created_at: String,
+}
+
+impl SourcePage {
+    /// The page's text for finding quotes and making notes: what extraction
+    /// read, or, where that is blank, what recognition read.
+    pub fn readable(&self) -> &str {
+        match &self.recognised {
+            Some(recognised) if self.text.trim().is_empty() => &recognised.text,
+            _ => &self.text,
+        }
+    }
 }
 
 /// What was wrong with a title the user typed. Nothing was saved.
@@ -278,17 +304,35 @@ pub async fn source(pool: &SqlitePool, id: i64) -> Result<Source, SourceError> {
     Ok(source)
 }
 
-/// Every page of an active source, in order.
+/// Every page of an active source, in order, with the text recognised on
+/// each page that has been read.
 pub async fn source_pages(pool: &SqlitePool, id: i64) -> Result<Vec<SourcePage>, SourceError> {
-    source(pool, id).await?;
-    Ok(
-        sqlx::query_as(
-            "SELECT number, text FROM source_pages WHERE source_id = ?1 ORDER BY number",
-        )
-        .bind(id)
-        .fetch_all(pool)
-        .await?,
+    let found = source(pool, id).await?;
+    let mut conn = pool.acquire().await?;
+    let mut recognised = recognition::latest_pages(&mut conn, found.asset.id)
+        .await
+        .map_err(SourceError::Internal)?;
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT number, text FROM source_pages WHERE source_id = ?1 ORDER BY number",
     )
+    .bind(id)
+    .fetch_all(&mut *conn)
+    .await?;
+    rows.into_iter()
+        .map(|(number, text)| {
+            let number = u32::try_from(number).map_err(|err| SourceError::Internal(err.into()))?;
+            Ok(SourcePage {
+                number,
+                text,
+                recognised: recognised.remove(&number).map(|found| RecognisedText {
+                    text: found.text,
+                    engine: found.engine,
+                    model: found.model,
+                    created_at: found.created_at,
+                }),
+            })
+        })
+        .collect()
 }
 
 /// Renames an active source. The kept file and its pages don't change.
@@ -556,7 +600,8 @@ fn source_words(pages: &[SourcePage]) -> (Vec<PageWord>, Vec<String>) {
     let mut words = Vec::new();
     for page in pages {
         let mut start = None;
-        for (at, c) in page.text.char_indices().chain([(page.text.len(), ' ')]) {
+        let text = page.readable();
+        for (at, c) in text.char_indices().chain([(text.len(), ' ')]) {
             match (c.is_alphanumeric(), start) {
                 (true, None) => start = Some(at),
                 (false, Some(from)) => {
@@ -565,7 +610,7 @@ fn source_words(pages: &[SourcePage]) -> (Vec<PageWord>, Vec<String>) {
                         start: from,
                         end: at,
                     });
-                    words.push(page.text[from..at].to_lowercase());
+                    words.push(text[from..at].to_lowercase());
                     start = None;
                 }
                 _ => {}
@@ -669,24 +714,25 @@ pub async fn quoted_page(
             marks.push((first.start, last.end));
         }
     }
+    let text = page.readable();
     let mut pieces = Vec::new();
     let mut at = 0;
     for (start, end) in marks {
         if start > at {
             pieces.push(Piece {
-                text: page.text[at..start].to_string(),
+                text: text[at..start].to_string(),
                 hit: false,
             });
         }
         pieces.push(Piece {
-            text: page.text[start..end].to_string(),
+            text: text[start..end].to_string(),
             hit: true,
         });
         at = end;
     }
-    if at < page.text.len() || pieces.is_empty() {
+    if at < text.len() || pieces.is_empty() {
         pieces.push(Piece {
-            text: page.text[at..].to_string(),
+            text: text[at..].to_string(),
             hit: false,
         });
     }
@@ -780,15 +826,18 @@ mod tests {
                 vec![
                     SourcePage {
                         number: 1,
-                        text: "Cells are the unit of life. one".into()
+                        text: "Cells are the unit of life. one".into(),
+                        recognised: None
                     },
                     SourcePage {
                         number: 2,
-                        text: String::new()
+                        text: String::new(),
+                        recognised: None
                     },
                     SourcePage {
                         number: 3,
-                        text: "Mitochondria make ATP.".into()
+                        text: "Mitochondria make ATP.".into(),
+                        recognised: None
                     },
                 ]
             );

@@ -1,6 +1,18 @@
 import { useRef, useState, type ClipboardEvent } from "react";
-import { choosePicture, keptFileUrl, storePicture, toCommandError, type Asset } from "./api";
+import {
+  choosePicture,
+  keptFileUrl,
+  storePicture,
+  toCommandError,
+  type Asset,
+} from "./api";
 import { PictureIcon, TrashIcon } from "./icons";
+import {
+  PictureTextPanel,
+  readingAssetId,
+  TextInPictureButton,
+  usePictureReading,
+} from "./pictureText";
 
 /**
  * Pictures in notes and on cards: showing a kept picture, a list of them, and
@@ -42,7 +54,10 @@ export function KeptPicture({
 
 /** Whether two lists hold the same pictures in the same order. */
 export function samePictures(a: Asset[], b: Asset[]): boolean {
-  return a.length === b.length && a.every((picture, index) => picture.id === b[index].id);
+  return (
+    a.length === b.length &&
+    a.every((picture, index) => picture.id === b[index].id)
+  );
 }
 
 /** "Picture 2 of 3" (or "Picture" alone), naming what it belongs to. */
@@ -59,6 +74,7 @@ export function PictureGallery({
   label,
   listLabel,
   compact = false,
+  readText = false,
 }: {
   pictures: Asset[] | undefined;
   /** What each picture is called to a screen reader: "Picture on the front". */
@@ -67,19 +83,42 @@ export function PictureGallery({
   listLabel: string;
   /** Small thumbnails, for a list of cards. */
   compact?: boolean;
+  /** Offers *Text in picture* under each picture. */
+  readText?: boolean;
 }) {
+  const reading = usePictureReading();
   if (!pictures || pictures.length === 0) return null;
+  const name = (index: number) => pictureName(label, index, pictures.length);
+  const readIndex = pictures.findIndex(
+    (picture) => picture.id === readingAssetId(reading.state),
+  );
   return (
-    <ul
-      className={compact ? "picture-gallery picture-gallery-compact" : "picture-gallery"}
-      aria-label={listLabel}
-    >
-      {pictures.map((picture, index) => (
-        <li key={picture.id}>
-          <KeptPicture asset={picture} alt={pictureName(label, index, pictures.length)} />
-        </li>
-      ))}
-    </ul>
+    <>
+      <ul
+        className={
+          compact
+            ? "picture-gallery picture-gallery-compact"
+            : "picture-gallery"
+        }
+        aria-label={listLabel}
+      >
+        {pictures.map((picture, index) => (
+          <li key={picture.id}>
+            <KeptPicture asset={picture} alt={name(index)} />
+            {readText && (
+              <TextInPictureButton
+                picture={picture}
+                name={name(index)}
+                reading={reading}
+              />
+            )}
+          </li>
+        ))}
+      </ul>
+      {readText && readIndex >= 0 && (
+        <PictureTextPanel reading={reading} name={name(readIndex)} />
+      )}
+    </>
   );
 }
 
@@ -136,13 +175,14 @@ export function usePictureAdder({
     const fresh = added.filter(
       (asset, index) =>
         !current.some((picture) => picture.id === asset.id) &&
-        added.findIndex((other) => other.id === asset.id) === index
+        added.findIndex((other) => other.id === asset.id) === index,
     );
     const room = max - current.length;
     if (fresh.length > room) {
       setError(`At most ${max} pictures fit here.`);
     }
-    if (fresh.length > 0 && room > 0) onChange([...current, ...fresh.slice(0, room)]);
+    if (fresh.length > 0 && room > 0)
+      onChange([...current, ...fresh.slice(0, room)]);
   }
 
   async function run(work: () => Promise<Asset[]>) {
@@ -173,7 +213,8 @@ export function usePictureAdder({
   function addFiles(files: File[]) {
     void run(async () => {
       const added: Asset[] = [];
-      for (const file of files) added.push(await storePicture(await bytesOf(file)));
+      for (const file of files)
+        added.push(await storePicture(await bytesOf(file)));
       return added;
     });
   }
@@ -205,6 +246,7 @@ export function PictureField({
   adder,
   error,
   disabled = false,
+  addText,
 }: {
   id: string;
   label: string;
@@ -215,11 +257,23 @@ export function PictureField({
   /** A save refused because of the pictures. */
   error?: string;
   disabled?: boolean;
+  /**
+   * Puts text read from a picture into the form, e.g. `{ label: "Add to
+   * note", done: "Added to the note.", onAdd }`. Each picture then offers
+   * *Text in picture*.
+   */
+  addText?: { label: string; done: string; onAdd: (text: string) => void };
 }) {
+  const reading = usePictureReading();
+  const readIndex = pictures.findIndex(
+    (picture) => picture.id === readingAssetId(reading.state),
+  );
   const hintId = hint === undefined ? undefined : `${id}-hint`;
   const errorId = `${id}-error`;
   const shownError = error ?? adder.error ?? undefined;
-  const described = [shownError ? errorId : undefined, hintId].filter(Boolean).join(" ");
+  const described = [shownError ? errorId : undefined, hintId]
+    .filter(Boolean)
+    .join(" ");
 
   function move(index: number) {
     const next = [...pictures];
@@ -255,8 +309,20 @@ export function PictureField({
             const name = pictureName("Picture", index, pictures.length);
             return (
               <li key={picture.id} className="picture-choice">
-                <KeptPicture asset={picture} alt={name} className="picture-thumb" />
+                <KeptPicture
+                  asset={picture}
+                  alt={name}
+                  className="picture-thumb"
+                />
                 <div className="picture-choice-actions">
+                  {addText && (
+                    <TextInPictureButton
+                      picture={picture}
+                      name={name}
+                      reading={reading}
+                      disabled={disabled}
+                    />
+                  )}
                   {index > 0 && (
                     <button
                       type="button"
@@ -283,6 +349,13 @@ export function PictureField({
             );
           })}
         </ol>
+      )}
+      {addText && readIndex >= 0 && (
+        <PictureTextPanel
+          reading={reading}
+          name={pictureName("Picture", readIndex, pictures.length)}
+          add={addText}
+        />
       )}
       <div className="picture-add">
         <button

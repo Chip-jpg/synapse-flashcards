@@ -2762,6 +2762,7 @@ textarea.field-input {
   gap: 1.25rem;
 }
 
+.scanned-pages,
 .source-notes,
 .source-pages {
   display: grid;
@@ -2804,6 +2805,19 @@ textarea.field-input {
 .source-page-text {
   max-width: 72ch;
   overflow-wrap: anywhere;
+}
+
+/* Text recognised on a scanned page: set apart from text the page held, so
+   it reads as a reading, not as the page itself. */
+.recognised-text {
+  padding-left: 0.75rem;
+  border-left: 3px solid var(--amber-line);
+}
+
+/* "Reading page 3 of 12…", with its bar and Stop. */
+.reading-progress .progress-bar {
+  flex: none;
+  max-width: 28rem;
 }
 
 /* The words of a quote on its page. */
@@ -2925,7 +2939,7 @@ textarea.field-input {
   flex-direction: column;
   gap: 0.375rem;
   align-items: flex-start;
-  width: 7rem;
+  width: 8rem;
 }
 
 .picture-choice-actions {
@@ -2939,6 +2953,42 @@ textarea.field-input {
   flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
+}
+
+.picture-gallery li > .button {
+  margin-top: 0.375rem;
+}
+
+/* Text read from a picture (`pictureText.tsx`): set apart, as something to
+   check rather than something typed. */
+.picture-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  margin-top: 0.75rem;
+  padding: 0.75rem 1rem;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-low);
+}
+
+.picture-text p {
+  margin: 0;
+}
+
+.picture-text-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.picture-text-body {
+  max-height: 16rem;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
 }
 
 .card-form-side {
@@ -3083,4 +3133,18 @@ textarea.field-input {
   .occlusion-list-item {
     grid-template-columns: 1fr;
   }
+}
+
+/* *Find labels* beside the occlusion boxes' buttons: what each box covers. */
+.occlusion-label-unit {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+.occlusion-label-unit .field-input {
+  width: auto;
+  padding-block: 0.25rem;
 }
