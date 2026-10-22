@@ -1,55 +1,41 @@
-Synapse can now read the text in pictures and scanned pages. A text-recognition engine is built into the app and works offline. For accented letters and handwriting, you can also choose a vision model you run yourself in Ollama. Either way, recognised text is always shown as recognised, for you to check, and nothing leaves your computer. **This release adds a migration, so backups made with it can't be restored into 0.8.1 or older** (see *Backups* below).
+Three smaller improvements on top of 0.9.0: pictures now come along when you import decks from Anki, the deleted cards list gets *Select all*, and help with hard cards now works on picture cards too. **There is no migration in this release, so backups stay compatible with 0.9.0 in both directions** (see *Backups* below).
 
 ## What's new
 
-**Read scanned PDFs.**
+**Pictures from Anki front/back notes.**
 
-- Until now, a PDF made of scanned pages had no text, so it couldn't be imported at all.
-- Now *Import file* keeps such a PDF and offers three choices: *Read scanned pages*, *Write the note myself*, or *Cancel*. After the pages are read, the new-note form opens with their text.
-- On the *Sources* screen, a PDF with pages that have no text offers *Read scanned pages (N)*. Reading shows "Reading page 3 of 12…" with a progress bar and *Stop*. Leaving the screen also stops it, and pages already read are kept.
-- At the end you get a summary: which pages were read, which had nothing to find, and which were skipped, each with a reason in plain words.
-- Each page of a source shows what was recognised on it, set apart under "Recognised text, check for mistakes". It says which engine read the page and when. *Read this page again* reads just that one page.
-- *Make a note* from a source uses the recognised text where a page had none of its own.
-- Links like "From page 7 of …" on suggested cards and quiz questions now work on recognised pages too.
+- Until now, *Decks from Anki* dropped every picture on an ordinary front/back note and kept only its text.
+- Now each picture on a note's front or back becomes a picture on that side of the card, in the same order, up to 4 per side. On a reversed card the sides are swapped, so the pictures follow their text.
+- The preview before saving says how many pictures will be kept, and how many were left out and why: missing from the package, a kind of file Synapse doesn't show, too large (over 20 MB), or more than 4 on one side. A card whose pictures were left out still keeps its text.
+- A side with only a picture and no text is still left out, as before, since every card side needs text.
+- Cloze notes still come in without pictures, because cloze cards can't carry pictures yet. Sounds and videos are still dropped and counted.
 
-**Text in pictures.**
+**Select all among deleted cards.**
 
-- Every picture in a note, and in the note and card forms, has *Text in picture*. It shows the text found in a panel marked as recognised, with *Copy*.
-- In a form you also get *Add to note* (or *Add to front* / *Add to back*). Nothing is saved until you save the form.
-- *Notes* → *Note from a photo*: choose a picture, and a new note opens with its text and the picture attached. You check it and give it a title.
-- On a picture card (image occlusion), *Find labels* proposes a box over each line of text, or over each word. Each box is labelled with that text and becomes its own card. You can check, move or remove the boxes before saving. Labels side by side on a diagram are split into separate boxes. Sometimes a stray letter is read from a drawn shape, and you can just remove it.
+- Under *Deleted cards*, once two or more cards can be restored, a *Select all* box ticks them all at once, then *Restore selected* brings them back. It completes *Restore selected* from 0.8.1.
+- Cards that can't come back right now (for example a cloze card whose number is no longer in its text) are left out, and the label says how many can be restored.
+- Fixed on the way: ticking cards in the active list and in the deleted list could show two selection bars at the same time. Now only one shows, and ticking a card in one list clears what was ticked in the other.
 
-**Choose who reads: built in, or a local model.**
+**Help with picture cards.**
 
-- The built-in engine is fast, about half a second per page, and needs nothing installed. It only reads letters without accents, though: Italian "è" comes out as "e", and some accented letters come out as "?". It also reads handwriting poorly.
-- Everywhere text is read, *Read with* lets you pick *Built in* or a vision model you've installed in Ollama on this computer, such as qwen2.5vl or llama3.2-vision. Synapse remembers your choice.
-- These models read accents and handwriting much better. In a test on an Italian scanned page, every accent came out right. They are much slower, though: a few minutes per page without a graphics card.
-- The same rules as suggested cards apply. Only Ollama on this computer is asked, cloud models are never listed, and nothing is sent until you press the button.
-- A model can make up text, so Synapse cleans its answer and refuses an empty one. When the built-in engine has read the same picture, Synapse also shows how many of its words the model found too (for example "The model's text has 96% of the words the built-in reader found"), as a hint.
-- *Find labels* always uses the built-in engine, because only it says where on the picture the text is.
+- Help with a card (a mnemonic, a simpler explanation, an analogy, or the question asked another way) was not offered on picture cards (image occlusion), because a text-only model can't see the picture.
+- Now it is, after three *Again* in a row as on any other card, or by hand after revealing the answer. It is written by a vision model you run yourself in Ollama, such as qwen2.5vl or llama3.2-vision. The model sees the picture with the card's boxes framed in red, plus the card's header and the boxes' labels.
+- If no vision model is installed, Synapse says so and doesn't fall back to a text-only model, which would answer without seeing the picture.
+- The same rules as the rest of help apply: only Ollama on this computer is asked, nothing is sent until you press the button, nothing is saved unless you choose *Add as a note*, and rating the card never waits for it.
+- In a test with qwen2.5vl:3b on a computer without a graphics card, the answers made sense and took about 40 seconds each.
 
 ## Backups
 
-**This release adds migration 0019** (`recognitions`, the text read from each picture and page).
-
-- Backups made with this version restore into this version and newer, but **0.8.1 and older refuse them** as "from a newer version".
-- Backups made with 0.8.1 and older still restore into this version.
-- The backup format stays 2, and recognised text travels inside the backup.
-
-## Bigger download
-
-The built-in engine's two models are part of the program, so nothing is ever downloaded. As a result, the installers are about **11 MB larger** than 0.8.1.
+**No migration in this release.** Backups made with 0.9.1 restore into 0.9.0, and backups made with 0.9.0 restore into 0.9.1. Backups from 0.8.1 and older still restore into this version.
 
 ## Not tried yet
 
-- Everything was checked by automated tests: 310 for the screens, plus 386 for the Rust side and 10 that run the real helper process. It was also tried in the real app on Linux, with a scratch database.
-- Nothing has been tried on Windows yet.
-- The built-in engine hasn't been tried on a wide range of real scans. JPEG 2000 and JBIG2 scans (some scanners use them) are reported as unreadable.
-- Recognised text isn't searched by *Search* yet.
+- Everything was checked by automated tests: 319 for the screens, plus 397 for the Rust side and 11 that run the real helper processes. Help with picture cards was also tried against a real Ollama on Linux.
+- Nothing has been tried on Windows yet, and the Anki pictures and *Select all* haven't been tried in the real app window.
 
 Windows x64 installers:
 
-- Synapse_0.9.0_x64_en-US.msi
-- Synapse_0.9.0_x64-setup.exe
+- Synapse_0.9.1_x64_en-US.msi
+- Synapse_0.9.1_x64-setup.exe
 
 The installers are unsigned, so Windows SmartScreen may warn on first run. They were built on GitHub's Windows machines by the Release workflow, after its tests passed.
