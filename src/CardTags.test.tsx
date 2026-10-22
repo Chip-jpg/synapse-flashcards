@@ -127,20 +127,17 @@ describe("the tag field on the card form", () => {
 
     await user.click(await screen.findByRole("button", { name: "Add card" }));
     const tags = screen.getByLabelText("Tags");
-    const list = document.getElementById(tags.getAttribute("list")!)!;
-    await waitFor(() =>
-      expect([...list.querySelectorAll("option")].map((option) => option.value)).toEqual([
-        "cells",
-        "dna",
-        "exam",
-      ]),
-    );
+    const offered = async () =>
+      within(await screen.findByRole("list", { name: "Tags in use" }))
+        .getAllByRole("button")
+        .map((button) => button.textContent);
+    // Tags in use containing what's typed are offered.
+    await user.type(tags, "e");
+    expect(await offered()).toEqual(["cells", "exam"]);
     // A tag the card has isn't suggested again.
-    await user.type(tags, "dna ");
-    expect([...list.querySelectorAll("option")].map((option) => option.value)).toEqual([
-      "cells",
-      "exam",
-    ]);
+    await user.clear(tags);
+    await user.type(tags, "exam e");
+    expect(await offered()).toEqual(["cells"]);
   });
 
   it("sends no tags for a card with none, and keeps them on an edit that leaves them", async () => {
