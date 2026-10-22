@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Asset, DeckCard, DeckDetail as Deck, OcclusionBox } from "./api";
 import { DeckDetail } from "./DeckDetail";
 import { ReviewSession } from "./ReviewSession";
-import { CREATED, fakeBackend, type Handler } from "./test/backend";
+import { CREATED, fakeBackend, refuse, type Handler } from "./test/backend";
 
 const PICTURE: Asset = {
   id: 3,
@@ -166,13 +166,13 @@ describe("editing picture cards", () => {
 });
 
 describe("reviewing a picture card", () => {
-  it("covers the asked box, uncovers it with its label, and offers no help", async () => {
+  it("covers the asked box and uncovers it with its label", async () => {
     fakeBackend({
       get_session_card: () => ({
         status: "due",
         card: { id: 31, front: PICTURE_CARDS[0].front, back: "Aorta", reps: 0 },
         progress: { reviewed: 0, remaining: 1 },
-        againStreak: 5,
+        againStreak: 0,
         offerHelp: false,
         occlusion: { picture: PICTURE, header: "The heart", mode: "hideAll", number: 1, boxes: BOXES },
       }),
@@ -194,6 +194,104 @@ describe("reviewing a picture card", () => {
       await screen.findByRole("img", { name: "Picture with the box asked about uncovered." }),
     ).toBeTruthy();
     expect(screen.getAllByText("Aorta").length).toBeGreaterThan(0);
-    expect(screen.queryByRole("button", { name: /help/i })).toBeNull();
+  });
+});
+
+/** A review of the first picture card, rated Again `againStreak` times in a row. */
+function reviewPictureCard(againStreak: number, handlers: Record<string, Handler> = {}) {
+  const backend = fakeBackend({
+    get_session_card: () => ({
+      status: "due",
+      card: { id: 31, front: PICTURE_CARDS[0].front, back: "Aorta", reps: 4 },
+      progress: { reviewed: 0, remaining: 1 },
+      againStreak,
+      offerHelp: againStreak >= 3,
+      occlusion: { picture: PICTURE, header: "The heart", mode: "hideOne", number: 1, boxes: BOXES },
+    }),
+    get_card_help: (args) => ({
+      status: "written",
+      help: { kind: args.kind, text: "A-orta: the arch at the top.", unfamiliar: [] },
+    }),
+    ...handlers,
+  });
+  render(<ReviewSession sessionId={7} deckName="Biology" onExit={vi.fn()} />);
+  return backend;
+}
+
+describe("help with a picture card", () => {
+  it("is offered after three Agains and written by a vision model, never a text one", async () => {
+    const backend = reviewPictureCard(3, {
+      get_models: () => ["llama3.2:3b"],
+      get_vision_models: () => ["qwen2.5vl:3b"],
+    });
+    const user = userEvent.setup();
+    await screen.findByRole("img", {
+      name: "Picture with one box to recall, marked with a question mark.",
+    });
+    expect(screen.queryByRole("button", { name: "Get help with this card" })).toBeNull();
+    await user.keyboard("[Space]");
+
+    expect(await screen.findByText(/answered Again on this card 3 times in a row/)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Get help with this card" }));
+    expect(await screen.findByText(/sees only this card's picture, with the part it asks about framed/)).toBeTruthy();
+    const model = screen.getByRole("combobox", { name: /Model/ }) as HTMLSelectElement;
+    expect(Array.from(model.options).map((option) => option.value)).toEqual(["", "qwen2.5vl:3b"]);
+    await user.selectOptions(model, "qwen2.5vl:3b");
+    await user.click(screen.getByRole("radio", { name: /Mnemonic/ }));
+    await user.click(screen.getByRole("button", { name: "Write help" }));
+
+    expect(await screen.findByText("A-orta: the arch at the top.")).toBeTruthy();
+    expect(screen.getByText(/Written by a model from this card and its picture only/)).toBeTruthy();
+    expect(backend.calls).not.toContain("get_models");
+    expect(backend.argsOf("get_card_help")).toEqual([
+      { cardId: 31, model: "qwen2.5vl:3b", kind: "mnemonic" },
+    ]);
+  });
+
+  it("says so when Ollama has no model that can see pictures", async () => {
+    const backend = reviewPictureCard(3, {
+      get_models: () => ["llama3.2:3b"],
+      get_vision_models: () => [],
+    });
+    const user = userEvent.setup();
+    await screen.findByRole("img", {
+      name: "Picture with one box to recall, marked with a question mark.",
+    });
+    await user.keyboard("[Space]");
+    await user.click(await screen.findByRole("button", { name: "Get help with this card" }));
+
+    expect(await screen.findByRole("alert")).toHaveProperty(
+      "textContent",
+      expect.stringContaining("none of its models on this computer can see pictures"),
+    );
+    expect(screen.queryByRole("button", { name: "Write help" })).toBeNull();
+    expect(backend.argsOf("get_card_help")).toEqual([]);
+  });
+
+  it("offers the vision models again when the chosen one has gone", async () => {
+    let models = ["qwen2.5vl:3b", "gemma3:4b"];
+    const backend = reviewPictureCard(0, {
+      get_vision_models: () => models,
+      get_card_help: () => {
+        models = ["gemma3:4b"];
+        return refuse(
+          "stale",
+          "That model isn't in Ollama any more, or can't see pictures. Choose another.",
+        );
+      },
+    });
+    const user = userEvent.setup();
+    await screen.findByRole("img", {
+      name: "Picture with one box to recall, marked with a question mark.",
+    });
+    await user.keyboard("[Space]");
+    await user.click(await screen.findByRole("button", { name: "Get help with this card" }));
+    await user.selectOptions(await screen.findByRole("combobox", { name: /Model/ }), "qwen2.5vl:3b");
+    await user.click(screen.getByRole("button", { name: "Write help" }));
+
+    expect(await screen.findByText(/can't see pictures. Choose another./)).toBeTruthy();
+    const model = screen.getByRole("combobox", { name: /Model/ }) as HTMLSelectElement;
+    expect(Array.from(model.options).map((option) => option.value)).toEqual(["", "gemma3:4b"]);
+    expect(backend.argsOf("get_vision_models")).toHaveLength(2);
   });
 });

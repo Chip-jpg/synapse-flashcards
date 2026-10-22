@@ -26,7 +26,7 @@ use crate::extract::{self, ExtractError, ExtractedText, FileKind};
 use crate::import::{self, ImportError, ImportState, RestoreError};
 use crate::notes::{self, DeletedNote, DeletedNoteText, InvalidNote, Note, NoteError, NoteSummary};
 use crate::occlusion::{self, Mode, OcclusionBox, OcclusionView};
-use crate::ocr::PageProblem;
+use crate::ocr::{self, PageProblem};
 use crate::optimizer::{self, IntervalChange, Optimized, OptimizerError, Optimizing, Settings};
 use crate::pictures::{CardPictureIds, PictureProblem};
 use crate::quiz::{self, QuizQuestion, Quizzing};
@@ -1455,6 +1455,58 @@ fn help_error(err: SuggestError) -> CommandError {
     }
 }
 
+/// Turns failed help with a picture card into a user-safe error: as
+/// [`help_error`], but the model must be one that can see pictures, and may
+/// take as long as reading a page.
+fn picture_help_error(err: SuggestError) -> CommandError {
+    match err {
+        // The model list on screen is out of date, so React reloads it.
+        SuggestError::ModelMissing => CommandError::stale(
+            "That model isn't in Ollama any more, or can't see pictures. Choose another.",
+        ),
+        SuggestError::NoteTooLong | SuggestError::NoteOverflowed => CommandError::failed(
+            "This card's picture and labels were too much for the model to read at once, so no \
+             help was written. Try another model.",
+        ),
+        SuggestError::TimedOut => CommandError::failed(
+            "The model took over 10 minutes on this card's picture, so Synapse stopped waiting. \
+             Try a smaller model.",
+        ),
+        other => help_error(other),
+    }
+}
+
+/// A picture card's picture with the part it asks about framed, as a PNG for
+/// a vision model, prepared by the recognition helper (`vision::prepare`), so
+/// pictures are never decoded in the app itself. Stopping help stops it.
+async fn picture_for_help(
+    app: &AppHandle,
+    card: &aid::PictureCard,
+    stop: tokio_util::sync::CancellationToken,
+) -> Result<Vec<u8>, CommandError> {
+    const FAILED: &str = "Synapse couldn't prepare this card's picture for the model.";
+    let store = asset_store(app, FAILED)?;
+    let helper = recognition_helper()?;
+    let bytes = recognition::kept_bytes(&store, &card.picture).map_err(|err| {
+        eprintln!("[synapse] reading a picture card's picture for help failed: {err:?}");
+        CommandError::failed(FAILED)
+    })?;
+    let job = ocr::Job::MarkedPictureForModel {
+        marks: card.marks.clone(),
+    };
+    match vision::prepare(helper, job, bytes, stop).await {
+        Ok(ocr::PageOutcome::Picture(png)) => Ok(png),
+        Ok(other) => {
+            eprintln!("[synapse] preparing a picture card's picture for help: {other:?}");
+            Err(CommandError::failed(FAILED))
+        }
+        Err(err) => {
+            eprintln!("[synapse] preparing a picture card's picture for help failed: {err:?}");
+            Err(CommandError::failed(FAILED))
+        }
+    }
+}
+
 /// What asking for help with a card did: `{ "status": "written", "help":
 /// { kind, text, unfamiliar } }` or `{ "status": "stopped" }`.
 #[derive(Debug, PartialEq, serde::Serialize)]
@@ -1472,12 +1524,16 @@ pub enum HelpOutcome {
 
 /// Asks a local model in Ollama for help with a card: a mnemonic, a simpler
 /// explanation, an analogy, or the question asked another way, written from
-/// the card's front and back only. Only Ollama on this computer is asked, and
-/// nothing is saved; the user may keep the help with `create_note`. Asking
-/// again, or `stop_card_help`, stops this one. Card suggestions are separate.
+/// the card's front and back only. For a picture card (image occlusion), a
+/// vision model is given its picture, with the boxes it asks about framed,
+/// its header and those boxes' labels. Only Ollama on this computer is asked,
+/// and nothing is saved; the user may keep the help with `create_note`.
+/// Asking again, or `stop_card_help`, stops this one. Card suggestions are
+/// separate.
 ///
 /// Arguments: `{ cardId, model, kind: "mnemonic" | "explanation" | "analogy" |
-/// "question" }`, where `model` is a name from `get_models`. Returns
+/// "question" }`, where `model` is a name from `get_models`, or for a picture
+/// card from `get_vision_models`. Returns
 /// [`HelpOutcome`]; rejects with kind "stale" if the card was deleted or its
 /// deck archived, or the model is no longer in Ollama.
 #[tauri::command]
@@ -1506,11 +1562,27 @@ pub async fn get_card_help(
                 CommandError::failed("Synapse couldn't load this card.")
             })?
             .ok_or_else(|| CommandError::stale("This card isn't available any more."))?;
+        // A picture card's answer is in its picture: a vision model reads it.
+        let picture = occlusion::session_view(&mut conn, card_id)
+            .await
+            .map_err(|err| {
+                eprintln!("[synapse] loading a card for help failed: {err}");
+                CommandError::failed("Synapse couldn't load this card.")
+            })?;
         drop(conn);
         let ollama = Ollama::local().map_err(help_error)?;
-        aid::help(&ollama, &model, kind, &front, &back)
-            .await
-            .map_err(help_error)
+        match picture {
+            None => aid::help(&ollama, &model, kind, &front, &back)
+                .await
+                .map_err(help_error),
+            Some(occlusion) => {
+                let card = aid::PictureCard::from_review(occlusion);
+                let png = picture_for_help(&app, &card, request.token()).await?;
+                aid::picture_help(&ollama, &model, kind, &card, &png, vision::READ_TIMEOUT)
+                    .await
+                    .map_err(picture_help_error)
+            }
+        }
     };
     match request.run(work).await {
         None => Ok(HelpOutcome::Stopped),
@@ -4569,6 +4641,36 @@ mod tests {
                 "{message}"
             );
         }
+    }
+
+    #[test]
+    fn failed_picture_card_help_says_the_model_must_see_pictures_and_hides_detail() {
+        let detail = || -> crate::db::DbError { "http://127.0.0.1:11434/api/chat: secret".into() };
+        for (err, kind) in [
+            (SuggestError::Unreachable(detail()), "failed"),
+            (SuggestError::ModelMissing, "stale"),
+            (SuggestError::NoteOverflowed, "failed"),
+            (SuggestError::TimedOut, "failed"),
+            (SuggestError::Unusable(detail()), "failed"),
+            (SuggestError::Internal(detail()), "failed"),
+        ] {
+            let value = serde_json::to_value(picture_help_error(err)).unwrap();
+            assert_eq!(value["kind"], kind, "{value}");
+            let message = value["message"].as_str().unwrap();
+            assert!(
+                !message.contains("secret") && !message.contains("11434"),
+                "{message}"
+            );
+            assert!(
+                !message.contains("note") && !message.contains("suggest"),
+                "{message}"
+            );
+        }
+        let missing = serde_json::to_value(picture_help_error(SuggestError::ModelMissing)).unwrap();
+        assert!(missing["message"]
+            .as_str()
+            .unwrap()
+            .contains("can't see pictures"));
     }
 
     #[test]

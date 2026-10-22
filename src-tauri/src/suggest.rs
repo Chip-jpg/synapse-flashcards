@@ -705,6 +705,52 @@ impl Ollama {
             .await
     }
 
+    /// Asks the vision model `model` to follow `instructions` about
+    /// `material` and the picture `png`, answering in JSON that follows
+    /// `schema`, and returns what it wrote, waiting at most `timeout`. The
+    /// model is first checked to be one of Ollama's local vision models, and
+    /// the material and picture must leave `answer_tokens` of
+    /// `context_tokens` free, as for [`Ollama::ask`]. Used by card help for
+    /// picture cards (`aid.rs`).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn ask_with_picture(
+        &self,
+        model: &str,
+        instructions: &str,
+        material: String,
+        png: &[u8],
+        schema: Value,
+        context_tokens: u64,
+        answer_tokens: u64,
+        timeout: Duration,
+    ) -> Result<Written, SuggestError> {
+        // Checked now rather than trusted from the screen, as in `ask`.
+        if !self.vision_models().await?.iter().any(|name| name == model) {
+            return Err(SuggestError::ModelMissing);
+        }
+        use base64::Engine as _;
+        let request = json!({
+            "model": model,
+            "stream": false,
+            "format": schema,
+            "messages": [
+                { "role": "system", "content": instructions },
+                {
+                    "role": "user",
+                    "content": material,
+                    "images": [base64::engine::general_purpose::STANDARD.encode(png)]
+                }
+            ],
+            "options": {
+                "temperature": 0,
+                "num_ctx": context_tokens,
+                "num_predict": answer_tokens
+            }
+        });
+        self.chat(request, context_tokens, answer_tokens, timeout)
+            .await
+    }
+
     /// Sends `request` to `/api/chat` and reads the model's answer.
     async fn chat(
         &self,
@@ -823,6 +869,12 @@ impl Suggestion<'_> {
     /// Ollama then stops generating.
     pub async fn run<F: Future>(&self, work: F) -> Option<F::Output> {
         self.token.run_until_cancelled(work).await
+    }
+
+    /// What stopping this suggestion cancels, for work that must notice it
+    /// itself, such as a helper process (`recognition.rs`).
+    pub fn token(&self) -> CancellationToken {
+        self.token.clone()
     }
 }
 

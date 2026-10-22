@@ -3,6 +3,7 @@ import {
   createNote,
   getCardHelp,
   getModels,
+  getVisionModels,
   stopCardHelp,
   toCommandError,
   type CardHelp as Help,
@@ -52,6 +53,11 @@ type Stage =
  * or the question asked another way, from the card's front and back only. It's
  * a draft; nothing is saved unless the user adds it as a note.
  *
+ * For a `picture` card (image occlusion) only Ollama's vision models are
+ * offered: Rust shows the model the card's picture, with the part it asks
+ * about framed, and its labels. A text model can't see the answer, so none
+ * is offered instead.
+ *
  * `offered` (Rust's call, after Again three times in a row) shows it as a
  * suggestion; otherwise it's a quiet button. Rating never waits on it: the
  * rating buttons stay as they are, and rating the card replaces this panel,
@@ -61,11 +67,14 @@ export function CardHelp({
   card,
   offered,
   againStreak,
+  picture = false,
 }: {
   card: Flashcard;
   offered: boolean;
   againStreak: number;
+  picture?: boolean;
 }) {
+  const loadModels = picture ? getVisionModels : getModels;
   const [stage, setStage] = useState<Stage>({ step: "closed" });
   const [model, setModel] = useState("");
   const [kind, setKind] = useState<HelpKind>("mnemonic");
@@ -83,7 +92,7 @@ export function CardHelp({
   async function open() {
     setStage({ step: "loading" });
     try {
-      const models = await getModels();
+      const models = await loadModels();
       if (models.length === 0) {
         setStage({ step: "noModels" });
         return;
@@ -110,7 +119,7 @@ export function CardHelp({
       if (failure.kind === "stale") {
         // The model may have left Ollama: offer the ones there now.
         try {
-          const fresh = await getModels();
+          const fresh = await loadModels();
           if (fresh.length === 0) {
             setStage({ step: "noModels" });
             return;
@@ -167,13 +176,18 @@ export function CardHelp({
       )}
       {stage.step === "noModels" && (
         <Problem
-          text="Ollama is running, but it has no models on this computer that can write. Download a model in Ollama, then check again."
+          text={
+            picture
+              ? "Ollama is running, but none of its models on this computer can see pictures, and a picture card's answer is in its picture. Download a vision model in Ollama (such as qwen2.5vl), then check again."
+              : "Ollama is running, but it has no models on this computer that can write. Download a model in Ollama, then check again."
+          }
           onRetry={open}
           onClose={() => setStage({ step: "closed" })}
         />
       )}
       {stage.step === "choose" && (
         <Choose
+          picture={picture}
           models={stage.models}
           model={model}
           kind={kind}
@@ -193,6 +207,7 @@ export function CardHelp({
       )}
       {stage.step === "written" && (
         <Written
+          picture={picture}
           card={card}
           model={stage.model}
           help={stage.help}
@@ -232,6 +247,7 @@ function Problem({
 }
 
 function Choose({
+  picture,
   models,
   model,
   kind,
@@ -241,6 +257,7 @@ function Choose({
   onWrite,
   onClose,
 }: {
+  picture: boolean;
   models: string[];
   model: string;
   kind: HelpKind;
@@ -265,9 +282,11 @@ function Choose({
   return (
     <form className="suggest-step" aria-label="Choose help" noValidate onSubmit={submit}>
       <p id="card-help-hint" className="field-hint">
-        The model reads only this card's question and answer, on this computer. Nothing is saved
-        unless you add the help as a note. Models still get things wrong, so check what it writes
-        against your material.
+        {picture
+          ? "The model sees only this card's picture, with the part it asks about framed, and its labels, on this computer."
+          : "The model reads only this card's question and answer, on this computer."}{" "}
+        Nothing is saved unless you add the help as a note. Models still get things wrong, so
+        check what it writes against your material.
       </p>
       <fieldset className="field card-help-kinds">
         <legend className="field-label">Kind of help</legend>
@@ -289,7 +308,11 @@ function Choose({
       <SelectField
         id="card-help-model"
         label="Model"
-        hint="One of the models in Ollama on this computer."
+        hint={
+          picture
+            ? "One of the models in Ollama on this computer that can see pictures."
+            : "One of the models in Ollama on this computer."
+        }
         describedBy="card-help-hint"
         value={model}
         options={models.map((name) => ({ value: name, label: name }))}
@@ -351,12 +374,14 @@ function Writing({ model, kind, onStop }: { model: string; kind: HelpKind; onSto
 
 /** The help, for the user to read, and keep as a note if they want it. */
 function Written({
+  picture,
   card,
   model,
   help,
   onAgain,
   onClose,
 }: {
+  picture: boolean;
   card: Flashcard;
   model: string;
   help: Help;
@@ -397,8 +422,8 @@ function Written({
         )}
       </div>
       <p className="field-hint">
-        Written by a model from this card only. It's a draft: nothing is saved unless you add it
-        as a note.
+        Written by a model from this card {picture ? "and its picture " : ""}only. It's a draft:
+        nothing is saved unless you add it as a note.
       </p>
       {saved !== null ? (
         <p className="notice" role="status">

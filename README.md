@@ -77,7 +77,9 @@ migrations, validation, scheduling, and every business rule; React only calls ty
   Synapse offers help with it once its answer is shown: a model in Ollama, on your computer, writes
   a mnemonic, a simpler explanation, an analogy, or the question asked another way, from the
   card's question and answer only. You can also ask for help on any card after revealing it. It's
-  a draft; nothing is saved unless you choose *Add as a note*.
+  a draft; nothing is saved unless you choose *Add as a note*. On a picture card, a vision model
+  in Ollama sees the picture with the part asked about framed (branch
+  `claude/project-thread-uno5mp`, not yet released).
 
 Everything works offline. Turning off networking changes nothing: suggestions use Ollama on this
 computer, and the rest of Synapse doesn't need it at all.
@@ -212,9 +214,9 @@ the cloze rules above: a card whose boxes are all still there keeps its schedule
 boxes were all removed is deleted (history kept), and a new card is due straight away unless that
 card had been deleted in this deck, which comes back instead. The picture itself can't be changed;
 add a new picture card instead. Restoring, *Restore all*, moving together and keeping siblings
-apart for the day work as for cloze cards. Help with a card isn't offered for picture cards (a
-local model can't see the picture), and *Export CSV* leaves them out (a spreadsheet can't carry
-the picture).
+apart for the day work as for cloze cards. Help with a picture card is written by a vision model
+that sees the picture (see *Get help with a card you keep forgetting*), and *Export CSV* leaves
+them out (a spreadsheet can't carry the picture).
 
 **Study.** Press *Start review* on any deck with cards due. Reveal the answer, then rate it. The
 session ends when nothing in that deck is due. Closing the app or leaving through the sidebar
@@ -518,6 +520,12 @@ on this computer only, local models only, and *Stop* at any time). The help is a
 note* saves it as an ordinary note, with the card under it. Rating the card never waits for it, and
 rating closes the help, stopping it if it's still being written. Without Ollama, reviewing works
 exactly as before.
+
+On a picture card (branch `claude/project-thread-uno5mp`, not yet released), only Ollama's models
+that can see pictures are offered, since the answer is in the picture: the model is shown the
+picture with the part the card asks about framed in red, the card's header and that part's label.
+If Ollama has no such model, Synapse says so rather than offering a model that can't see. Vision
+models are slow without a graphics card: help may take a few minutes, and Synapse waits up to 10.
 
 The Sample deck is read-only: you can study it, but not rename, archive, edit it, or add cards to it.
 
