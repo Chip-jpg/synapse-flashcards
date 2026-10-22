@@ -15,7 +15,7 @@ use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::aid::{self, CardHelp, HelpKind, Helping};
-use crate::anki::{self, AnkiError, AnkiImported, AnkiImports, Skipped};
+use crate::anki::{self, AnkiError, AnkiImported, AnkiImports, PicturesLeftOut, Skipped};
 use crate::assets::{self, Asset, AssetError, AssetStore};
 use crate::authoring::{self, ArchivedDeck, AuthoringError, CardText, DeckDetail, InvalidInput};
 use crate::cards_csv::{self, CardsImported, CsvError, Delimiter, Duplicate, RowProblem};
@@ -2664,7 +2664,8 @@ pub struct AnkiDeckPreview {
 }
 
 /// What choosing an Anki package did:
-/// `{ "status": "read", token, fileName, decks, notes, skipped, mediaRemoved, extraRemoved, reviewed }`
+/// `{ "status": "read", token, fileName, decks, notes, skipped, mediaRemoved, extraRemoved, reviewed,
+/// occlusions, occlusionApproximated, cardPictures, picturesLeftOut }`
 /// or `{ "status": "cancelled" }`. Nothing has been saved; `token` names the
 /// package to `import_anki_package` and `cancel_anki_import`.
 #[derive(Debug, serde::Serialize)]
@@ -2682,7 +2683,8 @@ pub enum AnkiFile {
         notes: usize,
         /// Notes left out, by why (see `anki.rs`).
         skipped: Skipped,
-        /// Notes to add that had a picture or sound, which is left out.
+        /// Notes to add that had a sound or video, or a picture in a cloze
+        /// note, which is left out.
         media_removed: usize,
         /// Cloze notes to add with text in another field, which is left out.
         extra_removed: usize,
@@ -2693,6 +2695,11 @@ pub enum AnkiFile {
         /// Of those, notes whose round or many-sided shapes became
         /// rectangles, or whose text labels were left out.
         occlusion_approximated: usize,
+        /// Pictures that come with front/back cards, one for each side that
+        /// shows it (reversed cards not counted).
+        card_pictures: usize,
+        /// Pictures of front/back cards left out, by why.
+        pictures_left_out: PicturesLeftOut,
     },
     Cancelled,
 }
@@ -2826,6 +2833,13 @@ pub async fn read_anki_package(
         .flat_map(|deck| &deck.notes)
         .filter(|note| note.occlusion.is_some())
         .count();
+    let card_pictures = package
+        .decks
+        .iter()
+        .flat_map(|deck| &deck.notes)
+        .map(|note| note.pictures.count())
+        .sum();
+    let pictures_left_out = package.pictures_left_out;
     let token = imports.hold(package);
     Ok(AnkiFile::Read {
         token,
@@ -2838,6 +2852,8 @@ pub async fn read_anki_package(
         reviewed,
         occlusions,
         occlusion_approximated,
+        card_pictures,
+        pictures_left_out,
     })
 }
 
@@ -4808,6 +4824,12 @@ mod tests {
             reviewed: 2,
             occlusions: 2,
             occlusion_approximated: 1,
+            card_pictures: 5,
+            pictures_left_out: PicturesLeftOut {
+                missing: 1,
+                too_many: 2,
+                ..PicturesLeftOut::default()
+            },
         };
         assert_eq!(
             serde_json::to_value(file).unwrap(),
@@ -4836,6 +4858,13 @@ mod tests {
                 "reviewed": 2,
                 "occlusions": 2,
                 "occlusionApproximated": 1,
+                "cardPictures": 5,
+                "picturesLeftOut": {
+                    "missing": 1,
+                    "unsupported": 0,
+                    "tooLarge": 0,
+                    "tooMany": 2,
+                },
             })
         );
         assert_eq!(

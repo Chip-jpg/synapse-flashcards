@@ -4,6 +4,7 @@ import {
   importAnkiPackage,
   readAnkiPackage,
   toCommandError,
+  type AnkiPicturesLeftOut,
   type AnkiSkipped,
   type ReadAnkiFile,
 } from "./api";
@@ -40,6 +41,23 @@ function leftOut(skipped: AnkiSkipped): string | null {
     skipped.noCard > 0 && `${notes(skipped.noCard)} with no card in Anki`,
   ].filter(Boolean);
   return reasons.length === 0 ? null : `Left out: ${reasons.join(", ")}.`;
+}
+
+/** Which pictures of front/back cards are left out, as one sentence, or null when none are. */
+function picturesLeftOut(leftOut: AnkiPicturesLeftOut | undefined): string | null {
+  if (!leftOut) return null;
+  const pictures = (number: number) => count(number, "picture", "pictures");
+  const reasons = [
+    leftOut.missing > 0 &&
+      `${pictures(leftOut.missing)} not in the file (export with media included) or given by a web address`,
+    leftOut.unsupported > 0 && `${pictures(leftOut.unsupported)} not a PNG, JPEG, GIF or WebP`,
+    leftOut.tooLarge > 0 && `${pictures(leftOut.tooLarge)} over 20 MB`,
+    leftOut.tooMany > 0 &&
+      `${pictures(leftOut.tooMany)} past the 4 that one side of a card can show`,
+  ].filter(Boolean);
+  return reasons.length === 0
+    ? null
+    : `Pictures left out, so their cards come without them: ${reasons.join(", ")}.`;
 }
 
 /** Where importing an Anki package is up to. */
@@ -169,9 +187,9 @@ export function AnkiImport({
       </div>
       <p className="field-hint">
         Add the cards of an Anki package (.apkg or .colpkg) as new decks. Notes with one front
-        and one back, and cloze notes, come across as text; image occlusion notes come with their
-        picture when the package includes media. Anki's schedule, review history, other pictures
-        and sounds aren't imported, so every card starts as new.
+        and one back come with their text and pictures, cloze notes as text, and image occlusion
+        notes with their picture, when the package includes media. Anki's schedule, review
+        history, sounds and pictures in cloze notes aren't imported, so every card starts as new.
       </p>
 
       {state.kind === "preview" ? (
@@ -242,6 +260,7 @@ function AnkiPreview({
   const total = cardTotal(file, bothDirections);
   const reversible = file.decks.reduce((sum, deck) => sum + deck.reversible, 0);
   const skipped = leftOut(file.skipped);
+  const picturesSkipped = picturesLeftOut(file.picturesLeftOut);
 
   const summary =
     file.decks.length === 0
@@ -254,9 +273,17 @@ function AnkiPreview({
         {summary}
       </p>
       {skipped && <p className="field-hint">{skipped}</p>}
+      {(file.cardPictures ?? 0) > 0 && (
+        <p className="field-hint">
+          {`${count(file.cardPictures, "picture comes", "pictures come")} with the cards, on the same side as in Anki.`}
+        </p>
+      )}
+      {picturesSkipped && <p className="field-hint">{picturesSkipped}</p>}
       {file.mediaRemoved > 0 && (
         <p className="field-hint">
-          {`${count(file.mediaRemoved, "card has", "cards have")} a picture or sound, which is left out. Their text is kept.`}
+          {file.mediaRemoved === 1
+            ? "1 note has a sound, a video, or a picture in a cloze, which is left out. Its text is kept."
+            : `${count(file.mediaRemoved, "note", "notes")} have a sound, a video, or a picture in a cloze, which is left out. Their text is kept.`}
         </p>
       )}
       {file.extraRemoved > 0 && (

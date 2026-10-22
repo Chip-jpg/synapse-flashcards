@@ -809,6 +809,21 @@ export type AnkiSkipped = {
 };
 
 /**
+ * Mirrors `PicturesLeftOut` in `src-tauri/src/anki.rs`: pictures of
+ * front/back cards that couldn't be kept, by why, one for each side showing it.
+ */
+export type AnkiPicturesLeftOut = {
+  /** Not in the file (exported without media), or given by a web address. */
+  missing: number;
+  /** Not a PNG, JPEG, GIF or WebP (an SVG, say). */
+  unsupported: number;
+  /** Over 20 MB, or past what one import holds. */
+  tooLarge: number;
+  /** Past the 4 pictures a side of a card shows. */
+  tooMany: number;
+};
+
+/**
  * Mirrors `AnkiFile` in `src-tauri/src/commands.rs`: an Anki package read,
  * with nothing saved and the package held by Rust under `token`, or the file
  * window closed.
@@ -822,7 +837,7 @@ export type AnkiFile =
       /** Every note in the collection. */
       notes: number;
       skipped: AnkiSkipped;
-      /** Notes to add that had a picture or sound, which is left out. */
+      /** Notes to add that had a sound or video, or a picture in a cloze note, which is left out. */
       mediaRemoved: number;
       /** Cloze notes to add with text in another field, which is left out. */
       extraRemoved: number;
@@ -832,6 +847,10 @@ export type AnkiFile =
       occlusions: number;
       /** Of those, notes whose ellipses or polygons became rectangles, or whose text labels were left out. */
       occlusionApproximated: number;
+      /** Pictures that come with front/back cards, one for each side showing it. */
+      cardPictures: number;
+      /** Pictures of front/back cards left out, by why. */
+      picturesLeftOut: AnkiPicturesLeftOut;
     }
   | { status: "cancelled" };
 

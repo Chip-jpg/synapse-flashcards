@@ -1,10 +1,11 @@
 //! Importing an Anki package (`.apkg`, or a whole collection as `.colpkg`)
 //! as new cards in new decks.
 //!
-//! Only the text of front/back and cloze notes travels, and image occlusion
-//! notes with their picture. Every imported card starts as a brand-new card,
-//! exactly like one the user typed: Anki's schedule and review history are
-//! not imported, and neither are other images or sounds.
+//! The text of front/back and cloze notes travels, with the pictures of
+//! front/back notes, and image occlusion notes with their picture. Every
+//! imported card starts as a brand-new card, exactly like one the user typed:
+//! Anki's schedule and review history are not imported, and neither are
+//! sounds, videos, or pictures in cloze notes.
 //!
 //! Importing has two steps, so nothing is saved before the user has seen it:
 //! 1. [`extract_collection`] copies the collection database out of the
@@ -59,6 +60,18 @@
 //! can't be read (pixel coordinates from early versions of Anki's editor),
 //! is left out and counted as image occlusion.
 //!
+//! The pictures (`<img src="…">`) on a front/back note's front and back
+//! become the card's pictures on that side (`card_pictures`), in order, each
+//! once, as pictures added in Synapse are: read from the package's media,
+//! kept once however many cards show them, and saved in the same transaction
+//! as the cards. A reversed card shows them the other way round. A side shows
+//! at most 4 (`CARD_SIDE_PICTURES_MAX`); pictures past that, or not in the
+//! package (or named by a web address), or not a PNG, JPEG, GIF or WebP, or
+//! over 20 MB (or past [`ANKI_PICTURES_MAX_BYTES`] in all), are left out and
+//! counted by [`PicturesLeftOut`]; the card keeps its text and other
+//! pictures. A side must still have text, as a typed card's must: a note
+//! whose front is only a picture is left out as empty.
+//!
 //! Everything else is left out and counted by [`Skipped`]: other note types,
 //! notes with an empty side or text, and sides or texts over the
 //! 2,000-character limit of a card.
@@ -77,7 +90,7 @@ use chrono::{DateTime, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection};
 use sqlx::{ConnectOptions, SqlitePool};
 
-use crate::assets::{self, AssetError, AssetStore, MediaType, MAX_PICTURE_BYTES};
+use crate::assets::{self, Asset, AssetError, AssetStore, MediaType, MAX_PICTURE_BYTES};
 use crate::authoring::{
     insert_new_card, validate_card, AuthoringError, InvalidInput, DECK_NAME_MAX_CHARS,
 };
@@ -86,6 +99,7 @@ use crate::db::to_db_time;
 use crate::occlusion::{
     insert_occlusion, renumber, validate_occlusion, Mode, Occlusion, OcclusionBox, NUMBER_MAX,
 };
+use crate::pictures::{set_card_pictures, CardPictures, CARD_SIDE_PICTURES_MAX};
 
 /// The largest package read. Its media, which are most of a big package, are
 /// never read, so this is only a sanity limit.
@@ -101,8 +115,9 @@ pub const EXAMPLES_PER_DECK: usize = 3;
 /// The description every imported deck gets.
 pub const IMPORTED_DESCRIPTION: &str = "Imported from Anki.";
 /// The most picture bytes one import holds in memory for its image occlusion
-/// notes, between reading the package and saving it. Notes past it are left
-/// out as if their picture were missing.
+/// notes and cards, between reading the package and saving it. Image
+/// occlusion notes past it are left out as if their picture were missing;
+/// cards past it lose the picture (counted as too large).
 pub const ANKI_PICTURES_MAX_BYTES: u64 = 512 * 1024 * 1024;
 /// The largest list of media names read from a package.
 const MEDIA_INDEX_MAX_BYTES: u64 = 64 * 1024 * 1024;
@@ -136,6 +151,9 @@ pub struct AnkiNote {
     pub cloze: Option<String>,
     /// An image occlusion note's picture and boxes, checked.
     pub occlusion: Option<AnkiOcclusion>,
+    /// A front/back note's pictures on each side. Once the package is read,
+    /// only pictures it holds, at most [`CARD_SIDE_PICTURES_MAX`] a side.
+    pub pictures: AnkiCardPictures,
     /// The cards it adds one way: 1, or a cloze text's deletion numbers, or
     /// an image occlusion's box numbers.
     pub cards: usize,
@@ -147,6 +165,36 @@ pub struct AnkiNote {
 pub struct AnkiOcclusion {
     pub picture: String,
     pub occlusion: Occlusion,
+}
+
+/// The pictures on each side of a front/back note, by their names in the
+/// package's media, in order and each once.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AnkiCardPictures {
+    pub front: Vec<String>,
+    pub back: Vec<String>,
+}
+
+impl AnkiCardPictures {
+    pub fn count(&self) -> usize {
+        self.front.len() + self.back.len()
+    }
+}
+
+/// Pictures on the sides of front/back cards that couldn't be kept, by why.
+/// A picture counts once for each side it is on. The card is added without
+/// it.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PicturesLeftOut {
+    /// Not in the package (exported without media), or named by an address.
+    pub missing: usize,
+    /// Not a PNG, JPEG, GIF or WebP (an SVG, say), or unreadable.
+    pub unsupported: usize,
+    /// Over 20 MB, or past [`ANKI_PICTURES_MAX_BYTES`] in all.
+    pub too_large: usize,
+    /// Past the [`CARD_SIDE_PICTURES_MAX`] pictures a side shows.
+    pub too_many: usize,
 }
 
 /// A picture read from a package, by its type (from its bytes).
@@ -193,8 +241,12 @@ pub struct AnkiPackage {
     /// Every note in the collection.
     pub notes: usize,
     pub skipped: Skipped,
-    /// Notes to add that had an image, sound, or video, which is left out.
+    /// Notes to add that had a sound or video, or a picture in a cloze
+    /// note, which is left out. A front/back note's pictures are kept, or
+    /// counted in `pictures_left_out`.
     pub media_removed: usize,
+    /// Pictures of front/back notes left out, by why.
+    pub pictures_left_out: PicturesLeftOut,
     /// Cloze notes to add with text in another field (such as "Back Extra"),
     /// which is left out.
     pub extra_removed: usize,
@@ -203,8 +255,8 @@ pub struct AnkiPackage {
     /// Image occlusion notes to add whose ellipses or polygons became
     /// rectangles, or whose text labels were left out.
     pub occlusion_approximated: usize,
-    /// The pictures of the image occlusion notes to add, by their name in
-    /// the package.
+    /// The pictures of the image occlusion notes and cards to add, by their
+    /// name in the package.
     pub pictures: HashMap<String, AnkiPicture>,
 }
 
@@ -863,6 +915,7 @@ pub async fn read_collection(path: &Path) -> Result<AnkiPackage, AnkiError> {
         notes: notes.len(),
         skipped: Skipped::default(),
         media_removed: 0,
+        pictures_left_out: PicturesLeftOut::default(),
         extra_removed: 0,
         reviewed: 0,
         occlusion_approximated: 0,
@@ -893,8 +946,9 @@ pub async fn read_collection(path: &Path) -> Result<AnkiPackage, AnkiError> {
                 back,
                 reverse_ord,
             } => {
-                let (front, front_media) = html_to_text(field(front));
-                let (back, back_media) = html_to_text(field(back));
+                let (front_html, back_html) = (field(front), field(back));
+                let (front, front_media) = text_and_media(front_html);
+                let (back, back_media) = text_and_media(back_html);
                 let card = match validate_card(&front, &back) {
                     Ok(card) => card,
                     Err(InvalidInput::FrontTooLong | InvalidInput::BackTooLong) => {
@@ -906,15 +960,23 @@ pub async fn read_collection(path: &Path) -> Result<AnkiPackage, AnkiError> {
                         continue;
                     }
                 };
+                let (front_pictures, front_unnamed) = picture_names(front_html);
+                let (back_pictures, back_unnamed) = picture_names(back_html);
+                package.pictures_left_out.missing += front_unnamed + back_unnamed;
                 let note = AnkiNote {
                     front: card.front,
                     back: card.back,
                     reversible: reverse_ord.is_some_and(|ord| note_cards.ords.contains(&ord)),
                     cloze: None,
                     occlusion: None,
+                    pictures: AnkiCardPictures {
+                        front: front_pictures,
+                        back: back_pictures,
+                    },
                     cards: 1,
                 };
-                (note, front_media || back_media, false)
+                // Its pictures are kept, or counted on their own.
+                (note, front_media.other || back_media.other, false)
             }
             Shape::Cloze { text, ref extras } => {
                 let (text, media) = html_to_text(field(text));
@@ -949,6 +1011,7 @@ pub async fn read_collection(path: &Path) -> Result<AnkiPackage, AnkiError> {
                     cards: numbers.len(),
                     cloze: Some(cloze.text),
                     occlusion: None,
+                    pictures: AnkiCardPictures::default(),
                 };
                 (note, media, extra)
             }
@@ -976,6 +1039,7 @@ pub async fn read_collection(path: &Path) -> Result<AnkiPackage, AnkiError> {
                     cloze: None,
                     cards: numbers.len(),
                     occlusion: Some(occlusion),
+                    pictures: AnkiCardPictures::default(),
                 };
                 // Its picture is used, not left out.
                 (note, false, extra)
@@ -1071,13 +1135,42 @@ fn read_image_occlusion<'a>(
 /// The media name of the first `<img src="…">` in a field, if it names a
 /// file in the package (not an address).
 fn picture_name(html: &str) -> Option<String> {
+    image_sources(html).into_iter().flatten().next()
+}
+
+/// The pictures a front/back field shows: the media names of its
+/// `<img src="…">`, in order and each once, and how many name no file in
+/// the package (an address, or no `src`).
+fn picture_names(html: &str) -> (Vec<String>, usize) {
+    let mut names: Vec<String> = Vec::new();
+    let mut unnamed = 0;
+    for source in image_sources(html) {
+        match source {
+            Some(name) if !names.contains(&name) => names.push(name),
+            Some(_) => {}
+            None => unnamed += 1,
+        }
+    }
+    (names, unnamed)
+}
+
+/// Each `<img>` in a field, in order: the media name its `src` gives, or
+/// `None` when it has none or it isn't a file in the package (an address).
+fn image_sources(html: &str) -> Vec<Option<String>> {
     let lower = html.to_ascii_lowercase();
+    let mut sources = Vec::new();
     let mut from = 0;
     while let Some(at) = lower[from..].find("<img") {
         let start = from + at;
-        let (len, _, _) = parse_tag(&html[start..])?;
-        let tag = &html[start..start + len];
+        let Some((len, name, _)) = parse_tag(&html[start..]) else {
+            break;
+        };
         from = start + len;
+        // `<imgx>` isn't a picture.
+        if name != "img" {
+            continue;
+        }
+        let tag = &html[start..start + len];
         let lower_tag = tag.to_ascii_lowercase();
         let Some(src) = lower_tag
             .match_indices("src")
@@ -1087,6 +1180,7 @@ fn picture_name(html: &str) -> Option<String> {
                     && tag[..at].ends_with(char::is_whitespace)
             })
         else {
+            sources.push(None);
             continue;
         };
         let value = tag[src + 3..].trim_start()[1..].trim_start();
@@ -1099,11 +1193,10 @@ fn picture_name(html: &str) -> Option<String> {
         };
         let name = html_to_text(value).0;
         let name = name.trim();
-        if !name.is_empty() && !name.contains(['/', '\\', ':']) {
-            return Some(name.to_string());
-        }
+        sources
+            .push((!name.is_empty() && !name.contains(['/', '\\', ':'])).then(|| name.to_string()));
     }
-    None
+    sources
 }
 
 /// Anki's image occlusion shapes in a note's occlusion field, as boxes;
@@ -1219,15 +1312,37 @@ fn read_media_entry(
     name: &str,
     limit: u64,
 ) -> Option<Vec<u8>> {
-    let entry = archive.by_name(name).ok()?;
+    media_entry(archive, name, limit).ok()
+}
+
+/// Why a media file of the package wasn't read, or isn't a picture to keep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MediaProblem {
+    Missing,
+    TooLarge,
+    /// Damaged, or not a PNG, JPEG, GIF or WebP.
+    Unsupported,
+}
+
+/// [`read_media_entry`], saying why an entry wasn't read.
+fn media_entry(
+    archive: &mut zip::ZipArchive<File>,
+    name: &str,
+    limit: u64,
+) -> Result<Vec<u8>, MediaProblem> {
+    let entry = archive.by_name(name).map_err(|_| MediaProblem::Missing)?;
     // zstd adds a little to bytes it can't make smaller.
-    let raw = read_limited(entry, limit + limit / 64 + 1024).ok()??;
-    if raw.starts_with(&ZSTD_MAGIC) {
-        let decoder = ruzstd::decoding::StreamingDecoder::new(raw.as_slice()).ok()?;
-        read_limited(decoder, limit).ok()?
+    let raw = read_limited(entry, limit + limit / 64 + 1024)
+        .map_err(|_| MediaProblem::Unsupported)?
+        .ok_or(MediaProblem::TooLarge)?;
+    let bytes = if raw.starts_with(&ZSTD_MAGIC) {
+        let decoder = ruzstd::decoding::StreamingDecoder::new(raw.as_slice())
+            .map_err(|_| MediaProblem::Unsupported)?;
+        read_limited(decoder, limit).map_err(|_| MediaProblem::Unsupported)?
     } else {
         (raw.len() as u64 <= limit).then_some(raw)
-    }
+    };
+    bytes.ok_or(MediaProblem::TooLarge)
 }
 
 /// Which entry of the package holds each media file, by the file's name.
@@ -1266,51 +1381,67 @@ fn media_index(archive: &mut zip::ZipArchive<File>) -> HashMap<String, String> {
         .collect()
 }
 
-/// Reads the pictures of the image occlusion notes from the package's media,
-/// and leaves out (as image occlusion) each note whose picture is missing,
-/// isn't a PNG, JPEG, GIF or WebP, is over 20 MB, or doesn't fit in
-/// [`ANKI_PICTURES_MAX_BYTES`]. Writes nothing.
+/// Reads the pictures of the image occlusion notes and front/back cards from
+/// the package's media. Leaves out (as image occlusion) each image occlusion
+/// note whose picture is missing, isn't a PNG, JPEG, GIF or WebP, is over
+/// 20 MB, or doesn't fit in [`ANKI_PICTURES_MAX_BYTES`]; takes such pictures
+/// off cards, and pictures past [`CARD_SIDE_PICTURES_MAX`] a side, counting
+/// each in [`PicturesLeftOut`]. Writes nothing.
 fn attach_pictures(mut package: AnkiPackage, path: &Path) -> AnkiPackage {
-    let wanted: BTreeSet<String> = package
-        .decks
-        .iter()
-        .flat_map(|deck| &deck.notes)
+    let notes = || package.decks.iter().flat_map(|deck| &deck.notes);
+    // Image occlusion notes' pictures first: a note can't do without its.
+    let for_occlusions: BTreeSet<String> = notes()
         .filter_map(|note| Some(note.occlusion.as_ref()?.picture.clone()))
         .collect();
-    if wanted.is_empty() {
+    let for_cards: BTreeSet<String> = notes()
+        .flat_map(|note| note.pictures.front.iter().chain(&note.pictures.back))
+        .filter(|name| !for_occlusions.contains(*name))
+        .cloned()
+        .collect();
+    if for_occlusions.is_empty() && for_cards.is_empty() {
         return package;
     }
+
+    let mut problems: HashMap<String, MediaProblem> = HashMap::new();
     let archive = File::open(path)
         .ok()
         .and_then(|file| zip::ZipArchive::new(file).ok());
     if let Some(mut archive) = archive {
         let index = media_index(&mut archive);
         let mut total = 0u64;
-        for name in wanted {
-            let Some(entry) = index.get(&name) else {
-                continue;
+        for name in for_occlusions.into_iter().chain(for_cards) {
+            let read = match index.get(&name) {
+                None => Err(MediaProblem::Missing),
+                // Past the budget, nothing more is read.
+                Some(_) if total > ANKI_PICTURES_MAX_BYTES => Err(MediaProblem::TooLarge),
+                Some(entry) => media_entry(&mut archive, entry, MAX_PICTURE_BYTES),
             };
-            let Some(bytes) = read_media_entry(&mut archive, entry, MAX_PICTURE_BYTES) else {
-                continue;
-            };
-            let Some(media_type) = assets::sniff(&bytes).filter(|kind| kind.is_picture()) else {
-                continue;
-            };
-            total += bytes.len() as u64;
-            if total > ANKI_PICTURES_MAX_BYTES {
-                break;
-            }
-            package.pictures.insert(
-                name,
-                AnkiPicture {
+            let picture = read.and_then(|bytes| {
+                let media_type = assets::sniff(&bytes)
+                    .filter(|kind| kind.is_picture())
+                    .ok_or(MediaProblem::Unsupported)?;
+                total += bytes.len() as u64;
+                if total > ANKI_PICTURES_MAX_BYTES {
+                    return Err(MediaProblem::TooLarge);
+                }
+                Ok(AnkiPicture {
                     bytes: bytes.into(),
                     media_type,
-                },
-            );
+                })
+            });
+            match picture {
+                Ok(picture) => {
+                    package.pictures.insert(name, picture);
+                }
+                Err(problem) => {
+                    problems.insert(name, problem);
+                }
+            }
         }
     }
 
     let mut missing = 0;
+    let left_out = &mut package.pictures_left_out;
     for deck in &mut package.decks {
         deck.notes.retain(|note| match &note.occlusion {
             Some(occlusion) if !package.pictures.contains_key(&occlusion.picture) => {
@@ -1319,9 +1450,42 @@ fn attach_pictures(mut package: AnkiPackage, path: &Path) -> AnkiPackage {
             }
             _ => true,
         });
+        for note in &mut deck.notes {
+            for side in [&mut note.pictures.front, &mut note.pictures.back] {
+                side.retain(|name| {
+                    if package.pictures.contains_key(name) {
+                        return true;
+                    }
+                    match problems.get(name) {
+                        // The package couldn't be opened: as if it had none.
+                        Some(MediaProblem::Missing) | None => left_out.missing += 1,
+                        Some(MediaProblem::TooLarge) => left_out.too_large += 1,
+                        Some(MediaProblem::Unsupported) => left_out.unsupported += 1,
+                    }
+                    false
+                });
+                if side.len() > CARD_SIDE_PICTURES_MAX {
+                    left_out.too_many += side.len() - CARD_SIDE_PICTURES_MAX;
+                    side.truncate(CARD_SIDE_PICTURES_MAX);
+                }
+            }
+        }
     }
     package.decks.retain(|deck| !deck.notes.is_empty());
     package.skipped.image_occlusion += missing;
+
+    // Pictures no card or note shows any more aren't held.
+    let used: HashSet<String> = package
+        .decks
+        .iter()
+        .flat_map(|deck| &deck.notes)
+        .flat_map(|note| {
+            let occlusion = note.occlusion.as_ref().map(|o| &o.picture);
+            let sides = note.pictures.front.iter().chain(&note.pictures.back);
+            occlusion.into_iter().chain(sides).cloned()
+        })
+        .collect();
+    package.pictures.retain(|name, _| used.contains(name));
     package
 }
 
@@ -1408,9 +1572,10 @@ pub async fn planned_names(
 }
 
 /// Saves a package: a new deck for each of its decks, a new card for each
-/// front/back note and a cloze text with a new card per number for each
-/// cloze note, plus the reversed card of each reversible note with
-/// `both_directions`. All or nothing, in one transaction. Names are chosen
+/// front/back note (with its pictures) and a cloze text with a new card per
+/// number for each cloze note, plus the reversed card of each reversible note
+/// with `both_directions` (its pictures the other way round). Each picture is
+/// kept once. All or nothing, in one transaction. Names are chosen
 /// again at this moment, so a deck created since the preview is never
 /// clashed with.
 pub async fn import_package(
@@ -1434,7 +1599,12 @@ pub async fn import_package(
     let kept_at = now;
     let now = to_db_time(now);
     // Each picture is kept once, whatever number of notes use it.
-    let mut kept: HashMap<&str, i64> = HashMap::new();
+    let mut kept = KeptPictures {
+        package,
+        store,
+        now: kept_at,
+        kept: HashMap::new(),
+    };
     let mut tx = pool
         .begin_with("BEGIN IMMEDIATE")
         .await
@@ -1475,22 +1645,46 @@ pub async fn import_package(
             .map(|note| match (&note.cloze, &note.occlusion) {
                 (Some(text), _) => ToSave::Cloze(text),
                 (None, Some(occlusion)) => ToSave::Occlusion(occlusion),
-                (None, None) => ToSave::Card(&note.front, &note.back),
+                (None, None) => ToSave::Card(
+                    &note.front,
+                    &note.back,
+                    &note.pictures.front,
+                    &note.pictures.back,
+                ),
             });
         let reversed = deck
             .notes
             .iter()
             .filter(|note| both_directions && note.reversible)
-            .map(|note| ToSave::Card(&note.back, &note.front));
+            .map(|note| {
+                ToSave::Card(
+                    &note.back,
+                    &note.front,
+                    &note.pictures.back,
+                    &note.pictures.front,
+                )
+            });
         let mut cards = 0;
         for (index, card) in forward.chain(reversed).enumerate() {
             let refused = |problem| AuthoringError::InvalidCard(index, problem);
             match card {
-                ToSave::Card(front, back) => {
+                ToSave::Card(front, back, front_pictures, back_pictures) => {
                     let card = validate_card(front, back).map_err(refused)?;
-                    insert_new_card(&mut tx, id, &card, &now)
+                    let card_id = insert_new_card(&mut tx, id, &card, &now)
                         .await
                         .map_err(AuthoringError::from)?;
+                    if !(front_pictures.is_empty() && back_pictures.is_empty()) {
+                        let mut pictures = CardPictures::default();
+                        for name in front_pictures {
+                            pictures.front.push(kept.keep(&mut tx, name).await?);
+                        }
+                        for name in back_pictures {
+                            pictures.back.push(kept.keep(&mut tx, name).await?);
+                        }
+                        set_card_pictures(&mut tx, card_id, &pictures)
+                            .await
+                            .map_err(AuthoringError::from)?;
+                    }
                     cards += 1;
                 }
                 ToSave::Cloze(text) => {
@@ -1504,27 +1698,7 @@ pub async fn import_package(
                     let occlusion =
                         validate_occlusion(&checked.header, checked.mode, &checked.boxes)
                             .map_err(refused)?;
-                    let asset_id = match kept.get(note.picture.as_str()) {
-                        Some(&asset_id) => asset_id,
-                        None => {
-                            let picture = package.pictures.get(&note.picture).ok_or_else(|| {
-                                AuthoringError::Internal(
-                                    "an occlusion's picture wasn't read".into(),
-                                )
-                            })?;
-                            let asset = assets::put(
-                                &mut tx,
-                                store,
-                                &picture.bytes,
-                                picture.media_type,
-                                kept_at,
-                            )
-                            .await
-                            .map_err(AnkiError::Picture)?;
-                            kept.insert(&note.picture, asset.id);
-                            asset.id
-                        }
-                    };
+                    let asset_id = kept.keep(&mut tx, &note.picture).await?.id;
                     cards += insert_occlusion(&mut tx, id, asset_id, &occlusion, &now)
                         .await
                         .map_err(AuthoringError::from)?;
@@ -1538,10 +1712,46 @@ pub async fn import_package(
     Ok(imported)
 }
 
+/// The pictures [`import_package`] has kept so far, so each is kept once,
+/// whatever number of notes and cards show it.
+struct KeptPictures<'a> {
+    package: &'a AnkiPackage,
+    store: &'a AssetStore,
+    now: DateTime<Utc>,
+    kept: HashMap<&'a str, Asset>,
+}
+
+impl<'a> KeptPictures<'a> {
+    /// The kept file of the package's picture `name`, keeping it if needed.
+    async fn keep(
+        &mut self,
+        conn: &mut SqliteConnection,
+        name: &'a str,
+    ) -> Result<Asset, AnkiError> {
+        if let Some(asset) = self.kept.get(name) {
+            return Ok(asset.clone());
+        }
+        let picture = self.package.pictures.get(name).ok_or_else(|| {
+            AuthoringError::Internal("a picture to keep wasn't read from the package".into())
+        })?;
+        let asset = assets::put(
+            conn,
+            self.store,
+            &picture.bytes,
+            picture.media_type,
+            self.now,
+        )
+        .await
+        .map_err(AnkiError::Picture)?;
+        self.kept.insert(name, asset.clone());
+        Ok(asset)
+    }
+}
+
 /// One thing [`import_package`] saves into a deck.
 enum ToSave<'a> {
-    /// A card's front and back.
-    Card(&'a str, &'a str),
+    /// A card's front and back, and the pictures on each.
+    Card(&'a str, &'a str, &'a [String], &'a [String]),
     /// A cloze text, with its cards.
     Cloze(&'a str),
     /// An image occlusion, with its picture and cards.
@@ -1780,7 +1990,22 @@ impl PlainText {
 /// entities are decoded; other white space is collapsed as a browser would.
 /// Anki's `[sound:…]` tags go too.
 pub fn html_to_text(html: &str) -> (String, bool) {
-    let mut media = false;
+    let (text, media) = text_and_media(html);
+    (text, media.pictures || media.other)
+}
+
+/// What media a field had, beside its text.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Media {
+    /// An `<img>`.
+    pictures: bool,
+    /// A sound, video, or other embedded thing (an inline SVG, say).
+    other: bool,
+}
+
+/// [`html_to_text`], telling pictures apart from other media.
+fn text_and_media(html: &str) -> (String, Media) {
+    let mut media = Media::default();
     let mut out = PlainText {
         text: String::new(),
     };
@@ -1789,7 +2014,7 @@ pub fn html_to_text(html: &str) -> (String, bool) {
         let rest = &html[index..];
         if rest.starts_with("[sound:") {
             if let Some(end) = rest.find(']') {
-                media = true;
+                media.other = true;
                 index += end + 1;
                 continue;
             }
@@ -1802,8 +2027,10 @@ pub fn html_to_text(html: &str) -> (String, bool) {
             if let Some((len, name, closing)) = parse_tag(rest) {
                 index += len;
                 let name = name.as_str();
-                if MEDIA_TAGS.contains(&name) {
-                    media = true;
+                if name == "img" {
+                    media.pictures = true;
+                } else if MEDIA_TAGS.contains(&name) {
+                    media.other = true;
                 }
                 if HIDDEN_TAGS.contains(&name) && !closing && !rest[..len].ends_with("/>") {
                     // Skip to the end of the matching closing tag.
@@ -1863,6 +2090,10 @@ mod tests {
     /// `make_fixtures.py`), in the newer and the legacy format.
     const OCCLUSION_APKG: &[u8] = include_bytes!("../testdata/anki/occlusion.apkg");
     const OCCLUSION_LEGACY_APKG: &[u8] = include_bytes!("../testdata/anki/occlusion-legacy.apkg");
+    /// Front/back notes with pictures (the third collection in
+    /// `make_fixtures.py`), in the newer and the legacy format.
+    const PICTURES_APKG: &[u8] = include_bytes!("../testdata/anki/pictures.apkg");
+    const PICTURES_LEGACY_APKG: &[u8] = include_bytes!("../testdata/anki/pictures-legacy.apkg");
 
     /// A store folder of its own for each test that saves.
     fn test_store() -> AssetStore {
@@ -1941,7 +2172,16 @@ mod tests {
                 no_card: 0,
             }
         );
+        // The sound; the picture beside it isn't in the package (exported
+        // without media).
         assert_eq!(package.media_removed, 1);
+        assert_eq!(
+            package.pictures_left_out,
+            PicturesLeftOut {
+                missing: 1,
+                ..PicturesLeftOut::default()
+            }
+        );
         assert_eq!(package.extra_removed, 1);
         assert_eq!(package.reviewed, 1);
 
@@ -2512,6 +2752,7 @@ mod tests {
                 reversible: false,
                 cloze: None,
                 occlusion: None,
+                pictures: AnkiCardPictures::default(),
                 cards: 1,
             });
             let refused = import_package(&pool, &test_store(), &package, false, at(NOW)).await;
@@ -2537,6 +2778,7 @@ mod tests {
                 reversible: false,
                 cloze: Some("No deletion".to_string()),
                 occlusion: None,
+                pictures: AnkiCardPictures::default(),
                 cards: 1,
             });
             let refused = import_package(&pool, &test_store(), &package, false, at(NOW)).await;
@@ -2559,6 +2801,7 @@ mod tests {
                 notes: 3,
                 skipped: Skipped::default(),
                 media_removed: 0,
+                pictures_left_out: PicturesLeftOut::default(),
                 extra_removed: 0,
                 reviewed: 0,
                 occlusion_approximated: 0,
@@ -2575,6 +2818,7 @@ mod tests {
                 reversible: true,
                 cloze: None,
                 occlusion: None,
+                pictures: AnkiCardPictures::default(),
                 cards: 1,
             };
             let many = AnkiPackage {
@@ -2729,6 +2973,203 @@ mod tests {
         });
     }
 
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|name| name.to_string()).collect()
+    }
+
+    #[test]
+    fn front_back_pictures_are_read_from_the_package() {
+        for bytes in [PICTURES_APKG, PICTURES_LEGACY_APKG] {
+            let package = read_bytes(bytes).unwrap();
+            assert_eq!(package.notes, 8);
+            // The note whose front is only a picture has no text there.
+            assert_eq!(
+                package.skipped,
+                Skipped {
+                    empty: 1,
+                    ..Skipped::default()
+                }
+            );
+            // "Gone" (not in the package, and a web address), "Vector" (an
+            // SVG) and "Many"'s fifth.
+            assert_eq!(
+                package.pictures_left_out,
+                PicturesLeftOut {
+                    missing: 2,
+                    unsupported: 1,
+                    too_large: 0,
+                    too_many: 1,
+                }
+            );
+            // The sound, and the cloze note's picture.
+            assert_eq!(package.media_removed, 2);
+
+            let (_, heart) = note(&package, "Heart");
+            assert_eq!(heart.back, "Pumps blood");
+            assert_eq!(heart.pictures.front, names(&["heart.png"]));
+            assert_eq!(heart.pictures.back, names(&["dot.gif"]));
+            let (_, valve) = note(&package, "Valve");
+            assert!(valve.reversible);
+            assert_eq!(valve.pictures.front, names(&["heart.png"]));
+            assert!(valve.pictures.back.is_empty());
+            let (_, many) = note(&package, "Many");
+            assert_eq!(
+                many.pictures.front,
+                names(&["p1.png", "p2.png", "p3.png", "p4.png"])
+            );
+            for front in ["Gone", "Vector"] {
+                assert_eq!(note(&package, front).1.pictures.count(), 0);
+            }
+            assert_eq!(
+                note(&package, "Sound").1.pictures.front,
+                names(&["heart.png"])
+            );
+            let (_, cloze) = note(&package, "[...]");
+            assert_eq!(cloze.pictures.count(), 0);
+
+            // Only the pictures cards show are held, each once.
+            let mut held: Vec<&str> = package.pictures.keys().map(String::as_str).collect();
+            held.sort_unstable();
+            assert_eq!(
+                held,
+                [
+                    "dot.gif",
+                    "heart.png",
+                    "p1.png",
+                    "p2.png",
+                    "p3.png",
+                    "p4.png"
+                ]
+            );
+            assert_eq!(package.pictures["dot.gif"].media_type, MediaType::Gif);
+            assert_eq!(package.pictures["heart.png"].media_type, MediaType::Png);
+        }
+    }
+
+    #[test]
+    fn front_back_pictures_are_saved_with_their_cards_and_kept_once() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let store = test_store();
+            let package = read_async(PICTURES_APKG).await.unwrap();
+            let imported = import_package(&pool, &store, &package, true, at(NOW))
+                .await
+                .unwrap();
+            // Six front/back notes, a reversed card and a cloze card.
+            assert_eq!(imported.cards, 8);
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM assets").await, 6);
+            // Heart 2, Valve 1 and its reversed card 1, Many 4, Sound 1.
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM card_pictures").await, 9);
+
+            let detail = crate::authoring::deck_detail(&pool, imported.decks[0].id, at(NOW))
+                .await
+                .unwrap();
+            let card = |front: &str| {
+                detail
+                    .cards
+                    .iter()
+                    .find(|card| card.front == front)
+                    .unwrap_or_else(|| panic!("no card {front:?}"))
+            };
+            let sha = |name: &str| assets::sha256_hex(&package.pictures[name].bytes);
+            let shas = |list: &[Asset]| list.iter().map(|a| a.sha256.clone()).collect::<Vec<_>>();
+            let heart = card("Heart");
+            assert_eq!(shas(&heart.pictures.front), [sha("heart.png")]);
+            assert_eq!(shas(&heart.pictures.back), [sha("dot.gif")]);
+            assert_eq!(heart.pictures.back[0].media_type, MediaType::Gif);
+            // The reversed card shows the front's picture as its answer.
+            let reversed = card("Lets blood one way");
+            assert!(reversed.pictures.front.is_empty());
+            assert_eq!(shas(&reversed.pictures.back), [sha("heart.png")]);
+            let many = card("Many");
+            assert_eq!(
+                shas(&many.pictures.front),
+                ["p1.png", "p2.png", "p3.png", "p4.png"].map(sha)
+            );
+            assert_eq!(card("Gone").pictures, CardPictures::default());
+            for name in package.pictures.keys() {
+                let bytes = &package.pictures[name].bytes;
+                assert!(store.verify(&sha(name), bytes.len() as u64));
+            }
+
+            // Shown in review with the card, as a picture added in Synapse.
+            let reviewed =
+                crate::pictures::card_pictures(&mut pool.acquire().await.unwrap(), heart.id)
+                    .await
+                    .unwrap();
+            assert_eq!(reviewed, heart.pictures);
+
+            // Importing again reuses the kept pictures.
+            import_package(&pool, &store, &package, false, at(NOW))
+                .await
+                .unwrap();
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM assets").await, 6);
+            assert_eq!(
+                count(&pool, "SELECT COUNT(*) FROM card_pictures").await,
+                9 + 8
+            );
+        });
+    }
+
+    #[test]
+    fn card_pictures_too_large_or_not_pictures_are_left_out() {
+        let scratch = ScratchDir::new().unwrap();
+        let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        let mut huge = png.clone();
+        huge.resize(MAX_PICTURE_BYTES as usize + 1, 0);
+        let index = br#"{"0": "big.png", "1": "notes.txt", "2": "small.png"}"#;
+        let bytes = zip_of(&[
+            ("media", index),
+            ("0", &huge),
+            ("1", b"just text"),
+            ("2", &png),
+        ]);
+        let path = scratch.path().join("pictures.apkg");
+        std::fs::write(&path, bytes).unwrap();
+
+        let side = names(&["big.png", "notes.txt", "small.png", "nowhere.png"]);
+        let package = AnkiPackage {
+            decks: vec![AnkiDeck {
+                anki_name: "Deck".to_string(),
+                notes: vec![AnkiNote {
+                    front: "q".to_string(),
+                    back: "a".to_string(),
+                    reversible: false,
+                    cloze: None,
+                    occlusion: None,
+                    pictures: AnkiCardPictures {
+                        front: side.clone(),
+                        back: side,
+                    },
+                    cards: 1,
+                }],
+            }],
+            notes: 1,
+            skipped: Skipped::default(),
+            media_removed: 0,
+            pictures_left_out: PicturesLeftOut::default(),
+            extra_removed: 0,
+            reviewed: 0,
+            occlusion_approximated: 0,
+            pictures: HashMap::new(),
+        };
+        let package = attach_pictures(package, &path);
+        // The card stays, with only the picture that could be kept.
+        let note = &package.decks[0].notes[0];
+        assert_eq!(note.pictures.front, names(&["small.png"]));
+        assert_eq!(note.pictures.back, names(&["small.png"]));
+        assert_eq!(
+            package.pictures_left_out,
+            PicturesLeftOut {
+                missing: 2,
+                unsupported: 2,
+                too_large: 2,
+                too_many: 0,
+            }
+        );
+        assert_eq!(package.pictures.len(), 1);
+    }
+
     #[test]
     fn image_occlusion_shapes_and_pictures_are_read_carefully() {
         assert_eq!(
@@ -2749,6 +3190,14 @@ mod tests {
         );
         assert_eq!(picture_name(r#"<img src="../a.png">"#), None);
         assert_eq!(picture_name("no picture"), None);
+        // Every picture of a side, each once, and those naming no file.
+        assert_eq!(
+            picture_names(
+                r#"<img src="a.png"> x <img src='b.gif'><img src="a.png"><img src="http://x/c.png"><img alt="no source"><imgx src="d.png">"#
+            ),
+            (names(&["a.png", "b.gif"]), 2)
+        );
+        assert_eq!(picture_names("no picture"), (Vec::new(), 0));
 
         // Not a shape, or an unknown one: the note is left out.
         assert_eq!(read_shapes("{{c1::Mitosis}}"), None);
