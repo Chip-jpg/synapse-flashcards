@@ -244,7 +244,11 @@ asks for confirmation, naming how many, then restores every one of them the same
 or not at all. To bring back only some, tick *Select* on those deleted cards and choose *Restore
 selected*: it asks first, naming how many, and restores them together or not at all (if any was
 changed meanwhile, nothing happens and the screen reloads). A cloze or picture card that can't come
-back yet has no *Select*.
+back yet has no *Select*. With two or more that can come back, *Select all* ticks every one of
+them (choose it again, or *Clear selection*, to untick them); this is on branch
+`claude/project-thread-psq6by`, not yet released. Only one list has a selection at a time:
+ticking a deleted card clears the cards selected above, and the other way round, so a single
+selection bar is shown.
 
 **Search, select, and change several cards.** With two or more cards, the deck screen has *Search
 cards*, which shows only the cards whose front or back contains what you type (ignoring capitals).
@@ -540,8 +544,8 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   picture* works; on Windows (WebView2) it is expected to work but hasn't been tried. Pictures
   aren't exported to CSV or brought in from Anki.
 - **Restoring is per deck.** *Deleted cards* restores one card, the ones ticked with *Restore
-  selected*, or with *Restore all* every deleted card of that deck at once; there's no *Select all*
-  for deleted cards, no undo of a restore beyond deleting the cards again, and no way to move a card
+  selected* (or all that can come back, with *Select all*), or with *Restore all* every deleted card
+  of that deck at once; there's no undo of a restore beyond deleting the cards again, and no way to move a card
   to a different deck on the way back.
 - **Notes are plain text.** Markdown is shown formatted when you read a note, but there's no
   formatting toolbar or live preview while editing, no reference-style links, footnotes or maths, and

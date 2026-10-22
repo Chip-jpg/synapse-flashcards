@@ -339,10 +339,24 @@ function DeckView({
   const cards = deck.cardCount;
   const due = deck.dueCount;
   const deleted = deck.deletedCards.length;
-  // The search and selection last as long as this view: any change to the
-  // deck remounts it (see `ViewState`), which clears both.
+  // The search and selections last as long as this view: any change to the
+  // deck remounts it (see `ViewState`), which clears them.
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<ReadonlySet<number>>(new Set());
+  // Deleted cards selected for *Restore selected*. Only one of the two lists
+  // has a selection at a time, so only one selection bar is ever shown:
+  // selecting in one list clears the other.
+  const [deletedSelected, setDeletedSelected] = useState<ReadonlySet<number>>(new Set());
+
+  function selectCards(change: (previous: ReadonlySet<number>) => ReadonlySet<number>) {
+    setDeletedSelected(new Set());
+    setSelected(change);
+  }
+
+  function selectDeleted(change: (previous: ReadonlySet<number>) => ReadonlySet<number>) {
+    setSelected(new Set());
+    setDeletedSelected(change);
+  }
   // Kept between renders, so ticking a card doesn't search the deck again.
   const shown = useMemo(() => matchingCards(deck.cards, query), [deck.cards, query]);
   // Each cloze text's and each picture's cards, in the deck's order, worked
@@ -375,7 +389,7 @@ function DeckView({
   }
 
   function toggle(card: DeckCard) {
-    setSelected((previous) => {
+    selectCards((previous) => {
       const next = new Set(previous);
       const ids = withSiblings(card);
       if (previous.has(card.id)) for (const id of ids) next.delete(id);
@@ -386,7 +400,7 @@ function DeckView({
 
   /** Selects every card the search shows, or unselects them if all already are. */
   function toggleShown() {
-    setSelected((previous) => {
+    selectCards((previous) => {
       const next = new Set(previous);
       for (const card of shown) {
         for (const id of withSiblings(card)) {
@@ -526,6 +540,8 @@ function DeckView({
         <DeletedCardList
           deckId={deck.id}
           cards={deck.deletedCards}
+          selected={deletedSelected}
+          onSelect={selectDeleted}
           onRestored={onRestored}
           onStale={onRestoreStale}
           onRestoredAll={onRestoredAll}
@@ -956,12 +972,15 @@ function CardItem({
  * Deleted cards: this deck's history, and the only place they appear. They
  * can't be edited or reviewed while they're deleted; *Restore card* puts one
  * back in the deck above exactly as it was, *Restore selected* puts back the
- * ones ticked, and *Restore all* (offered when there are two or more) puts
- * every one back the same way.
+ * ones ticked (one by one, or all that can come back with *Select all*), and
+ * *Restore all* (offered when there are two or more) puts every one back the
+ * same way.
  */
 function DeletedCardList({
   deckId,
   cards,
+  selected,
+  onSelect,
   onRestored,
   onStale,
   onRestoredAll,
@@ -971,6 +990,9 @@ function DeletedCardList({
 }: {
   deckId: number;
   cards: DeletedCard[];
+  /** The deleted cards selected; the deck view holds them (see `selectDeleted`). */
+  selected: ReadonlySet<number>;
+  onSelect: (change: (previous: ReadonlySet<number>) => ReadonlySet<number>) => void;
   onRestored: (deck: Deck) => void;
   onStale: () => void;
   onRestoredAll: (deck: Deck, restored: number) => void;
@@ -981,18 +1003,23 @@ function DeletedCardList({
 }) {
   // A cloze card whose number has left its text (or a picture card whose box
   // was removed) can't come back yet, so it can't be selected either.
-  const restorable = cards.filter(canRestore).length;
-  // Lasts as long as the deck view: any change to the deck remounts it.
-  const [selected, setSelected] = useState<ReadonlySet<number>>(new Set());
+  const restorableIds = cards.filter(canRestore).map((card) => card.id);
+  const restorable = restorableIds.length;
   // In the list's order, which is the order they are sent in.
   const selectedIds = cards.map((card) => card.id).filter((id) => selected.has(id));
+  const allSelected = restorable > 0 && selectedIds.length === restorable;
 
   function toggle(cardId: number) {
-    setSelected((previous) => {
+    onSelect((previous) => {
       const next = new Set(previous);
       if (!next.delete(cardId)) next.add(cardId);
       return next;
     });
+  }
+
+  /** Selects every card that can be restored, or none if all already are. */
+  function toggleAll() {
+    onSelect(() => new Set(allSelected ? [] : restorableIds));
   }
   return (
     <section className="cards section-quiet" aria-labelledby="deleted-cards-heading">
@@ -1018,6 +1045,18 @@ function DeletedCardList({
           onStale={onRestoreAllStale}
         />
       )}
+      {restorable >= 2 && (
+        <label className="select-all">
+          <SelectAllBox
+            checked={allSelected}
+            mixed={selectedIds.length > 0 && !allSelected}
+            onChange={toggleAll}
+          />
+          {restorable === cards.length
+            ? "Select all deleted cards"
+            : `Select all ${restorable} cards that can be restored`}
+        </label>
+      )}
       <ul className="card-list">
         {cards.map((card) => (
           <li key={card.id}>
@@ -1035,7 +1074,7 @@ function DeletedCardList({
         <RestoreSelected
           deckId={deckId}
           selected={selectedIds}
-          onClear={() => setSelected(new Set())}
+          onClear={() => onSelect(() => new Set())}
           onRestored={onRestoredSelected}
           onStale={onSelectionStale}
         />
