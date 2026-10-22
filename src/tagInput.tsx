@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getTags } from "./api";
 
 /**
@@ -89,12 +89,18 @@ export function useTagNames(): string[] {
   return names;
 }
 
+/** At most this many tags in use are offered while typing. */
+const SUGGESTIONS_SHOWN = 8;
+
 /**
  * A form field for a card's or note's tags: each tag a removable chip, and a
  * box to type more in. A space, a comma or Enter turns what's typed into a
- * tag, and so does leaving the box (so pressing Save keeps a tag still being
- * typed). Backspace in the empty box takes the last tag off. Tags already in
- * use are suggested. Rust checks the names when the form is saved; a refused
+ * tag, and so does leaving the box for another part of the page (so pressing
+ * Save keeps a tag still being typed). Backspace in the empty box takes the
+ * last tag off. Tags already in use that contain what's being typed are
+ * offered as buttons under the box (not a datalist: WebKitGTK applies a
+ * picked suggestion after the key or blur that has already finished the
+ * half-typed tag). Rust checks the names when the form is saved; a refused
  * one comes back as this field's `error`, focusing the box (`id`).
  */
 export function TagField({
@@ -116,14 +122,22 @@ export function TagField({
 }) {
   const [typed, setTyped] = useState("");
   const suggestions = useTagNames();
-  const listId = useId();
+  const suggestionsRef = useRef<HTMLUListElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const hintId = hint === undefined ? undefined : `${id}-hint`;
   const errorId = `${id}-error`;
   const description = [error ? errorId : undefined, hintId].filter(Boolean).join(" ");
-  const offered = suggestions.filter(
-    (name) => !tags.some((tag) => tag.toLowerCase() === name.toLowerCase()),
-  );
+  const wanted = typed.trim().toLowerCase();
+  const offered =
+    wanted === ""
+      ? []
+      : suggestions
+          .filter(
+            (name) =>
+              name.toLowerCase().includes(wanted) &&
+              !tags.some((tag) => tag.toLowerCase() === name.toLowerCase()),
+          )
+          .slice(0, SUGGESTIONS_SHOWN);
 
   function commit(text: string) {
     const names = splitTags(text);
@@ -139,6 +153,12 @@ export function TagField({
     } else {
       setTyped(text);
     }
+  }
+
+  function pick(name: string) {
+    onChange(addTags(tags, [name]));
+    setTyped("");
+    inputRef.current?.focus();
   }
 
   function remove(tag: string) {
@@ -181,14 +201,15 @@ export function TagField({
           type="text"
           className="field-input tag-input"
           value={typed}
-          list={listId}
           autoComplete="off"
           spellCheck={false}
           disabled={disabled}
           aria-invalid={error ? true : undefined}
           aria-describedby={description || undefined}
           onChange={(event) => type(event.target.value)}
-          onBlur={() => {
+          onBlur={(event) => {
+            // Moving to a suggestion: picking it replaces what's typed.
+            if (suggestionsRef.current?.contains(event.relatedTarget as Node | null)) return;
             commit(typed);
             setTyped("");
           }}
@@ -204,12 +225,27 @@ export function TagField({
             }
           }}
         />
-        <datalist id={listId}>
-          {offered.map((name) => (
-            <option key={name} value={name} />
-          ))}
-        </datalist>
       </div>
+      {offered.length > 0 && (
+        <ul ref={suggestionsRef} className="tag-list tag-suggestions" aria-label="Tags in use">
+          {offered.map((name) => (
+            <li key={name}>
+              <button
+                type="button"
+                className="tag-chip tag-suggestion"
+                aria-label={`Add tag ${name}`}
+                disabled={disabled}
+                // Keeps focus in the box, so leaving it doesn't finish the
+                // half-typed tag first.
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => pick(name)}
+              >
+                <span className="tag-name">{name}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       {error && (
         <p id={errorId} className="field-error">
           {error}

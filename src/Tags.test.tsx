@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { Note, NoteSummary, SearchHit, TagSummary } from "./api";
@@ -88,22 +88,31 @@ describe("tags on a note", () => {
     await user.type(screen.getByLabelText("Note"), "They divide.");
 
     const field = screen.getByLabelText("Tags") as HTMLInputElement;
-    await waitFor(() =>
-      expect(
-        [...(field.list?.querySelectorAll("option") ?? [])].map((option) => option.value),
-      ).toEqual(["bio::cells", "chem", "exam"]),
-    );
     // A space or comma ends a tag; Enter does too, without saving the form.
     await user.type(field, "bio, exam Bio{Enter}");
     const added = screen.getByRole("list", { name: "Tags added" });
     expect(chipNames(added)).toEqual(["bio", "exam"]);
     expect(field.value).toBe("");
     expect(argsOf("create_note")).toEqual([]);
-    // Suggestions leave out the tags already added.
-    expect([...(field.list?.querySelectorAll("option") ?? [])].map((o) => o.value)).toEqual([
-      "bio::cells",
-      "chem",
-    ]);
+
+    // Tags in use containing what's typed are offered, leaving out those added.
+    await user.type(field, "e");
+    const offered = await screen.findByRole("list", { name: "Tags in use" });
+    expect(chipNames(offered)).toEqual(["bio::cells", "chem"]);
+    // Picking one replaces the half-typed word, with focus back in the box.
+    await user.click(screen.getByRole("button", { name: "Add tag chem" }));
+    expect(chipNames(added)).toEqual(["bio", "exam", "chem"]);
+    expect(field.value).toBe("");
+    expect(document.activeElement).toBe(field);
+    expect(screen.queryByRole("list", { name: "Tags in use" })).toBeNull();
+    // Reached with Tab, the half-typed word isn't kept either.
+    await user.type(field, "cel");
+    await user.tab();
+    await user.keyboard("{Enter}");
+    expect(chipNames(added)).toEqual(["bio", "exam", "chem", "bio::cells"]);
+    for (const name of ["chem", "bio::cells"]) {
+      await user.click(screen.getByRole("button", { name: `Remove tag ${name}` }));
+    }
 
     // Backspace in the empty box takes the last one off; × takes one off.
     await user.type(field, "{Backspace}");

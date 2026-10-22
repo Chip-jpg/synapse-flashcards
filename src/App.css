@@ -331,6 +331,7 @@ body {
 .notes,
 .stats,
 .search-screen,
+.tags-screen,
 .archived,
 .backup,
 .settings {
@@ -1817,6 +1818,7 @@ html:has(.note-context) {
 .desk:focus,
 .deck-detail:focus,
 .notes:focus,
+.tags-screen:focus,
 .archived:focus,
 .backup:focus,
 .settings:focus,
@@ -3220,13 +3222,33 @@ textarea.field-input {
   min-width: 0;
 }
 
+.tag-suggestion {
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  background-color: var(--surface);
+  border-color: var(--border);
+  border-style: dashed;
+  cursor: pointer;
+}
+
+.tag-suggestion:hover {
+  color: var(--primary-ink);
+  background-color: var(--primary-soft);
+}
+
+.tag-suggestion:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
 .note-tag-filter {
   max-width: 20rem;
 }
 
 /* The Tags screen: one row a tag, its counts, and Rename / Find. */
 .tag-item {
-  display: flex;
+  flex-direction: row;
   flex-wrap: wrap;
   gap: 0.75rem 1rem;
   align-items: center;
