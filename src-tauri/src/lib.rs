@@ -25,6 +25,7 @@ mod sources;
 mod stats;
 mod study;
 mod suggest;
+mod tags;
 mod vision;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -74,6 +75,11 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_decks,
+            commands::get_tags,
+            commands::set_card_tags,
+            commands::tag_flashcards,
+            commands::set_note_tags,
+            commands::rename_tag,
             commands::get_today,
             commands::get_statistics,
             commands::get_archived_decks,

@@ -91,6 +91,7 @@ use crate::db::{to_db_time, DbError};
 use crate::occlusion;
 use crate::pictures::{self, CardPictureIds, CardPictures, PictureError, PictureProblem};
 use crate::study;
+use crate::tags::{self, TagProblem};
 
 pub const DECK_NAME_MAX_CHARS: usize = 100;
 pub const DECK_DESCRIPTION_MAX_CHARS: usize = 500;
@@ -149,6 +150,8 @@ pub struct DeckCard {
     pub cloze: Option<CardCloze>,
     pub pictures: CardPictures,
     pub occlusion: Option<CardOcclusion>,
+    /// The card's tags, sorted by name (`tags.rs`).
+    pub tags: Vec<String>,
 }
 
 /// Which image occlusion a card was made from, and its box number:
@@ -214,6 +217,8 @@ pub struct DeletedCard {
     /// An image occlusion card's box number, and why it can't be restored
     /// now, if it can't (as for a cloze card); `null` for any other card.
     pub occlusion: Option<DeletedCloze>,
+    /// The tags it had when deleted, kept for when it comes back.
+    pub tags: Vec<String>,
 }
 
 impl DeletedCard {
@@ -333,6 +338,10 @@ pub enum AuthoringError {
     OcclusionSplit,
     /// The picture for an image occlusion isn't a kept picture.
     PictureMissing,
+    /// The tags sent: a bad name, or too many on one card (`tags.rs`).
+    Tags(TagProblem),
+    /// Bulk tagging was asked for with no tag to add or remove.
+    NoTagChange,
     /// Anything else (a database failure). Detail is for logs only.
     Internal(DbError),
 }
@@ -582,10 +591,12 @@ pub(crate) async fn load_deck_detail(
     let mut card_pictures = pictures::deck_card_pictures(conn, deck_id)
         .await
         .map_err(AuthoringError::Internal)?;
+    let mut card_tags = tags::deck_card_tags(conn, deck_id).await?;
     let cards = cards
         .into_iter()
         .map(|row| DeckCard {
             pictures: card_pictures.remove(&row.id).unwrap_or_default(),
+            tags: card_tags.remove(&row.id).unwrap_or_default(),
             cloze: match (row.cloze_text_id, row.cloze_number, row.cloze_text) {
                 (Some(text_id), Some(number), Some(text)) => Some(CardCloze {
                     text_id,
@@ -643,6 +654,7 @@ pub(crate) async fn load_deck_detail(
             deleted_at: row.deleted_at.unwrap_or_default(),
             cloze,
             occlusion,
+            tags: card_tags.remove(&row.id).unwrap_or_default(),
         });
     }
 
@@ -688,6 +700,7 @@ pub async fn create_flashcard(
 
 /// As [`create_flashcard`], with pictures on either side (`pictures.rs`).
 /// The text and every picture are checked before anything is written.
+#[cfg(test)]
 pub async fn create_flashcard_with_pictures(
     pool: &SqlitePool,
     deck_id: i64,
@@ -696,7 +709,24 @@ pub async fn create_flashcard_with_pictures(
     picture_ids: &CardPictureIds,
     now: DateTime<Utc>,
 ) -> Result<DeckDetail, AuthoringError> {
+    create_flashcard_tagged(pool, deck_id, front, back, picture_ids, None, now).await
+}
+
+/// As [`create_flashcard_with_pictures`], also giving the card the tags
+/// `tag_names` (`tags.rs`; `None` or an empty list gives none). The text,
+/// pictures and tags are all checked before anything is written.
+pub async fn create_flashcard_tagged(
+    pool: &SqlitePool,
+    deck_id: i64,
+    front: &str,
+    back: &str,
+    picture_ids: &CardPictureIds,
+    tag_names: Option<&[String]>,
+    now: DateTime<Utc>,
+) -> Result<DeckDetail, AuthoringError> {
     let card = validate_card(front, back)?;
+    let tag_names = checked_tags(tag_names)?;
+    let at = now;
     let now = to_db_time(now);
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
 
@@ -707,6 +737,9 @@ pub async fn create_flashcard_with_pictures(
     let card_id = insert_new_card(&mut tx, deck_id, &card, &now).await?;
     if !card_pictures.is_empty() {
         pictures::set_card_pictures(&mut tx, card_id, &card_pictures).await?;
+    }
+    if let Some(tag_names) = &tag_names {
+        tags::set_card_tags(&mut tx, card_id, tag_names, at).await?;
     }
 
     let deck = load_deck_detail(&mut tx, deck_id, &now).await?;
@@ -905,6 +938,7 @@ pub async fn update_flashcard(
 
 /// As [`update_flashcard`], also replacing the card's pictures when
 /// `picture_ids` is given (`None` keeps them).
+#[cfg(test)]
 pub async fn update_flashcard_with_pictures(
     pool: &SqlitePool,
     card_id: i64,
@@ -913,7 +947,23 @@ pub async fn update_flashcard_with_pictures(
     picture_ids: Option<&CardPictureIds>,
     now: DateTime<Utc>,
 ) -> Result<DeckDetail, AuthoringError> {
+    update_flashcard_tagged(pool, card_id, front, back, picture_ids, None, now).await
+}
+
+/// As [`update_flashcard_with_pictures`], also replacing the card's tags when
+/// `tag_names` is given (`None` keeps them).
+pub async fn update_flashcard_tagged(
+    pool: &SqlitePool,
+    card_id: i64,
+    front: &str,
+    back: &str,
+    picture_ids: Option<&CardPictureIds>,
+    tag_names: Option<&[String]>,
+    now: DateTime<Utc>,
+) -> Result<DeckDetail, AuthoringError> {
     let card = validate_card(front, back)?;
+    let tag_names = checked_tags(tag_names)?;
+    let at = now;
     let now = to_db_time(now);
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
 
@@ -947,10 +997,83 @@ pub async fn update_flashcard_with_pictures(
     if let Some(card_pictures) = card_pictures {
         pictures::set_card_pictures(&mut tx, card_id, &card_pictures).await?;
     }
+    if let Some(tag_names) = &tag_names {
+        tags::set_card_tags(&mut tx, card_id, tag_names, at).await?;
+    }
 
     let deck = load_deck_detail(&mut tx, deck_id, &now).await?;
     tx.commit().await?;
     Ok(deck)
+}
+
+/// Checks the tag names sent with a card, if any (`tags.rs`).
+fn checked_tags(tag_names: Option<&[String]>) -> Result<Option<Vec<String>>, AuthoringError> {
+    tag_names
+        .map(tags::checked_names)
+        .transpose()
+        .map_err(AuthoringError::Tags)
+}
+
+/// Replaces one card's tags with `tag_names` and returns its deck. Any kind
+/// of card (front/back, cloze, picture) takes tags; only its tags change, so
+/// its text, schedule and `updated_at` stay as they were. Refused, writing
+/// nothing, for a card that is deleted, in an archived deck, or in the sample
+/// deck.
+pub async fn set_card_tags(
+    pool: &SqlitePool,
+    card_id: i64,
+    tag_names: &[String],
+    now: DateTime<Utc>,
+) -> Result<DeckDetail, AuthoringError> {
+    let tag_names = tags::checked_names(tag_names).map_err(AuthoringError::Tags)?;
+    let at = now;
+    let now = to_db_time(now);
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let deck_id = changeable_card_deck(&mut tx, card_id).await?;
+    tags::set_card_tags(&mut tx, card_id, &tag_names, at).await?;
+    let deck = load_deck_detail(&mut tx, deck_id, &now).await?;
+    tx.commit().await?;
+    Ok(deck)
+}
+
+/// Adds the tags `add` to several cards of one active normal deck and takes
+/// `remove` off them, keeping each card's other tags, in one transaction.
+/// Returns how many cards' tags changed (a card that already had what was
+/// asked isn't counted) with the deck.
+///
+/// `card_ids` are the cards the user selected; as for
+/// [`delete_flashcards`], a card that is no longer an active card of the deck
+/// refuses the whole change ([`AuthoringError::SelectionChanged`]). A card
+/// that would end up with more than `tags::TAGS_MAX` tags refuses it too.
+/// Removing a name no card has is not an error. Only tags change: no card's
+/// text, schedule or `updated_at`.
+pub async fn tag_flashcards(
+    pool: &SqlitePool,
+    deck_id: i64,
+    card_ids: &[i64],
+    add: &[String],
+    remove: &[String],
+    now: DateTime<Utc>,
+) -> Result<ChangedCards, AuthoringError> {
+    check_selection(card_ids)?;
+    let add = tags::checked_names(add).map_err(AuthoringError::Tags)?;
+    let remove = tags::checked_names(remove).map_err(AuthoringError::Tags)?;
+    if add.is_empty() && remove.is_empty() {
+        return Err(AuthoringError::NoTagChange);
+    }
+    let at = now;
+    let now = to_db_time(now);
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+
+    let deck = load_deck_detail(&mut tx, deck_id, &now).await?;
+    check_selected_in(&deck, card_ids)?;
+    let changed = tags::change_card_tags(&mut tx, card_ids, &add, &remove, at)
+        .await?
+        .map_err(AuthoringError::Tags)?;
+
+    let deck = load_deck_detail(&mut tx, deck_id, &now).await?;
+    tx.commit().await?;
+    Ok(ChangedCards { changed, deck })
 }
 
 /// Soft-deletes a card and returns its deck, without the card.
@@ -2355,6 +2478,7 @@ mod tests {
                     cloze: None,
                     pictures: CardPictures::default(),
                     occlusion: None,
+                    tags: vec![],
                 }
             );
             assert_eq!((detail.card_count, detail.due_count), (2, 1));
@@ -2621,6 +2745,7 @@ mod tests {
                     cloze: None,
                     pictures: CardPictures::default(),
                     occlusion: None,
+                    tags: vec![],
                 }]
             );
             assert_eq!(
@@ -2751,6 +2876,7 @@ mod tests {
                     cloze: None,
                     pictures: CardPictures::default(),
                     occlusion: None,
+                    tags: vec![],
                 }]
             );
             // The seed card plus both created cards, the deleted one included.
@@ -3960,6 +4086,7 @@ mod tests {
                     deleted_at: "2026-09-15T12:00:00.000Z".into(),
                     cloze: None,
                     occlusion: None,
+                    tags: vec![],
                 }]
             );
             // It is in no count and in no active list.

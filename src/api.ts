@@ -56,6 +56,8 @@ export type DeckCard = {
   pictures?: CardPictures;
   /** For an image occlusion card, its picture's boxes; `null` (or absent) otherwise. */
   occlusion?: CardOcclusion | null;
+  /** Its tags, sorted by name ignoring case (absent from older test data: none). */
+  tags?: string[];
 };
 
 /**
@@ -172,6 +174,8 @@ export type DeletedCard = {
   cloze?: DeletedCloze | null;
   /** For an image occlusion card (its box number); `null` (or absent) otherwise. */
   occlusion?: DeletedCloze | null;
+  /** The tags it had when deleted, kept for when it comes back (absent: none). */
+  tags?: string[];
 };
 
 /** Mirrors `Flashcard` in `src-tauri/src/study.rs`. */
@@ -247,6 +251,8 @@ export type NoteSummary = {
   createdAt: string;
   /** When it was last saved (ISO-8601 UTC). */
   updatedAt: string;
+  /** Its tags, sorted by name ignoring case (absent from older test data: none). */
+  tags?: string[];
 };
 
 /**
@@ -283,6 +289,8 @@ export type Note = {
   updatedAt: string;
   /** The pictures shown under the text, in order (absent from older test data: none). */
   pictures?: Asset[];
+  /** Its tags, sorted by name ignoring case (absent from older test data: none). */
+  tags?: string[];
 };
 
 /**
@@ -436,9 +444,10 @@ export function createFlashcard(
   deckId: number,
   front: string,
   back: string,
-  pictures?: CardPictureIds
+  pictures?: CardPictureIds,
+  tags?: string[]
 ): Promise<DeckDetail> {
-  return invoke<DeckDetail>("create_flashcard", { deckId, front, back, pictures });
+  return invoke<DeckDetail>("create_flashcard", { deckId, front, back, pictures, tags });
 }
 
 /**
@@ -521,9 +530,10 @@ export function updateFlashcard(
   cardId: number,
   front: string,
   back: string,
-  pictures?: CardPictureIds
+  pictures?: CardPictureIds,
+  tags?: string[]
 ): Promise<DeckDetail> {
-  return invoke<DeckDetail>("update_flashcard", { cardId, front, back, pictures });
+  return invoke<DeckDetail>("update_flashcard", { cardId, front, back, pictures, tags });
 }
 
 /**
@@ -961,8 +971,13 @@ export function getNote(noteId: number): Promise<Note> {
 }
 
 /** Saves a new note. Rust trims and validates both fields; errors name the field to fix. */
-export function createNote(title: string, body: string, pictures?: number[]): Promise<Note> {
-  return invoke<Note>("create_note", { title, body, pictures });
+export function createNote(
+  title: string,
+  body: string,
+  pictures?: number[],
+  tags?: string[]
+): Promise<Note> {
+  return invoke<Note>("create_note", { title, body, pictures, tags });
 }
 
 /**
@@ -973,9 +988,59 @@ export function updateNote(
   noteId: number,
   title: string,
   body: string,
-  pictures?: number[]
+  pictures?: number[],
+  tags?: string[]
 ): Promise<Note> {
-  return invoke<Note>("update_note", { noteId, title, body, pictures });
+  return invoke<Note>("update_note", { noteId, title, body, pictures, tags });
+}
+
+/**
+ * Mirrors `TagSummary` in `src-tauri/src/tags.rs`: a tag some active card (in
+ * a deck that isn't archived) or active note has, with how many of each.
+ */
+export type TagSummary = { id: number; name: string; cards: number; notes: number };
+
+/** Every tag in use, sorted by name ignoring case. */
+export function getTags(): Promise<TagSummary[]> {
+  return invoke<TagSummary[]>("get_tags");
+}
+
+/**
+ * Replaces one card's tags (any kind of card); its text and schedule stay.
+ * Resolves with its deck. A refused name rejects with field "tags"; a deleted
+ * card, or one in an archived deck, with kind "stale".
+ */
+export function setCardTags(cardId: number, tags: string[]): Promise<DeckDetail> {
+  return invoke<DeckDetail>("set_card_tags", { cardId, tags });
+}
+
+/**
+ * Adds `add` to, and takes `remove` off, several cards of one deck, keeping
+ * their other tags. `changed` counts the cards whose tags changed. Rejects with
+ * kind "stale", writing nothing, if any card is no longer an active card of
+ * the deck.
+ */
+export function tagFlashcards(
+  deckId: number,
+  cardIds: number[],
+  add: string[],
+  remove: string[]
+): Promise<ChangedCards> {
+  return invoke<ChangedCards>("tag_flashcards", { deckId, cardIds, add, remove });
+}
+
+/** Replaces a note's tags; its text and `updatedAt` stay. Resolves with the note. */
+export function setNoteTags(noteId: number, tags: string[]): Promise<Note> {
+  return invoke<Note>("set_note_tags", { noteId, tags });
+}
+
+/**
+ * Renames a tag everywhere it is used; resolves with the tags in use. Another
+ * tag with that name (ignoring case) rejects with field "tags": tags are never
+ * merged.
+ */
+export function renameTag(tagId: number, name: string): Promise<TagSummary[]> {
+  return invoke<TagSummary[]>("rename_tag", { tagId, name });
 }
 
 /**

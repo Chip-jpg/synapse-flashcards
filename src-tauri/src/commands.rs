@@ -40,6 +40,7 @@ use crate::sources::{self, InvalidTitle, Source, SourceError, SourcePage};
 use crate::stats::{self, Statistics};
 use crate::study::{self, DeckSummary, SessionCard, StartedSession, StudyError, TodaySummary};
 use crate::suggest::{self, NotePart, Ollama, SuggestError, SuggestedCard, Suggesting};
+use crate::tags::{self, TagError, TagProblem, TagSummary};
 use crate::vision::{self, ModelSourceReading, VisionError};
 
 /// Error sent to React: `{ "kind": "failed" | "stale" | "invalid", "message": "..." }`,
@@ -80,6 +81,8 @@ enum Field {
     Header,
     /// An image occlusion's boxes.
     Boxes,
+    /// A card's or note's tags, or a tag's new name.
+    Tags,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -203,11 +206,34 @@ impl CommandError {
             InvalidNote::BodyBlank => (Field::Body, "Write something in the note."),
             InvalidNote::BodyTooLong => (Field::Body, "A note can be at most 100,000 characters."),
             InvalidNote::Pictures(problem) => (Field::Pictures, picture_message(problem, true)),
+            InvalidNote::Tags(problem) => return Self::invalid_tags(problem),
         };
         CommandError {
             kind: ErrorKind::Invalid,
             message,
             field: Some(field),
+            index: None,
+        }
+    }
+}
+
+impl CommandError {
+    /// A refused tag name or list. The limits must match `tags.rs` (checked by
+    /// a test below).
+    fn invalid_tags(problem: TagProblem) -> Self {
+        let message = match problem {
+            TagProblem::Blank => "A tag can't be empty.",
+            TagProblem::TooLong => "A tag can be at most 60 characters.",
+            TagProblem::BadCharacter => {
+                "A tag is one word: no spaces or commas. Use - or :: to join words."
+            }
+            TagProblem::TooMany => "A card or note can have at most 20 tags.",
+            TagProblem::NameTaken => "Another tag already has that name.",
+        };
+        CommandError {
+            kind: ErrorKind::Invalid,
+            message,
+            field: Some(Field::Tags),
             index: None,
         }
     }
@@ -333,6 +359,8 @@ fn authoring_error(err: AuthoringError, context: &str, failed: &'static str) -> 
         AuthoringError::OcclusionSplit => CommandError::invalid(
             "Cards made from one picture move together: select all of them.",
         ),
+        AuthoringError::Tags(problem) => CommandError::invalid_tags(problem),
+        AuthoringError::NoTagChange => CommandError::invalid("Choose a tag to add or remove."),
         AuthoringError::PictureMissing => {
             CommandError::invalid("That picture isn't kept by Synapse. Choose it again.")
         }
@@ -577,15 +605,24 @@ pub async fn create_flashcard(
     front: String,
     back: String,
     pictures: Option<CardPictureIds>,
+    tags: Option<Vec<String>>,
 ) -> Result<DeckDetail, CommandError> {
     if deck_id < 1 {
         return Err(CommandError::invalid(DECK_NOT_FOUND));
     }
     let pool = pool(&app, &database).await?;
     let pictures = pictures.unwrap_or_default();
-    authoring::create_flashcard_with_pictures(&pool, deck_id, &front, &back, &pictures, Utc::now())
-        .await
-        .map_err(|err| authoring_error(err, "adding a card", "Synapse couldn't save the card."))
+    authoring::create_flashcard_tagged(
+        &pool,
+        deck_id,
+        &front,
+        &back,
+        &pictures,
+        tags.as_deref(),
+        Utc::now(),
+    )
+    .await
+    .map_err(|err| authoring_error(err, "adding a card", "Synapse couldn't save the card."))
 }
 
 /// Adds several front/back cards to a normal deck at once (saving suggested
@@ -623,17 +660,19 @@ pub async fn update_flashcard(
     front: String,
     back: String,
     pictures: Option<CardPictureIds>,
+    tags: Option<Vec<String>>,
 ) -> Result<DeckDetail, CommandError> {
     if card_id < 1 {
         return Err(CommandError::invalid(CARD_NOT_FOUND));
     }
     let pool = pool(&app, &database).await?;
-    authoring::update_flashcard_with_pictures(
+    authoring::update_flashcard_tagged(
         &pool,
         card_id,
         &front,
         &back,
         pictures.as_ref(),
+        tags.as_deref(),
         Utc::now(),
     )
     .await
@@ -988,6 +1027,114 @@ pub async fn move_flashcards(
         .map_err(|err| authoring_error(err, "moving cards", "Synapse couldn't move the cards."))
 }
 
+/// Every tag some active card (in a deck that isn't archived) or active note
+/// has, sorted by name ignoring case. Returns `[{ id, name, cards, notes }]`,
+/// with how many active cards and notes have each.
+#[tauri::command]
+pub async fn get_tags(
+    app: AppHandle,
+    database: State<'_, Database>,
+) -> Result<Vec<TagSummary>, CommandError> {
+    let pool = pool(&app, &database).await?;
+    tags::tags(&pool).await.map_err(|err| {
+        eprintln!("[synapse] loading tags failed: {err}");
+        CommandError::failed("Synapse couldn't load your tags.")
+    })
+}
+
+/// Replaces one card's tags (any kind of card); its text and schedule are
+/// untouched. Arguments: `{ cardId, tags: [name] }`. Returns the card's deck
+/// (same shape as `get_deck_detail`). A refused name rejects with kind
+/// "invalid" and field "tags"; a deleted card, or one whose deck was
+/// archived, with kind "stale".
+#[tauri::command]
+pub async fn set_card_tags(
+    app: AppHandle,
+    database: State<'_, Database>,
+    card_id: i64,
+    tags: Vec<String>,
+) -> Result<DeckDetail, CommandError> {
+    if card_id < 1 {
+        return Err(CommandError::invalid(CARD_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    authoring::set_card_tags(&pool, card_id, &tags, Utc::now())
+        .await
+        .map_err(|err| authoring_error(err, "tagging a card", "Synapse couldn't save the tags."))
+}
+
+/// Adds tags to, and takes tags off, several cards of one deck at once,
+/// keeping their other tags. Arguments: `{ deckId, cardIds, add: [name],
+/// remove: [name] }`. Returns `{ changed, deck }`: how many cards' tags
+/// changed, and the deck. Rejects with kind "stale" if any card is no longer
+/// an active card of `deckId`, writing nothing.
+#[tauri::command]
+pub async fn tag_flashcards(
+    app: AppHandle,
+    database: State<'_, Database>,
+    deck_id: i64,
+    card_ids: Vec<i64>,
+    add: Vec<String>,
+    remove: Vec<String>,
+) -> Result<authoring::ChangedCards, CommandError> {
+    if deck_id < 1 {
+        return Err(CommandError::invalid(DECK_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    authoring::tag_flashcards(&pool, deck_id, &card_ids, &add, &remove, Utc::now())
+        .await
+        .map_err(|err| {
+            authoring_error(
+                err,
+                "tagging selected cards",
+                "Synapse couldn't save the tags.",
+            )
+        })
+}
+
+/// Replaces a note's tags; its text and `updatedAt` are untouched.
+/// Arguments: `{ noteId, tags: [name] }`. Returns the note (same shape as
+/// `get_note`).
+#[tauri::command]
+pub async fn set_note_tags(
+    app: AppHandle,
+    database: State<'_, Database>,
+    note_id: i64,
+    tags: Vec<String>,
+) -> Result<Note, CommandError> {
+    if note_id < 1 {
+        return Err(CommandError::invalid(NOTE_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    notes::set_note_tags(&pool, note_id, &tags, Utc::now())
+        .await
+        .map_err(|err| note_error(err, "tagging a note", "Synapse couldn't save the tags."))
+}
+
+/// Renames a tag everywhere it is used. Arguments: `{ tagId, name }`. Returns
+/// the tags (same shape as `get_tags`). Rejects with kind "invalid" and field
+/// "tags" if the name is refused or another tag has it (tags are never
+/// merged); with kind "stale" if the tag doesn't exist.
+#[tauri::command]
+pub async fn rename_tag(
+    app: AppHandle,
+    database: State<'_, Database>,
+    tag_id: i64,
+    name: String,
+) -> Result<Vec<TagSummary>, CommandError> {
+    let pool = pool(&app, &database).await?;
+    tags::rename_tag(&pool, tag_id, &name)
+        .await
+        .map_err(|err| match err {
+            TagError::Invalid(problem) => CommandError::invalid_tags(problem),
+            TagError::NotFound => CommandError::stale("That tag is no longer there."),
+            TagError::Internal(detail) => {
+                eprintln!("[synapse] renaming a tag failed: {detail}");
+                CommandError::failed("Synapse couldn't rename the tag.")
+            }
+        })
+}
+
 /// Renames an active normal deck; its cards, schedule, and history are kept.
 ///
 /// Arguments: `{ deckId, name }`. Returns the renamed deck (same shape as
@@ -1199,10 +1346,11 @@ pub async fn create_note(
     title: String,
     body: String,
     pictures: Option<Vec<i64>>,
+    tags: Option<Vec<String>>,
 ) -> Result<Note, CommandError> {
     let pool = pool(&app, &database).await?;
     let pictures = pictures.unwrap_or_default();
-    notes::create_note_with_pictures(&pool, &title, &body, &pictures, Utc::now())
+    notes::create_note_tagged(&pool, &title, &body, &pictures, tags.as_deref(), Utc::now())
         .await
         .map_err(|err| note_error(err, "saving a note", "Synapse couldn't save the note."))
 }
@@ -1219,17 +1367,19 @@ pub async fn update_note(
     title: String,
     body: String,
     pictures: Option<Vec<i64>>,
+    tags: Option<Vec<String>>,
 ) -> Result<Note, CommandError> {
     if note_id < 1 {
         return Err(CommandError::invalid(NOTE_NOT_FOUND));
     }
     let pool = pool(&app, &database).await?;
-    notes::update_note_with_pictures(
+    notes::update_note_tagged(
         &pool,
         note_id,
         &title,
         &body,
         pictures.as_deref(),
+        tags.as_deref(),
         Utc::now(),
     )
     .await
@@ -4172,6 +4322,7 @@ mod tests {
                 created_at: time.clone(),
                 updated_at: time.clone(),
                 pictures: Vec::new(),
+                tags: vec!["bio".to_string()],
             })
             .unwrap(),
             json!({
@@ -4180,7 +4331,8 @@ mod tests {
                 "body": "one\ntwo",
                 "createdAt": "2026-09-16T12:00:00.000Z",
                 "updatedAt": "2026-09-16T12:00:00.000Z",
-                "pictures": []
+                "pictures": [],
+                "tags": ["bio"]
             })
         );
         assert_eq!(
@@ -4189,14 +4341,48 @@ mod tests {
                 title: "Cells".to_string(),
                 created_at: time.clone(),
                 updated_at: time,
+                tags: Vec::new(),
             })
             .unwrap(),
             json!({
                 "id": 1,
                 "title": "Cells",
                 "createdAt": "2026-09-16T12:00:00.000Z",
-                "updatedAt": "2026-09-16T12:00:00.000Z"
+                "updatedAt": "2026-09-16T12:00:00.000Z",
+                "tags": []
             })
+        );
+    }
+
+    #[test]
+    fn tag_errors_point_at_the_tags_and_match_the_limits() {
+        let to_json = |problem| serde_json::to_value(CommandError::invalid_tags(problem)).unwrap();
+        assert_eq!(to_json(TagProblem::BadCharacter)["field"], json!("tags"));
+        assert!(to_json(TagProblem::TooLong)["message"]
+            .as_str()
+            .unwrap()
+            .contains(&tags::TAG_MAX_CHARS.to_string()));
+        assert!(to_json(TagProblem::TooMany)["message"]
+            .as_str()
+            .unwrap()
+            .contains(&tags::TAGS_MAX.to_string()));
+        assert_eq!(
+            serde_json::to_value(authoring_error(
+                AuthoringError::Tags(TagProblem::Blank),
+                "t",
+                "f"
+            ))
+            .unwrap()["field"],
+            json!("tags")
+        );
+        assert_eq!(
+            serde_json::to_value(note_error(
+                NoteError::Invalid(InvalidNote::Tags(TagProblem::NameTaken)),
+                "t",
+                "f"
+            ))
+            .unwrap()["field"],
+            json!("tags")
         );
     }
 
