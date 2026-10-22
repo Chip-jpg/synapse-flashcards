@@ -135,9 +135,10 @@ impl HelpKind {
                  sentences."
             }
             HelpKind::Question => {
-                "Ask about the framed part another way, for example by where it is in the \
-                 picture or what it is next to, so that the answer is still its answer. Write \
-                 only the new question."
+                "Write a new question about the framed part, for example by where it is in the \
+                 picture, what it is next to or what it does, so that the answer is still its \
+                 answer. Don't repeat the header or give the answer away. Write only the new \
+                 question."
             }
         }
     }
@@ -803,10 +804,7 @@ mod tests {
         let page = crate::ocr::test_support::page_png();
         let mut picture = image::load_from_memory(&page).unwrap().into_rgb8();
         // "thylakoid membranes", on the second line of the sample page.
-        let mut card = heart(
-            ["", "thylakoid membranes", ""],
-            "Where the light reactions happen",
-        );
+        let mut card = heart(["", "thylakoid membranes", ""], "Photosynthesis");
         card.marks = vec![Mark {
             left: 0.48,
             top: 0.3,
@@ -817,7 +815,7 @@ mod tests {
         let png = crate::ocr::picture_for_model(picture).unwrap();
         tauri::async_runtime::block_on(async {
             let ollama = Ollama::local().unwrap();
-            for kind in [HelpKind::Mnemonic, HelpKind::Question] {
+            for kind in [HelpKind::Question, HelpKind::Explanation, HelpKind::Analogy] {
                 let help = picture_help(
                     &ollama,
                     &model,
@@ -827,7 +825,7 @@ mod tests {
                     crate::vision::READ_TIMEOUT,
                 )
                 .await
-                .unwrap();
+                .unwrap_or_else(|err| panic!("{kind:?}: {err:?}"));
                 println!(
                     "{kind:?}: {} (not on the card: {:?})",
                     help.text, help.unfamiliar
