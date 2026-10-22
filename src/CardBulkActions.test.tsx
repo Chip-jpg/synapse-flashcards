@@ -351,6 +351,127 @@ describe("restoring selected deleted cards", () => {
   });
 });
 
+describe("selecting all deleted cards", () => {
+  /** Biology with all three cards deleted, most recently deleted first. */
+  function allDeleted(): Deck {
+    const deck = without([10, 11, 12], true);
+    return { ...deck, deletedCards: [...deck.deletedCards].reverse() };
+  }
+
+  /** The Select boxes of the deleted cards, in the list's order. */
+  async function deletedBoxes() {
+    const list = await screen.findByRole("region", { name: /^Deleted cards/ });
+    return within(list).getAllByRole("checkbox", { name: "Select" }) as HTMLInputElement[];
+  }
+
+  it("ticks every deleted card, restores them all, and unticks them again", async () => {
+    const backend = openDeck({
+      get_deck_detail: () => allDeleted(),
+      restore_flashcards: (args) => {
+        const { cardIds } = args as { cardIds: number[] };
+        return { changed: cardIds.length, deck: threeCards() } satisfies ChangedCards;
+      },
+    });
+    const user = userEvent.setup();
+
+    const all = (await screen.findByRole("checkbox", {
+      name: "Select all deleted cards",
+    })) as HTMLInputElement;
+    await user.click(all);
+    expect((await deletedBoxes()).map((box) => box.checked)).toEqual([true, true, true]);
+    expect(screen.getByText("3 cards selected.")).toBeTruthy();
+
+    // Unticking one leaves Select all partly checked; ticking it again selects all.
+    await user.click((await deletedBoxes())[1]);
+    expect(all.checked).toBe(false);
+    expect(all.indeterminate).toBe(true);
+    await user.click(all);
+    expect(all.checked).toBe(true);
+
+    // Pressed when all are ticked, it clears them.
+    await user.click(all);
+    expect((await deletedBoxes()).map((box) => box.checked)).toEqual([false, false, false]);
+    expect(screen.queryByText(/selected\./)).toBeNull();
+
+    await user.click(all);
+    await user.click(screen.getByRole("button", { name: "Restore selected" }));
+    await user.click(screen.getByRole("button", { name: "Restore 3 cards" }));
+    await screen.findByText(/^3 cards restored\./);
+    expect(backend.argsOf("restore_flashcards")).toEqual([{ deckId: 1, cardIds: [12, 11, 10] }]);
+  });
+
+  it("is cleared by Clear selection", async () => {
+    openDeck({ get_deck_detail: () => allDeleted() });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("checkbox", { name: "Select all deleted cards" }));
+    await user.click(screen.getByRole("button", { name: "Clear selection" }));
+
+    expect((await deletedBoxes()).map((box) => box.checked)).toEqual([false, false, false]);
+    expect(
+      (screen.getByRole("checkbox", { name: "Select all deleted cards" }) as HTMLInputElement)
+        .checked,
+    ).toBe(false);
+  });
+
+  it("leaves out a card that can't be restored yet, and says so", async () => {
+    const deck = allDeleted();
+    openDeck({
+      get_deck_detail: () => ({
+        ...deck,
+        deletedCards: [
+          {
+            id: 20,
+            front: "[...] is the powerhouse of the cell.",
+            back: "The mitochondrion",
+            deletedAt: CREATED,
+            cloze: { number: 2, blocked: "numberGone" },
+            occlusion: null,
+          },
+          ...deck.deletedCards,
+        ],
+      }),
+    });
+    const user = userEvent.setup();
+
+    await user.click(
+      await screen.findByRole("checkbox", { name: "Select all 3 cards that can be restored" }),
+    );
+    expect((await deletedBoxes()).map((box) => box.checked)).toEqual([true, true, true]);
+    expect(screen.getByText("3 cards selected.")).toBeTruthy();
+  });
+
+  it("isn't offered for a single deleted card", async () => {
+    openDeck({ get_deck_detail: () => without([12], true) });
+
+    await screen.findByRole("region", { name: /^Deleted cards/ });
+    expect(screen.queryByRole("checkbox", { name: /^Select all deleted/ })).toBeNull();
+  });
+});
+
+describe("one selection at a time", () => {
+  it("shows only the bar of the list last selected in, clearing the other", async () => {
+    openDeck({ get_deck_detail: () => without([12], true) });
+    const user = userEvent.setup();
+
+    const active = await selectBox("What is a cell?");
+    await user.click(active);
+    expect(screen.getByRole("region", { name: "Selected cards" })).toBeTruthy();
+
+    const list = await screen.findByRole("region", { name: /^Deleted cards/ });
+    const deleted = within(list).getByRole("checkbox", { name: "Select" }) as HTMLInputElement;
+    await user.click(deleted);
+    expect(screen.getByRole("region", { name: "Selected deleted cards" })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Selected cards" })).toBeNull();
+    expect((active as HTMLInputElement).checked).toBe(false);
+
+    await user.click(screen.getByRole("checkbox", { name: "Select all cards" }));
+    expect(screen.getByRole("region", { name: "Selected cards" })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Selected deleted cards" })).toBeNull();
+    expect(deleted.checked).toBe(false);
+  });
+});
+
 describe("moving selected cards", () => {
   it("offers only the other normal decks, then moves them and names the deck", async () => {
     const backend = openDeck({
