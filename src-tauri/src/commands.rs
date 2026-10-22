@@ -682,21 +682,22 @@ pub async fn update_flashcard(
 /// Adds a cloze text to a normal deck: one new card, due immediately, for
 /// each distinct `{{cN::…}}` number in it (see `cloze.rs`).
 ///
-/// Arguments: `{ deckId, text }`. Returns the updated deck (same shape as
-/// `get_deck_detail`). A refused text rejects with kind "invalid" and field
-/// "text".
+/// Arguments: `{ deckId, text, tags? }`, `tags` given to every card. Returns
+/// the updated deck (same shape as `get_deck_detail`). A refused text rejects
+/// with kind "invalid" and field "text"; refused tags, field "tags".
 #[tauri::command]
 pub async fn create_cloze(
     app: AppHandle,
     database: State<'_, Database>,
     deck_id: i64,
     text: String,
+    tags: Option<Vec<String>>,
 ) -> Result<DeckDetail, CommandError> {
     if deck_id < 1 {
         return Err(CommandError::invalid(DECK_NOT_FOUND));
     }
     let pool = pool(&app, &database).await?;
-    cloze::create_cloze(&pool, deck_id, &text, Utc::now())
+    cloze::create_cloze_tagged(&pool, deck_id, &text, tags.as_deref(), Utc::now())
         .await
         .map_err(|err| {
             authoring_error(
@@ -711,8 +712,9 @@ pub async fn create_cloze(
 /// cards and schedules, a number that left it has its card deleted, and a new
 /// number gets a card (its deleted one back, if it had one in this deck).
 ///
-/// Arguments: `{ cardId, text }`, `cardId` being any active card of the text.
-/// Returns `{ changes, deck }`: what happened (`{ cards, kept, restored,
+/// Arguments: `{ cardId, text, tags? }`, `cardId` being any active card of
+/// the text; `tags`, when given, replaces every active card's tags (absent
+/// keeps them; a card the edit adds gets the text's tags either way). Returns `{ changes, deck }`: what happened (`{ cards, kept, restored,
 /// added, deleted }`) and the card's deck.
 #[tauri::command]
 pub async fn update_cloze(
@@ -720,20 +722,22 @@ pub async fn update_cloze(
     database: State<'_, Database>,
     card_id: i64,
     text: String,
+    tags: Option<Vec<String>>,
 ) -> Result<ClozeSaved, CommandError> {
     if card_id < 1 {
         return Err(CommandError::invalid(CARD_NOT_FOUND));
     }
     let pool = pool(&app, &database).await?;
-    let (changes, deck) = cloze::update_cloze(&pool, card_id, &text, Utc::now())
-        .await
-        .map_err(|err| {
-            authoring_error(
-                err,
-                "editing cloze cards",
-                "Synapse couldn't save the cards.",
-            )
-        })?;
+    let (changes, deck) =
+        cloze::update_cloze_tagged(&pool, card_id, &text, tags.as_deref(), Utc::now())
+            .await
+            .map_err(|err| {
+                authoring_error(
+                    err,
+                    "editing cloze cards",
+                    "Synapse couldn't save the cards.",
+                )
+            })?;
     Ok(ClozeSaved { changes, deck })
 }
 
@@ -776,11 +780,12 @@ pub async fn preview_cloze(
 /// over it, and one new card, due immediately, for each box number (see
 /// `occlusion.rs`).
 ///
-/// Arguments: `{ deckId, assetId, header, mode, boxes }`, `mode` being
+/// Arguments: `{ deckId, assetId, header, mode, boxes, tags? }`, `mode` being
 /// `"hideAll"` or `"hideOne"` and each box `{ number, left, top, width,
 /// height, label }` with coordinates from 0 to 1. Returns the updated deck
 /// (same shape as `get_deck_detail`). A refused box rejects with kind
-/// "invalid" and field "boxes"; a refused header, field "header".
+/// "invalid" and field "boxes"; a refused header, field "header"; refused
+/// tags, field "tags". `tags` are given to every card.
 #[tauri::command]
 pub async fn create_occlusion(
     app: AppHandle,
@@ -790,20 +795,30 @@ pub async fn create_occlusion(
     header: String,
     mode: Mode,
     boxes: Vec<OcclusionBox>,
+    tags: Option<Vec<String>>,
 ) -> Result<DeckDetail, CommandError> {
     if deck_id < 1 {
         return Err(CommandError::invalid(DECK_NOT_FOUND));
     }
     let pool = pool(&app, &database).await?;
-    occlusion::create_occlusion(&pool, deck_id, asset_id, &header, mode, &boxes, Utc::now())
-        .await
-        .map_err(|err| {
-            authoring_error(
-                err,
-                "adding image occlusion cards",
-                "Synapse couldn't save the cards.",
-            )
-        })
+    occlusion::create_occlusion_tagged(
+        &pool,
+        deck_id,
+        asset_id,
+        &header,
+        mode,
+        &boxes,
+        tags.as_deref(),
+        Utc::now(),
+    )
+    .await
+    .map_err(|err| {
+        authoring_error(
+            err,
+            "adding image occlusion cards",
+            "Synapse couldn't save the cards.",
+        )
+    })
 }
 
 /// The picture and boxes an image occlusion card was made from, for its edit
@@ -836,8 +851,9 @@ pub async fn get_occlusion(
 /// has its card deleted, and a new number gets a card (its deleted one back,
 /// if it had one in this deck).
 ///
-/// Arguments: `{ cardId, header, mode, boxes }`, `cardId` being any active
-/// card of the occlusion. Returns `{ changes, deck }`, as `update_cloze` does.
+/// Arguments: `{ cardId, header, mode, boxes, tags? }`, `cardId` being any
+/// active card of the occlusion, `tags` as for `update_cloze`. Returns
+/// `{ changes, deck }`, as `update_cloze` does.
 #[tauri::command]
 pub async fn update_occlusion(
     app: AppHandle,
@@ -846,21 +862,29 @@ pub async fn update_occlusion(
     header: String,
     mode: Mode,
     boxes: Vec<OcclusionBox>,
+    tags: Option<Vec<String>>,
 ) -> Result<ClozeSaved, CommandError> {
     if card_id < 1 {
         return Err(CommandError::invalid(CARD_NOT_FOUND));
     }
     let pool = pool(&app, &database).await?;
-    let (changes, deck) =
-        occlusion::update_occlusion(&pool, card_id, &header, mode, &boxes, Utc::now())
-            .await
-            .map_err(|err| {
-                authoring_error(
-                    err,
-                    "editing image occlusion cards",
-                    "Synapse couldn't save the cards.",
-                )
-            })?;
+    let (changes, deck) = occlusion::update_occlusion_tagged(
+        &pool,
+        card_id,
+        &header,
+        mode,
+        &boxes,
+        tags.as_deref(),
+        Utc::now(),
+    )
+    .await
+    .map_err(|err| {
+        authoring_error(
+            err,
+            "editing image occlusion cards",
+            "Synapse couldn't save the cards.",
+        )
+    })?;
     Ok(ClozeSaved { changes, deck })
 }
 

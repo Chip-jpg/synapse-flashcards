@@ -328,7 +328,6 @@ fn sorted(mut by_owner: HashMap<i64, Vec<String>>) -> HashMap<i64, Vec<String>> 
 }
 
 /// One card's tags, sorted by name.
-#[cfg(test)]
 pub async fn card_tags(
     conn: &mut SqliteConnection,
     card_id: i64,

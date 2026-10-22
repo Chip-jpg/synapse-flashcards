@@ -1007,11 +1007,38 @@ pub async fn update_flashcard_tagged(
 }
 
 /// Checks the tag names sent with a card, if any (`tags.rs`).
-fn checked_tags(tag_names: Option<&[String]>) -> Result<Option<Vec<String>>, AuthoringError> {
+pub(crate) fn checked_tags(
+    tag_names: Option<&[String]>,
+) -> Result<Option<Vec<String>>, AuthoringError> {
     tag_names
         .map(tags::checked_names)
         .transpose()
         .map_err(AuthoringError::Tags)
+}
+
+/// Tags the cards of a cloze text or an image occlusion as it is saved, in
+/// the saving transaction. `active` are its active cards after saving and
+/// `came` those the save added or brought back. With tags sent (`sent`,
+/// already checked), every active card gets them. Without, the cards already
+/// there keep theirs and the ones that came get the tags of `edited`, the card
+/// the form was opened on (deleted by the edit or not, its tags are kept).
+pub(crate) async fn tag_text_cards(
+    conn: &mut SqliteConnection,
+    sent: Option<&[String]>,
+    edited: Option<i64>,
+    active: &[i64],
+    came: &[i64],
+    now: DateTime<Utc>,
+) -> Result<(), sqlx::Error> {
+    let (names, cards) = match (sent, edited) {
+        (Some(names), _) => (names.to_vec(), active),
+        (None, Some(edited)) => (tags::card_tags(conn, edited).await?, came),
+        (None, None) => return Ok(()),
+    };
+    for &card_id in cards {
+        tags::set_card_tags(conn, card_id, &names, now).await?;
+    }
+    Ok(())
 }
 
 /// Replaces one card's tags with `tag_names` and returns its deck. Any kind
