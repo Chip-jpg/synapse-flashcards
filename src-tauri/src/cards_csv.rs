@@ -24,8 +24,13 @@
 //! - Fields follow RFC 4180: a field that starts with `"` runs to the next
 //!   lone `"`, may hold delimiters and line breaks, and writes a `"` as `""`.
 //!   Lines may end with CRLF, LF, or CR. Blank lines are skipped.
-//! - The first column is the front and the second the back; further columns
-//!   are ignored (and counted, so the user is told).
+//! - The first column is the front and the second the back. A third column is
+//!   the card's tags when the header names it "Tags" ([`HEADER_TAGS`]): tags
+//!   separated by spaces or commas, each checked as a typed tag is
+//!   (`tags::checked_names`). Without that header, as in a two-column file
+//!   from before tags, every further column is ignored (and counted, so the
+//!   user is told): a third column of another program's notes never becomes
+//!   tags by accident.
 //! - The first row is a header, and not a card, when its first two cells are
 //!   column names such as "Front" and "Back" ([`HEADER_FRONTS`],
 //!   [`HEADER_BACKS`]).
@@ -35,9 +40,10 @@
 //!   is how an exported cloze text comes back.
 //!
 //! Exporting writes RFC 4180 CSV: a `front,back` header, CRLF line ends, and
-//! fields quoted when they hold a comma, quote, or line break. A cloze text is
-//! written once, however many cards it made, as its text in the front column
-//! and nothing in the back. It starts with
+//! fields quoted when they hold a comma, quote, or line break. When any card
+//! has tags, a third `tags` column holds each card's tags separated by
+//! spaces. A cloze text is written once, however many cards it made, as its
+//! text in the front column, nothing in the back, and its first card's tags. It starts with
 //! a UTF-8 byte order mark, so Excel reads accented letters correctly; Synapse
 //! reads it back the same way.
 //!
@@ -58,11 +64,12 @@ use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 
 use crate::authoring::{
-    insert_new_card, load_deck_detail, validate_card, AuthoringError, CardText, InvalidInput,
+    insert_new_card, load_deck_detail, validate_card, AuthoringError, InvalidInput,
 };
 use crate::cloze::{self, has_deletion, insert_cloze, validate_cloze};
 use crate::db::to_db_time;
 use crate::extract::decode_text;
+use crate::tags::{self, TagProblem};
 
 /// The largest file read: far more than [`CSV_ROWS_MAX`] cards of ordinary
 /// length, and small enough to read at once.
@@ -82,6 +89,8 @@ pub const HEADER_BACKS: [&str; 6] = [
     "retro",
     "risposta",
 ];
+/// Header names for the tags column, the third.
+pub const HEADER_TAGS: [&str; 3] = ["tags", "tag", "etichette"];
 
 /// The first characters that make a spreadsheet read a cell as a formula.
 pub const FORMULA_STARTS: [char; 6] = ['=', '+', '-', '@', '\t', '\r'];
@@ -137,6 +146,8 @@ pub enum RowProblem {
     NoBack,
     /// The row's front or back fails the rules of a typed card.
     Card(InvalidInput),
+    /// The row's tags fail the rules of a typed card's tags.
+    Tags(TagProblem),
 }
 
 /// Why a row's card may not be wanted: its front is already in the deck, or
@@ -161,6 +172,27 @@ pub struct CsvRow {
     pub duplicate: Option<Duplicate>,
     /// For a usable cloze row, how many cards it makes.
     pub cloze_cards: Option<usize>,
+    /// Its tags, checked (empty when the row's tags have a problem, or the
+    /// file has no tags column).
+    pub tags: Vec<String>,
+}
+
+/// A card to import, as the screen sends it back, or one exported:
+/// `{ front, back, tags }` (`tags` may be left out).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CsvCard {
+    pub front: String,
+    pub back: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// The tags in one cell: words separated by spaces or commas.
+pub fn cell_tags(cell: &str) -> Vec<String> {
+    cell.split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|tag| !tag.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Whether a row (or a card sent to import) is a cloze text: nothing in the
@@ -188,7 +220,10 @@ pub struct CsvPreview {
     /// The first row was column names, so it isn't in `rows`.
     pub header: bool,
     pub rows: Vec<CsvRow>,
-    /// Rows with something in a third or later column, which is ignored.
+    /// The header names a third column "Tags", so it is read as tags.
+    pub tags_column: bool,
+    /// Rows with something in a column that isn't read (the third or later,
+    /// or the fourth or later with a tags column), which is ignored.
     pub rows_with_extra_columns: usize,
 }
 
@@ -383,6 +418,12 @@ pub async fn read_cards(
     let delimiter = detect_delimiter(&text, tsv);
     let mut records = parse_records(&text, delimiter)?;
     let header = records.first().is_some_and(|(_, fields)| is_header(fields));
+    let tags_column = header
+        && records[0]
+            .1
+            .get(2)
+            .is_some_and(|cell| HEADER_TAGS.contains(&cell.trim().to_lowercase().as_str()));
+    let read_columns = if tags_column { 3 } else { 2 };
     if header {
         records.remove(0);
     }
@@ -404,7 +445,11 @@ pub async fn read_cards(
     let rows = records
         .into_iter()
         .map(|(line, fields)| {
-            if fields.iter().skip(2).any(|cell| !cell.trim().is_empty()) {
+            if fields
+                .iter()
+                .skip(read_columns)
+                .any(|cell| !cell.trim().is_empty())
+            {
                 rows_with_extra_columns += 1;
             }
             let front = unprotect_formula(fields[0].trim()).to_string();
@@ -426,6 +471,15 @@ pub async fn read_cards(
                     Some(back) => validate_card(&front, back).err().map(RowProblem::Card),
                 }
             };
+            let cell = fields
+                .get(2)
+                .filter(|_| tags_column)
+                .map(|cell| unprotect_formula(cell.trim()))
+                .unwrap_or_default();
+            let (tags, problem) = match tags::checked_names(&cell_tags(cell)) {
+                Ok(tags) => (tags, problem),
+                Err(tag_problem) => (Vec::new(), problem.or(Some(RowProblem::Tags(tag_problem)))),
+            };
             let duplicate = if front.is_empty() {
                 None
             } else if in_deck.contains(&front) {
@@ -446,6 +500,7 @@ pub async fn read_cards(
                 problem,
                 duplicate,
                 cloze_cards,
+                tags,
             }
         })
         .collect();
@@ -454,13 +509,15 @@ pub async fn read_cards(
         delimiter,
         header,
         rows,
+        tags_column,
         rows_with_extra_columns,
     })
 }
 
 /// Adds imported cards to an active normal deck, in the order given, each
 /// checked and started exactly as a typed card is. All or nothing, in one
-/// transaction, as `authoring::create_flashcards`.
+/// transaction, as `authoring::create_flashcards`. Each card gets its tags
+/// (every card of a cloze row the row's).
 ///
 /// With `skip_duplicates`, a card whose front is already in the deck, or on
 /// an earlier card sent, is left out (and counted). If that leaves nothing to
@@ -468,7 +525,7 @@ pub async fn read_cards(
 pub async fn import_cards(
     pool: &SqlitePool,
     deck_id: i64,
-    cards: &[CardText],
+    cards: &[CsvCard],
     skip_duplicates: bool,
     now: DateTime<Utc>,
 ) -> Result<CardsImported, CsvError> {
@@ -482,15 +539,18 @@ pub async fn import_cards(
         .iter()
         .enumerate()
         .map(|(index, card)| {
-            if is_cloze_row(&card.front, Some(&card.back)) {
+            let checked = if is_cloze_row(&card.front, Some(&card.back)) {
                 validate_cloze(&card.front).map(Imported::Cloze)
             } else {
                 validate_card(&card.front, &card.back).map(Imported::Basic)
             }
-            .map_err(|problem| AuthoringError::InvalidCard(index, problem))
+            .map_err(|problem| AuthoringError::InvalidCard(index, problem))?;
+            let tags = tags::checked_names(&card.tags).map_err(AuthoringError::Tags)?;
+            Ok((checked, tags))
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, AuthoringError>>()?;
 
+    let tagged_at = now;
     let now = to_db_time(now);
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     // Refused here, before any card is written.
@@ -499,7 +559,7 @@ pub async fn import_cards(
 
     let mut added = 0;
     let mut skipped = 0;
-    for card in &cards {
+    for (card, card_tags) in &cards {
         // Stored fronts and texts are already trimmed, as the checks above
         // trim these.
         let front = match card {
@@ -511,6 +571,14 @@ pub async fn import_cards(
             continue;
         }
         fronts.insert(front.clone());
+        // A cloze row's cards are the ones added after this.
+        let before: i64 = if card_tags.is_empty() {
+            0
+        } else {
+            sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM flashcards")
+                .fetch_one(&mut *tx)
+                .await?
+        };
         added += match card {
             Imported::Basic(card) => {
                 insert_new_card(&mut tx, deck_id, card, &now).await?;
@@ -518,6 +586,17 @@ pub async fn import_cards(
             }
             Imported::Cloze(cloze) => insert_cloze(&mut tx, deck_id, cloze, &now).await?,
         };
+        if !card_tags.is_empty() {
+            let new_cards: Vec<i64> =
+                sqlx::query_scalar("SELECT id FROM flashcards WHERE id > ?1 AND deck_id = ?2")
+                    .bind(before)
+                    .bind(deck_id)
+                    .fetch_all(&mut *tx)
+                    .await?;
+            for card_id in new_cards {
+                tags::set_card_tags(&mut tx, card_id, card_tags, tagged_at).await?;
+            }
+        }
     }
     if added == 0 {
         // Dropping `tx` rolls it back, though nothing was written.
@@ -539,14 +618,15 @@ enum Imported {
     Cloze(cloze::Cloze),
 }
 
-/// A deck's name and its active cards, oldest first, for exporting. Any
+/// A deck's name and its active cards, oldest first, with their tags, for
+/// exporting. Any
 /// active deck can be exported, the sample deck included, since nothing
 /// changes; an archived deck is refused like every other use of it. Image
 /// occlusion cards are left out: their question is a picture.
 pub async fn deck_cards(
     pool: &SqlitePool,
     deck_id: i64,
-) -> Result<(String, Vec<CardText>), AuthoringError> {
+) -> Result<(String, Vec<CsvCard>), AuthoringError> {
     let deck: Option<(String, bool)> =
         sqlx::query_as("SELECT name, archived_at IS NOT NULL FROM decks WHERE id = ?1")
             .bind(deck_id)
@@ -557,8 +637,10 @@ pub async fn deck_cards(
         Some((_, true)) => return Err(AuthoringError::DeckArchived),
         Some((name, false)) => name,
     };
-    let cards: Vec<(String, String, Option<i64>, Option<String>)> = sqlx::query_as(
-        "SELECT f.front, f.back, f.cloze_text_id, t.text
+    // Each card's id, front, back, cloze text id and cloze text.
+    type Row = (i64, String, String, Option<i64>, Option<String>);
+    let cards: Vec<Row> = sqlx::query_as(
+        "SELECT f.id, f.front, f.back, f.cloze_text_id, t.text
          FROM flashcards f LEFT JOIN cloze_texts t ON t.id = f.cloze_text_id
          WHERE f.deck_id = ?1 AND f.deleted_at IS NULL
            -- An image occlusion card's question is its picture, which a
@@ -572,16 +654,24 @@ pub async fn deck_cards(
     if cards.is_empty() {
         return Err(AuthoringError::NoCards);
     }
+    let mut conn = pool.acquire().await?;
+    let mut card_tags = tags::deck_card_tags(&mut conn, deck_id).await?;
     // A cloze text once, where its first card is, with an empty back.
     let mut texts_written = HashSet::new();
     let cards = cards
         .into_iter()
-        .filter_map(|(front, back, text_id, text)| match (text_id, text) {
-            (Some(text_id), Some(text)) => texts_written.insert(text_id).then(|| CardText {
-                front: text,
-                back: String::new(),
-            }),
-            _ => Some(CardText { front, back }),
+        .filter_map(|(id, front, back, text_id, text)| {
+            let (front, back) = match (text_id, text) {
+                (Some(text_id), Some(text)) => {
+                    if !texts_written.insert(text_id) {
+                        return None;
+                    }
+                    (text, String::new())
+                }
+                _ => (front, back),
+            };
+            let tags = card_tags.remove(&id).unwrap_or_default();
+            Some(CsvCard { front, back, tags })
         })
         .collect();
     Ok((name, cards))
@@ -599,9 +689,15 @@ fn csv_field(text: &str) -> String {
 
 /// Cards as an RFC 4180 CSV file, header first, with a UTF-8 byte order mark.
 /// Line breaks inside a card are written as CRLF, as the format's own are,
-/// and a cell that would start a formula gets a `'` in front.
-pub fn write_csv(cards: &[CardText]) -> String {
-    let mut out = String::from("\u{FEFF}front,back\r\n");
+/// and a cell that would start a formula gets a `'` in front. A `tags`
+/// column is written only when some card has tags.
+pub fn write_csv(cards: &[CsvCard]) -> String {
+    let with_tags = cards.iter().any(|card| !card.tags.is_empty());
+    let mut out = String::from(if with_tags {
+        "\u{FEFF}front,back,tags\r\n"
+    } else {
+        "\u{FEFF}front,back\r\n"
+    });
     for card in cards {
         let field = |text: &str| {
             csv_field(&protect_formula(
@@ -611,6 +707,10 @@ pub fn write_csv(cards: &[CardText]) -> String {
         out.push_str(&field(&card.front));
         out.push(',');
         out.push_str(&field(&card.back));
+        if with_tags {
+            out.push(',');
+            out.push_str(&field(&card.tags.join(" ")));
+        }
         out.push_str("\r\n");
     }
     out
@@ -663,10 +763,11 @@ mod tests {
         deck
     }
 
-    fn card(front: &str, back: &str) -> CardText {
-        CardText {
+    fn card(front: &str, back: &str) -> CsvCard {
+        CsvCard {
             front: front.to_string(),
             back: back.to_string(),
+            tags: Vec::new(),
         }
     }
 
@@ -1020,7 +1121,7 @@ mod tests {
         tauri::async_runtime::block_on(async {
             let pool = seeded().await;
             let deck = deck_with(&pool, "Big", &[]).await;
-            let cards: Vec<CardText> = (0..CSV_ROWS_MAX)
+            let cards: Vec<CsvCard> = (0..CSV_ROWS_MAX)
                 .map(|n| card(&format!("Q{n}"), "A"))
                 .collect();
             let imported = import_cards(&pool, deck, &cards, true, at(NOW))
@@ -1051,7 +1152,7 @@ mod tests {
             let deck = deck_with(&pool, "Round trip", &[]).await;
             let preview = read(&pool, deck, csv.as_bytes()).await;
             assert!(preview.header);
-            let back: Vec<CardText> = preview
+            let back: Vec<CsvCard> = preview
                 .rows
                 .into_iter()
                 .map(|row| card(&row.front, &row.back))
@@ -1093,7 +1194,7 @@ mod tests {
             let pool = seeded().await;
             let deck = deck_with(&pool, "Formulas", &[]).await;
             let preview = read(&pool, deck, csv.as_bytes()).await;
-            let back: Vec<CardText> = preview
+            let back: Vec<CsvCard> = preview
                 .rows
                 .into_iter()
                 .map(|row| card(&row.front, &row.back))
@@ -1225,6 +1326,132 @@ mod tests {
                     InvalidInput::ClozeUnclosed
                 )))
             ));
+        });
+    }
+
+    fn tagged(front: &str, back: &str, tags: &[&str]) -> CsvCard {
+        CsvCard {
+            tags: tags.iter().map(|tag| tag.to_string()).collect(),
+            ..card(front, back)
+        }
+    }
+
+    #[test]
+    fn a_tags_column_is_read_only_when_the_header_names_it() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let deck = deck_with(&pool, "Tagged", &[]).await;
+            let long = "x".repeat(tags::TAG_MAX_CHARS + 1);
+            let text = format!(
+                "Front,Back,Tags,Notes\nq1,a1,bio exam,ignored\nq2,a2,\"bio, Bio,  \"\n\
+                 q3,a3,{long}\nq4,a4,'-x\nThe {{{{c1::cell}}}},,bio\n"
+            );
+            let preview = read(&pool, deck, text.as_bytes()).await;
+            assert!(preview.tags_column);
+            // Only the fourth column is ignored now.
+            assert_eq!(preview.rows_with_extra_columns, 1);
+            let rows: Vec<(Vec<String>, Option<RowProblem>)> = preview
+                .rows
+                .iter()
+                .map(|row| (row.tags.clone(), row.problem))
+                .collect();
+            let names = |list: &[&str]| list.iter().map(|tag| tag.to_string()).collect();
+            assert_eq!(
+                rows,
+                vec![
+                    (names(&["bio", "exam"]), None),
+                    (names(&["bio"]), None),
+                    (Vec::new(), Some(RowProblem::Tags(TagProblem::TooLong))),
+                    (names(&["-x"]), None),
+                    (names(&["bio"]), None),
+                ]
+            );
+
+            // Without the header's "Tags", a third column is ignored, as
+            // before tags.
+            let preview = read(&pool, deck, b"Front,Back,Notes\nq,a,bio exam\n").await;
+            assert!(!preview.tags_column);
+            assert_eq!(preview.rows_with_extra_columns, 1);
+            assert!(preview.rows[0].tags.is_empty());
+            let preview = read(&pool, deck, b"q,a,bio\n").await;
+            assert!(!preview.tags_column && preview.rows[0].tags.is_empty());
+        });
+    }
+
+    #[test]
+    fn imported_cards_get_their_tags_and_export_them() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let deck = deck_with(&pool, "Tagged", &[]).await;
+            let cards = vec![
+                tagged("q1", "a1", &["bio", "Exam"]),
+                tagged("The {{c1::cell}} has a {{c2::nucleus}}.", "", &["bio"]),
+                card("q2", "a2"),
+                tagged("q3", "a3", &["=sum", "-x"]),
+            ];
+            let imported = import_cards(&pool, deck, &cards, true, at(NOW))
+                .await
+                .unwrap();
+            assert_eq!(imported.added, 5);
+            let detail = deck_detail(&pool, deck, at(NOW)).await.unwrap();
+            let tags: Vec<(&str, Vec<String>)> = detail
+                .cards
+                .iter()
+                .map(|card| (card.front.as_str(), card.tags.clone()))
+                .collect();
+            let names = |list: &[&str]| list.iter().map(|tag| tag.to_string()).collect::<Vec<_>>();
+            assert_eq!(
+                tags,
+                vec![
+                    ("q1", names(&["bio", "Exam"])),
+                    ("The [...] has a nucleus.", names(&["bio"])),
+                    ("The cell has a [...].", names(&["bio"])),
+                    ("q2", Vec::new()),
+                    ("q3", names(&["-x", "=sum"])),
+                ]
+            );
+
+            // Exported with a tags column, protected, and read back the same.
+            let (_, exported) = deck_cards(&pool, deck).await.unwrap();
+            let csv = write_csv(&exported);
+            assert!(csv.starts_with("\u{FEFF}front,back,tags\r\nq1,a1,bio Exam\r\n"));
+            assert!(csv.contains("\r\nq2,a2,\r\nq3,a3,'-x =sum\r\n"));
+            let other = deck_with(&pool, "Copy", &[]).await;
+            let preview = read(&pool, other, csv.as_bytes()).await;
+            assert!(preview.tags_column);
+            let back: Vec<CsvCard> = preview
+                .rows
+                .into_iter()
+                .map(|row| CsvCard {
+                    front: row.front,
+                    back: row.back,
+                    tags: row.tags,
+                })
+                .collect();
+            assert_eq!(back, exported);
+
+            // A list Synapse refuses is refused at saving too.
+            let refused = import_cards(
+                &pool,
+                other,
+                &[tagged("q", "a", &["two words"])],
+                false,
+                at(NOW),
+            )
+            .await;
+            assert!(matches!(
+                refused,
+                Err(CsvError::Authoring(AuthoringError::Tags(
+                    TagProblem::BadCharacter
+                )))
+            ));
+            let saved: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM flashcards WHERE deck_id = ?1")
+                    .bind(other)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(saved, 0);
         });
     }
 }

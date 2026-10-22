@@ -13,7 +13,8 @@ collection). Copy those three here. No media is included.
 It also writes `occlusion.apkg` and `occlusion-legacy.apkg` from a second
 collection, with media, for image occlusion, and `pictures.apkg` and
 `pictures-legacy.apkg` from a third, with media, for pictures on front/back
-cards (see the end of this file).
+cards, and `tags.apkg` and `tags-legacy.apkg` from a fourth, for tags (see
+the end of this file).
 
 What the collection holds, as `anki.rs`'s tests expect:
 - Biology: a Basic card with HTML, a Basic card with a 2,001-character back
@@ -233,4 +234,49 @@ options.legacy = True
 col.export_anki_package(
     out_path=os.path.join(out, "pictures-legacy.apkg"), options=options, limit=None
 )
+col.close()
+
+
+# Tags: a fourth collection, in the newer and the legacy format.
+#   Tagged: "Cell" (bio::cells, Exam, and a 61-character tag Synapse can't
+#   take); "Chat", a reversed note tagged french; a cloze note tagged bio;
+#   "Many" with 22 tags (two past a card's 20); "Plain" with none; and an
+#   image occlusion note tagged anatomy.
+os.makedirs(os.path.join(out, "work4"))
+col = Collection(os.path.join(out, "work4", "collection.anki2"))
+models = col.models
+tagged = col.decks.id("Tagged")
+
+
+def add_tagged(note_type, tags, *fields):
+    note = add(note_type, tagged, *fields)
+    note.tags = tags
+    col.update_note(note)
+
+
+add_tagged("Basic", ["bio::cells", "Exam", "x" * 61], "Cell", "Unit of life")
+add_tagged("Basic (and reversed card)", ["french"], "chat", "cat")
+add_tagged("Cloze", ["bio"], "{{c1::Mitosis}} divides {{c2::cells}}", "")
+add_tagged("Basic", [f"t{number:02}" for number in range(1, 23)], "Many", "Tags")
+add_tagged("Basic", [], "Plain", "No tags")
+picture = os.path.join(out, "work4", "cell.png")
+with open(picture, "wb") as file:
+    file.write(png(4, 4))
+col.add_image_occlusion_note(
+    notetype_id=models.by_name("Image Occlusion")["id"],
+    image_path=picture,
+    occlusions="{{c1::image-occlusion:rect:left=.1:top=.1:width=.3:height=.3:oi=1}}",
+    header="Cell",
+    back_extra="",
+    tags=["anatomy"],
+)
+io_note = col.get_note(col.find_notes('"note:Image Occlusion"')[0])
+col.set_deck([card.id for card in io_note.cards()], tagged)
+
+options = ExportAnkiPackageOptions(
+    with_scheduling=False, with_deck_configs=False, with_media=True, legacy=False
+)
+col.export_anki_package(out_path=os.path.join(out, "tags.apkg"), options=options, limit=None)
+options.legacy = True
+col.export_anki_package(out_path=os.path.join(out, "tags-legacy.apkg"), options=options, limit=None)
 col.close()

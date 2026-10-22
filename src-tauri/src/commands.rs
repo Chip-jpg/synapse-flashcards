@@ -18,7 +18,7 @@ use crate::aid::{self, CardHelp, HelpKind, Helping};
 use crate::anki::{self, AnkiError, AnkiImported, AnkiImports, PicturesLeftOut, Skipped};
 use crate::assets::{self, Asset, AssetError, AssetStore};
 use crate::authoring::{self, ArchivedDeck, AuthoringError, CardText, DeckDetail, InvalidInput};
-use crate::cards_csv::{self, CardsImported, CsvError, Delimiter, Duplicate, RowProblem};
+use crate::cards_csv::{self, CardsImported, CsvCard, CsvError, Delimiter, Duplicate, RowProblem};
 use crate::cloze::{self, ClozeChanges, RestoreBlock};
 use crate::db::Database;
 use crate::export::{self, ExportError};
@@ -555,6 +555,91 @@ pub async fn review_card(
             "Your rating couldn't be saved.",
         )
     })
+}
+
+const TAG_NOT_FOUND: &str = "That tag no longer exists. Go back to the Study Desk.";
+
+/// Every tag on an active card of an active deck, with how many of its cards
+/// are due now and in how many decks, for reviewing a tag across decks.
+///
+/// Returns `[{ id, name, dueCount, decks }]`, sorted by name.
+#[tauri::command]
+pub async fn get_tags_due(
+    app: AppHandle,
+    database: State<'_, Database>,
+) -> Result<Vec<study::TagDue>, CommandError> {
+    let pool = pool(&app, &database).await?;
+    study::tags_due(&pool, Utc::now()).await.map_err(|err| {
+        eprintln!("[synapse] loading the tags to review failed: {err}");
+        CommandError::failed("Synapse couldn't load your tags.")
+    })
+}
+
+/// The next card due with a tag, from any active deck, as `get_session_card`
+/// sends one (plus `deck`, the card's deck name), or `{ status: "completed",
+/// cardsReviewed }`. A tag review stores no session: `reviewed` is how many
+/// cards the screen has rated so far, sent back as the progress.
+///
+/// Arguments: `{ tagId, reviewed }`. A missing tag rejects with "invalid".
+#[tauri::command]
+pub async fn get_tag_card(
+    app: AppHandle,
+    database: State<'_, Database>,
+    tag_id: i64,
+    reviewed: i64,
+) -> Result<SessionCard, CommandError> {
+    if tag_id < 1 {
+        return Err(CommandError::invalid(TAG_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    study::tag_card(&pool, tag_id, reviewed, Utc::now())
+        .await
+        .map_err(|err| {
+            study_error(
+                err,
+                "loading a tag's card",
+                TAG_NOT_FOUND,
+                "Synapse couldn't load a flashcard.",
+            )
+        })
+}
+
+/// Saves a rating for the card shown in a review of a tag, as `review_card`
+/// does in a deck's session.
+///
+/// Arguments: `{ tagId, cardId, expectedReps, rating: 1 | 2 | 3 | 4 }`.
+/// Returns `null`; a card no longer due with the tag rejects with "stale".
+#[tauri::command]
+pub async fn review_tag_card(
+    app: AppHandle,
+    database: State<'_, Database>,
+    tag_id: i64,
+    card_id: i64,
+    expected_reps: i64,
+    rating: i64,
+) -> Result<(), CommandError> {
+    let Some(rating) = Rating::from_number(rating) else {
+        eprintln!("[synapse] rejected review with invalid rating {rating}");
+        return Err(CommandError::invalid("That rating isn't valid."));
+    };
+    if tag_id < 1 || card_id < 1 || expected_reps < 0 {
+        eprintln!(
+            "[synapse] rejected tag review with invalid ids: tag {tag_id}, \
+             card {card_id}, expected reps {expected_reps}"
+        );
+        return Err(CommandError::invalid("That review request isn't valid."));
+    }
+    let pool = pool(&app, &database).await?;
+    study::record_tag_review(&pool, tag_id, card_id, expected_reps, rating, Utc::now())
+        .await
+        .map_err(|err| {
+            study_error(
+                err,
+                "saving a tag review",
+                TAG_NOT_FOUND,
+                "Your rating couldn't be saved.",
+            )
+        })
 }
 
 /// Creates a normal deck (never the sample deck).
@@ -2554,7 +2639,7 @@ pub async fn set_retention(
     get_retention(app, database).await
 }
 
-/// One row of a cards file, checked: `{ line, front, back, problem, duplicate }`.
+/// One row of a cards file, checked: `{ line, front, back, problem, duplicate, clozeCards, tags }`.
 /// `problem` is `{ field, message }` when the row can't become a card, and
 /// `duplicate` says why its card may already be there (see `cards_csv.rs`).
 #[derive(Debug, serde::Serialize)]
@@ -2568,6 +2653,8 @@ pub struct CardsFileRow {
     /// how many cards it makes. `null` for a front/back row.
     #[serde(rename = "clozeCards")]
     cloze_cards: Option<usize>,
+    /// The row's tags, checked; empty without a tags column.
+    tags: Vec<String>,
 }
 
 /// Why a row of a cards file can't become a card, as a typed card's error.
@@ -2593,13 +2680,14 @@ impl RowProblemMessage {
                 };
                 (field, error.message)
             }
+            RowProblem::Tags(problem) => (Field::Tags, CommandError::invalid_tags(problem).message),
         };
         RowProblemMessage { field, message }
     }
 }
 
 /// What choosing a cards file did:
-/// `{ "status": "read", "fileName", "delimiter", "header", "rows", "rowsWithExtraColumns" }`
+/// `{ "status": "read", "fileName", "delimiter", "header", "rows", "tagsColumn", "rowsWithExtraColumns" }`
 /// or `{ "status": "cancelled" }`. Nothing has been saved.
 #[derive(Debug, serde::Serialize)]
 #[serde(
@@ -2614,7 +2702,9 @@ pub enum CardsFile {
         /// The first row was column names, so it isn't among `rows`.
         header: bool,
         rows: Vec<CardsFileRow>,
-        /// Rows with something in a third or later column, which is ignored.
+        /// The header names a third column "Tags", which is read as tags.
+        tags_column: bool,
+        /// Rows with something in a column that isn't read, which is ignored.
         rows_with_extra_columns: usize,
     },
     /// The user closed the file window without choosing a file.
@@ -2750,8 +2840,10 @@ pub async fn read_cards_csv(
                 problem: row.problem.map(RowProblemMessage::of),
                 duplicate: row.duplicate,
                 cloze_cards: row.cloze_cards,
+                tags: row.tags,
             })
             .collect(),
+        tags_column: preview.tags_column,
         rows_with_extra_columns: preview.rows_with_extra_columns,
     })
 }
@@ -2761,7 +2853,7 @@ pub async fn read_cards_csv(
 /// `skipDuplicates`, cards whose front is already in the deck (or on an
 /// earlier card sent) are left out, judged afresh at saving.
 ///
-/// Arguments: `{ deckId, cards: [{ front, back }], skipDuplicates }`. Returns
+/// Arguments: `{ deckId, cards: [{ front, back, tags? }], skipDuplicates }`. Returns
 /// `{ added, skipped, cardCount }`. A refused card rejects with kind
 /// "invalid", its `field`, and its `index` in `cards`; nothing new to add
 /// rejects with kind "stale".
@@ -2770,7 +2862,7 @@ pub async fn import_cards_csv(
     app: AppHandle,
     database: State<'_, Database>,
     deck_id: i64,
-    cards: Vec<CardText>,
+    cards: Vec<CsvCard>,
     skip_duplicates: bool,
 ) -> Result<CardsImported, CommandError> {
     if deck_id < 1 {
@@ -2782,7 +2874,7 @@ pub async fn import_cards_csv(
         .map_err(|err| csv_error(err, "importing cards", "Synapse couldn't save the cards."))
 }
 
-/// Saves an active deck's cards (front and back only) as a CSV file the user
+/// Saves an active deck's cards (front, back and tags) as a CSV file the user
 /// chooses. The sample deck can be exported too. Opens the OS "save as"
 /// dialog, as `export_data` does; closing it returns `{ status: "cancelled" }`
 /// and writes nothing.
@@ -2887,9 +2979,12 @@ pub struct AnkiDeckPreview {
 
 /// What choosing an Anki package did:
 /// `{ "status": "read", token, fileName, decks, notes, skipped, mediaRemoved, extraRemoved, reviewed,
-/// occlusions, occlusionApproximated, cardPictures, picturesLeftOut }`
+/// occlusions, occlusionApproximated, cardPictures, picturesLeftOut, tags, tagsLeftOut }`
 /// or `{ "status": "cancelled" }`. Nothing has been saved; `token` names the
 /// package to `import_anki_package` and `cancel_anki_import`.
+// Built once per chosen file and sent straight on, so the size of `Read`
+// costs nothing worth boxing it for.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, serde::Serialize)]
 #[serde(
     tag = "status",
@@ -2922,6 +3017,11 @@ pub enum AnkiFile {
         card_pictures: usize,
         /// Pictures of front/back cards left out, by why.
         pictures_left_out: PicturesLeftOut,
+        /// How many different tags the cards get from their notes.
+        tags: usize,
+        /// Tags of notes left out (over 60 characters, with a comma, or past
+        /// a card's 20), one for each note that had it.
+        tags_left_out: usize,
     },
     Cancelled,
 }
@@ -3062,6 +3162,15 @@ pub async fn read_anki_package(
         .map(|note| note.pictures.count())
         .sum();
     let pictures_left_out = package.pictures_left_out;
+    let tags = package
+        .decks
+        .iter()
+        .flat_map(|deck| &deck.notes)
+        .flat_map(|note| &note.tags)
+        .map(|tag| tag.to_lowercase())
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    let tags_left_out = package.tags_left_out;
     let token = imports.hold(package);
     Ok(AnkiFile::Read {
         token,
@@ -3076,6 +3185,8 @@ pub async fn read_anki_package(
         occlusion_approximated,
         card_pictures,
         pictures_left_out,
+        tags,
+        tags_left_out,
     })
 }
 
@@ -4518,6 +4629,7 @@ mod tests {
                     problem: None,
                     duplicate: Some(Duplicate::InFile { line: 1 }),
                     cloze_cards: None,
+                    tags: Vec::new(),
                 },
                 CardsFileRow {
                     line: 3,
@@ -4526,6 +4638,7 @@ mod tests {
                     problem: Some(RowProblemMessage::of(RowProblem::NoBack)),
                     duplicate: Some(Duplicate::InDeck),
                     cloze_cards: None,
+                    tags: Vec::new(),
                 },
                 CardsFileRow {
                     line: 4,
@@ -4536,6 +4649,7 @@ mod tests {
                     ))),
                     duplicate: None,
                     cloze_cards: None,
+                    tags: Vec::new(),
                 },
                 CardsFileRow {
                     line: 5,
@@ -4544,6 +4658,7 @@ mod tests {
                     problem: None,
                     duplicate: None,
                     cloze_cards: Some(2),
+                    tags: Vec::new(),
                 },
                 CardsFileRow {
                     line: 6,
@@ -4554,8 +4669,10 @@ mod tests {
                     ))),
                     duplicate: None,
                     cloze_cards: None,
+                    tags: Vec::new(),
                 },
             ],
+            tags_column: false,
             rows_with_extra_columns: 0,
         };
         assert_eq!(
@@ -4569,7 +4686,7 @@ mod tests {
                     {
                         "line": 2, "front": "What is DNA?", "back": "A molecule.",
                         "problem": null, "duplicate": { "kind": "inFile", "line": 1 },
-                        "clozeCards": null
+                        "clozeCards": null, "tags": []
                     },
                     {
                         "line": 3, "front": "Alone", "back": "",
@@ -4578,17 +4695,17 @@ mod tests {
                             "message": "This row has no back: put the back in a second column."
                         },
                         "duplicate": { "kind": "inDeck" },
-                        "clozeCards": null
+                        "clozeCards": null, "tags": []
                     },
                     {
                         "line": 4, "front": "", "back": "b",
                         "problem": { "field": "front", "message": "Enter the front of the card." },
                         "duplicate": null,
-                        "clozeCards": null
+                        "clozeCards": null, "tags": []
                     },
                     {
                         "line": 5, "front": "The {{c1::cell}} has a {{c2::nucleus}}.", "back": "",
-                        "problem": null, "duplicate": null, "clozeCards": 2
+                        "problem": null, "duplicate": null, "clozeCards": 2, "tags": []
                     },
                     {
                         "line": 6, "front": "The {{c1::cell", "back": "",
@@ -4597,9 +4714,10 @@ mod tests {
                             "message": "Close each {{c1::…}} with }} before the next one starts."
                         },
                         "duplicate": null,
-                        "clozeCards": null
+                        "clozeCards": null, "tags": []
                     }
                 ],
+                "tagsColumn": false,
                 "rowsWithExtraColumns": 0
             })
         );
@@ -5118,6 +5236,8 @@ mod tests {
                 too_many: 2,
                 ..PicturesLeftOut::default()
             },
+            tags: 4,
+            tags_left_out: 1,
         };
         assert_eq!(
             serde_json::to_value(file).unwrap(),
@@ -5153,6 +5273,8 @@ mod tests {
                     "tooLarge": 0,
                     "tooMany": 2,
                 },
+                "tags": 4,
+                "tagsLeftOut": 1,
             })
         );
         assert_eq!(

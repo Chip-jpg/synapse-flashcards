@@ -220,6 +220,8 @@ export type SessionCard =
       pictures?: CardPictures;
       /** An image occlusion card's picture and boxes; `null` (or absent) otherwise. */
       occlusion?: SessionOcclusion | null;
+      /** On a review of a tag, the name of the card's deck; absent in a deck's session. */
+      deck?: string;
     }
   | { status: "completed"; cardsReviewed: number };
 
@@ -311,7 +313,8 @@ export type Field =
   | "frontPictures"
   | "backPictures"
   | "header"
-  | "boxes";
+  | "boxes"
+  | "tags";
 
 /** Mirrors `CommandError` in `src-tauri/src/commands.rs`. */
 export type CommandError = {
@@ -423,6 +426,32 @@ export function getSessionCard(sessionId: number): Promise<SessionCard> {
 export function reviewCard(sessionId: number, card: Flashcard, rating: Rating): Promise<void> {
   return invoke<void>("review_card", {
     sessionId,
+    cardId: card.id,
+    expectedReps: card.reps,
+    rating,
+  });
+}
+
+/** Mirrors `TagDue` in `src-tauri/src/study.rs`: a tag with its due cards across decks. */
+export type TagDue = { id: number; name: string; dueCount: number; decks: number };
+
+/** Every tag on an active card of an active deck, with how many of its cards are due. */
+export function getTagsDue(): Promise<TagDue[]> {
+  return invoke<TagDue[]>("get_tags_due");
+}
+
+/**
+ * The next card due with a tag, from any active deck. A tag review stores no
+ * session, so the screen sends how many cards it has rated (`reviewed`).
+ */
+export function getTagCard(tagId: number, reviewed: number): Promise<SessionCard> {
+  return invoke<SessionCard>("get_tag_card", { tagId, reviewed });
+}
+
+/** Saves a rating for `card` in a review of a tag. Rejects with a `CommandError`. */
+export function reviewTagCard(tagId: number, card: Flashcard, rating: Rating): Promise<void> {
+  return invoke<void>("review_tag_card", {
+    tagId,
     cardId: card.id,
     expectedReps: card.reps,
     rating,
@@ -728,6 +757,8 @@ export type CardsFileRow = {
    * many cards it makes. `null` (or absent) for a front/back row.
    */
   clozeCards?: number | null;
+  /** The row's tags, checked; empty (or absent) without a tags column. */
+  tags?: string[];
 };
 
 /**
@@ -742,7 +773,9 @@ export type CardsFile =
       delimiter: "comma" | "semicolon" | "tab";
       header: boolean;
       rows: CardsFileRow[];
-      /** Rows with something in a third or later column, which is ignored. */
+      /** The header names a third column "Tags", which is read as tags (absent: no). */
+      tagsColumn?: boolean;
+      /** Rows with something in a column that isn't read, which is ignored. */
       rowsWithExtraColumns: number;
     }
   | { status: "cancelled" };
@@ -777,14 +810,15 @@ export function readCardsCsv(deckId: number): Promise<CardsFile> {
  */
 export function importCardsCsv(
   deckId: number,
-  cards: CardText[],
+  cards: (CardText & { tags?: string[] })[],
   skipDuplicates: boolean,
 ): Promise<CardsImported> {
   return invoke<CardsImported>("import_cards_csv", { deckId, cards, skipDuplicates });
 }
 
 /**
- * Saves an active deck's cards (front and back only) as a CSV file. Rust
+ * Saves an active deck's cards (front, back, and a tags column when any card
+ * has tags) as a CSV file. Rust
  * opens the OS "save as" dialog; closing it resolves with
  * `{ status: "cancelled" }` and writes nothing.
  */
@@ -861,6 +895,10 @@ export type AnkiFile =
       cardPictures: number;
       /** Pictures of front/back cards left out, by why. */
       picturesLeftOut: AnkiPicturesLeftOut;
+      /** How many different tags the cards get from their notes (absent: none). */
+      tags?: number;
+      /** Tags left out: over 60 characters, with a comma, or past a card's 20 (absent: none). */
+      tagsLeftOut?: number;
     }
   | { status: "cancelled" };
 

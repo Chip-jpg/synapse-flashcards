@@ -1555,6 +1555,14 @@ html:has(.note-context) {
   color: var(--text-muted);
 }
 
+/* On a review of a tag, which deck the card shown comes from. */
+.session-deck {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
 /* Session progress */
 
 /* One compact row, so the card and its answer buttons keep the space. */
