@@ -41,8 +41,8 @@ use chrono::{DateTime, Utc};
 use sqlx::{SqliteConnection, SqlitePool};
 
 use crate::authoring::{
-    active_normal_deck, changeable_card_deck, load_deck_detail, required_text, AuthoringError,
-    DeckDetail, InvalidInput, CARD_TEXT_MAX_CHARS,
+    active_normal_deck, changeable_card_deck, checked_tags, load_deck_detail, required_text,
+    tag_text_cards, AuthoringError, DeckDetail, InvalidInput, CARD_TEXT_MAX_CHARS,
 };
 use crate::db::{to_db_time, DbError};
 use crate::study;
@@ -306,6 +306,16 @@ pub(crate) async fn insert_cloze(
     cloze: &Cloze,
     now: &str,
 ) -> Result<usize, sqlx::Error> {
+    Ok(insert_text(conn, deck_id, cloze, now).await?.len())
+}
+
+/// As [`insert_cloze`], returning the new cards' ids.
+async fn insert_text(
+    conn: &mut SqliteConnection,
+    deck_id: i64,
+    cloze: &Cloze,
+    now: &str,
+) -> Result<Vec<i64>, sqlx::Error> {
     let text_id: i64 = sqlx::query_scalar(
         "INSERT INTO cloze_texts (text, created_at, updated_at) VALUES (?1, ?2, ?2)
          RETURNING id",
@@ -314,15 +324,15 @@ pub(crate) async fn insert_cloze(
     .bind(now)
     .fetch_one(&mut *conn)
     .await?;
-    let numbers = cloze.numbers();
-    for &number in &numbers {
-        insert_card(conn, deck_id, text_id, cloze, number, now).await?;
+    let mut card_ids = Vec::new();
+    for number in cloze.numbers() {
+        card_ids.push(insert_card(conn, deck_id, text_id, cloze, number, now).await?);
     }
-    Ok(numbers.len())
+    Ok(card_ids)
 }
 
 /// A brand-new card for one number, started as `authoring::insert_new_card`
-/// starts a typed one.
+/// starts a typed one; returns its id.
 async fn insert_card(
     conn: &mut SqliteConnection,
     deck_id: i64,
@@ -330,11 +340,12 @@ async fn insert_card(
     cloze: &Cloze,
     number: u32,
     now: &str,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
         "INSERT INTO flashcards (deck_id, front, back, fsrs_state, due, reps, lapses,
                                  created_at, updated_at, kind, cloze_text_id, cloze_number)
-         VALUES (?1, ?2, ?3, 'New', NULL, 0, 0, ?4, ?4, 'cloze', ?5, ?6)",
+         VALUES (?1, ?2, ?3, 'New', NULL, 0, 0, ?4, ?4, 'cloze', ?5, ?6)
+         RETURNING id",
     )
     .bind(deck_id)
     .bind(cloze.front(number))
@@ -342,9 +353,8 @@ async fn insert_card(
     .bind(now)
     .bind(text_id)
     .bind(number)
-    .execute(conn)
-    .await?;
-    Ok(())
+    .fetch_one(conn)
+    .await
 }
 
 /// Rewrites an active card's front and back from `cloze`, if they changed.
@@ -372,17 +382,41 @@ async fn rewrite_card(
 /// Adds a cloze text to a normal deck, with one new card per number, and
 /// returns the deck with updated counts. Refused, with nothing written, as
 /// `authoring::create_flashcard` refuses a deck.
+#[cfg(test)]
 pub async fn create_cloze(
     pool: &SqlitePool,
     deck_id: i64,
     text: &str,
     now: DateTime<Utc>,
 ) -> Result<DeckDetail, AuthoringError> {
+    create_cloze_tagged(pool, deck_id, text, None, now).await
+}
+
+/// As [`create_cloze`], giving every card of the text the tags `tag_names`
+/// (`None` or an empty list gives none), checked before anything is written.
+pub async fn create_cloze_tagged(
+    pool: &SqlitePool,
+    deck_id: i64,
+    text: &str,
+    tag_names: Option<&[String]>,
+    now: DateTime<Utc>,
+) -> Result<DeckDetail, AuthoringError> {
     let cloze = validate_cloze(text)?;
+    let tag_names = checked_tags(tag_names)?;
+    let at = now;
     let now = to_db_time(now);
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     active_normal_deck(&mut tx, deck_id).await?;
-    insert_cloze(&mut tx, deck_id, &cloze, &now).await?;
+    let card_ids = insert_text(&mut tx, deck_id, &cloze, &now).await?;
+    tag_text_cards(
+        &mut tx,
+        tag_names.as_deref(),
+        None,
+        &card_ids,
+        &card_ids,
+        at,
+    )
+    .await?;
     let deck = load_deck_detail(&mut tx, deck_id, &now).await?;
     tx.commit().await?;
     Ok(deck)
@@ -501,22 +535,41 @@ pub async fn preview_cloze(
 /// card's schedule, review history, id, and deck are never changed by an
 /// edit; only fronts and backs are rewritten, and cards deleted or brought
 /// back exactly as deleting and restoring one would.
+#[cfg(test)]
 pub async fn update_cloze(
     pool: &SqlitePool,
     card_id: i64,
     text: &str,
     now: DateTime<Utc>,
 ) -> Result<(ClozeChanges, DeckDetail), AuthoringError> {
+    update_cloze_tagged(pool, card_id, text, None, now).await
+}
+
+/// As [`update_cloze`], also replacing the tags of every active card of the
+/// text with `tag_names` when given. Given or not, a card the edit adds or
+/// brings back gets the text's tags (those of `card_id`, when none are sent).
+pub async fn update_cloze_tagged(
+    pool: &SqlitePool,
+    card_id: i64,
+    text: &str,
+    tag_names: Option<&[String]>,
+    now: DateTime<Utc>,
+) -> Result<(ClozeChanges, DeckDetail), AuthoringError> {
     let cloze = validate_cloze(text)?;
+    let tag_names = checked_tags(tag_names)?;
+    let at = now;
     let now = to_db_time(now);
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
 
     // Stops here, before writing anything, if the card can't be edited.
     let (deck_id, text_id, changes) = plan_edit(&mut tx, card_id, &cloze).await?;
+    let mut active = Vec::new();
+    let mut came = Vec::new();
     for change in &changes {
         match *change {
             Change::Keep { card_id, number } => {
-                rewrite_card(&mut tx, card_id, &cloze, number, &now).await?
+                rewrite_card(&mut tx, card_id, &cloze, number, &now).await?;
+                active.push(card_id);
             }
             Change::Delete { card_id } => {
                 sqlx::query(
@@ -539,12 +592,25 @@ pub async fn update_cloze(
                 .execute(&mut *tx)
                 .await?;
                 rewrite_card(&mut tx, card_id, &cloze, number, &now).await?;
+                active.push(card_id);
+                came.push(card_id);
             }
             Change::Add { number } => {
-                insert_card(&mut tx, deck_id, text_id, &cloze, number, &now).await?
+                let new_card = insert_card(&mut tx, deck_id, text_id, &cloze, number, &now).await?;
+                active.push(new_card);
+                came.push(new_card);
             }
         }
     }
+    tag_text_cards(
+        &mut tx,
+        tag_names.as_deref(),
+        Some(card_id),
+        &active,
+        &came,
+        at,
+    )
+    .await?;
     sqlx::query("UPDATE cloze_texts SET text = ?1, updated_at = ?2 WHERE id = ?3")
         .bind(&cloze.text)
         .bind(&now)
@@ -1416,6 +1482,112 @@ mod tests {
             let mut conn = pool.acquire().await.unwrap();
             let basic = deck.cards.last().unwrap().id;
             assert_eq!(session_parts(&mut conn, basic).await.unwrap(), None);
+        });
+    }
+
+    fn names(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
+    /// Cards' tags by cloze number.
+    type TagsByNumber = Vec<(i64, Vec<String>)>;
+
+    /// Each active cloze card's tags by number, and each deleted one's.
+    fn cloze_tags(deck: &DeckDetail) -> (TagsByNumber, TagsByNumber) {
+        let mut active: Vec<_> = deck
+            .cards
+            .iter()
+            .filter_map(|card| Some((card.cloze.as_ref()?.number, card.tags.clone())))
+            .collect();
+        active.sort();
+        let mut deleted: Vec<_> = deck
+            .deleted_cards
+            .iter()
+            .filter_map(|card| Some((card.cloze.as_ref()?.number, card.tags.clone())))
+            .collect();
+        deleted.sort();
+        (active, deleted)
+    }
+
+    #[test]
+    fn a_cloze_text_tags_all_its_cards_and_new_ones_get_the_texts_tags() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let biology = deck(&pool, "Biology").await;
+            let text = "{{c1::A}} and {{c2::B}}";
+
+            // A refused tag writes nothing.
+            let refused =
+                create_cloze_tagged(&pool, biology, text, Some(&names(&["a b"])), at(NOW)).await;
+            assert!(matches!(
+                refused,
+                Err(AuthoringError::Tags(crate::tags::TagProblem::BadCharacter))
+            ));
+            let deck = create_cloze_tagged(
+                &pool,
+                biology,
+                text,
+                Some(&names(&["exam", "bio"])),
+                at(NOW),
+            )
+            .await
+            .unwrap();
+            let both = names(&["bio", "exam"]);
+            assert_eq!(
+                cloze_tags(&deck).0,
+                vec![(1, both.clone()), (2, both.clone())]
+            );
+            let one = card_of(&deck.cards, 1);
+            // Without tags sent, the cards there keep theirs and a new number
+            // gets the edited card's.
+            let later = at(NOW) + TimeDelta::hours(1);
+            let (_, deck) = update_cloze_tagged(&pool, one, "{{c1::A}} and {{c3::C}}", None, later)
+                .await
+                .unwrap();
+            assert_eq!(
+                cloze_tags(&deck).0,
+                vec![(1, both.clone()), (3, both.clone())]
+            );
+            let updated_at = |pool: SqlitePool| async move {
+                let at: String =
+                    sqlx::query_scalar("SELECT updated_at FROM flashcards WHERE id = ?1")
+                        .bind(one)
+                        .fetch_one(&pool)
+                        .await
+                        .unwrap();
+                at
+            };
+            let before = updated_at(pool.clone()).await;
+
+            // Tags sent replace every active card's; the deleted 2 keeps its own.
+            let chem = names(&["chem"]);
+            let (_, deck) =
+                update_cloze_tagged(&pool, one, "{{c1::A}} and {{c3::C}}", Some(&chem), later)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                cloze_tags(&deck),
+                (vec![(1, chem.clone()), (3, chem.clone())], vec![(2, both)])
+            );
+
+            // The same text with new tags changes no card's text or `updated_at`.
+            assert_eq!(updated_at(pool.clone()).await, before);
+
+            // 2 coming back by an edit takes the text's tags.
+            let (changes, deck) = update_cloze_tagged(
+                &pool,
+                one,
+                "{{c1::A}}, {{c2::B}} and {{c3::C}}",
+                None,
+                later,
+            )
+            .await
+            .unwrap();
+            assert_eq!(changes.restored, 1);
+            assert_eq!(
+                cloze_tags(&deck).0,
+                vec![(1, chem.clone()), (2, chem.clone()), (3, chem)]
+            );
         });
     }
 }
