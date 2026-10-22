@@ -34,6 +34,8 @@ const FILE: ReadAnkiFile = {
   mediaRemoved: 1,
   occlusions: 0,
   occlusionApproximated: 0,
+  cardPictures: 0,
+  picturesLeftOut: { missing: 0, unsupported: 0, tooLarge: 0, tooMany: 0 },
   extraRemoved: 2,
   reviewed: 3,
 };
@@ -95,7 +97,9 @@ describe("importing decks from Anki", () => {
       ),
     ).toBeTruthy();
     expect(
-      screen.getByText("1 card has a picture or sound, which is left out. Their text is kept."),
+      screen.getByText(
+        "1 note has a sound, a video, or a picture in a cloze, which is left out. Its text is kept.",
+      ),
     ).toBeTruthy();
     expect(
       screen.getByText("3 of these notes were studied in Anki. The cards still start as new here."),
@@ -160,6 +164,33 @@ describe("importing decks from Anki", () => {
     expect(screen.queryByText(/^Left out/)).toBeNull();
     expect(screen.queryByText(/studied in Anki/)).toBeNull();
     expect(screen.queryByText(/Back Extra/)).toBeNull();
+    expect(screen.queryByText(/pictures? comes? with the cards/)).toBeNull();
+    expect(screen.queryByText(/^Pictures left out/)).toBeNull();
+  });
+
+  it("says which pictures come with the cards and which are left out", async () => {
+    const user = userEvent.setup();
+    await openBackup(user, {
+      read_anki_package: () => ({
+        ...FILE,
+        mediaRemoved: 2,
+        cardPictures: 9,
+        picturesLeftOut: { missing: 2, unsupported: 1, tooLarge: 1, tooMany: 3 },
+      }),
+    });
+    await preview(user);
+
+    expect(screen.getByText("9 pictures come with the cards, on the same side as in Anki.")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Pictures left out, so their cards come without them: 2 pictures not in the file (export with media included) or given by a web address, 1 picture not a PNG, JPEG, GIF or WebP, 1 picture over 20 MB, 3 pictures past the 4 that one side of a card can show.",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        "2 notes have a sound, a video, or a picture in a cloze, which is left out. Their text is kept.",
+      ),
+    ).toBeTruthy();
   });
 
   it("sends one save however often Add is pressed, and the spreadsheet decks reload", async () => {

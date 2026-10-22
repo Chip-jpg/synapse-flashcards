@@ -52,9 +52,9 @@ migrations, validation, scheduling, and every business rule; React only calls ty
   checking every row, and save a deck's cards as a CSV file.
 - **Picture cards (image occlusion)** — draw boxes over a picture (a diagram, a map, a labelled
   figure); each box is a card that asks what's under it.
-- **Decks from Anki** — add the front/back, cloze and image occlusion notes of an Anki package
-  (`.apkg` or `.colpkg`) as new decks of new cards, after a preview of what comes across and what's
-  left out.
+- **Decks from Anki** — add the front/back (with their pictures), cloze and image occlusion notes
+  of an Anki package (`.apkg` or `.colpkg`) as new decks of new cards, after a preview of what comes
+  across and what's left out.
 - **Import files as notes** — make a note from the text of a PDF, text (`.txt`), Markdown (`.md`),
   Word (`.docx`), or PowerPoint (`.pptx`) file. You check and edit the text before it's saved, and
   the original is kept under *Sources*.
@@ -378,7 +378,13 @@ archived ones included, gets " (2)" added), how many cards it brings, and how ma
 out and why. Notes come across when their type has one front and one back, such as Anki's *Basic*,
 *Basic (and reversed card)*, *Basic (optional reversed card)* and *Basic (type in the answer)*, or
 your own types built the same way. A note becomes one card; tick the box to also add the reversed
-card for notes that have one in Anki. Cloze notes (Anki's *Cloze*, or your own cloze types that ask
+card for notes that have one in Anki. *(On branch `claude/nightly-2026-10-22-anki-pictures`, not
+yet released.)* When the package was exported with media included, the pictures on a front/back
+note come with its card, on the same side (a reversed card shows them the other way round), up to
+4 a side, each kept once however many cards show it; the preview counts them, and counts the
+pictures left out and why: not in the file or given by a web address, not a PNG, JPEG, GIF or WebP
+(an SVG, say), over 20 MB, or past the 4 a side shows. The card keeps its text either way, and a
+side still needs text: a note whose front is only a picture is left out as empty. Cloze notes (Anki's *Cloze*, or your own cloze types that ask
 with one cloze field) become cloze texts, one card per deletion number, checked as a typed cloze
 text is; their *Back Extra* (or any other field on the answer) is left out, and the preview says
 how many had one. Image occlusion notes (Anki's *Image Occlusion*) become picture cards, one card
@@ -538,7 +544,7 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   dropped files itself, so the forms offer *Add picture* and pasting only. Pasting a picture was
   tried only on Linux (WebKitGTK), where the page is handed no picture at all, so there only *Add
   picture* works; on Windows (WebView2) it is expected to work but hasn't been tried. Pictures
-  aren't exported to CSV or brought in from Anki.
+  aren't exported to CSV, and come in from Anki only on front/back and image occlusion notes.
 - **Restoring is per deck.** *Deleted cards* restores one card, the ones ticked with *Restore
   selected*, or with *Restore all* every deleted card of that deck at once; there's no *Select all*
   for deleted cards, no undo of a restore beyond deleting the cards again, and no way to move a card
@@ -587,8 +593,9 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   own exports need.
 - **Anki imports bring text, not history.** Every imported card starts as new: Anki's schedule,
   review history, tags, flags, suspended state and note links aren't imported, and neither are
-  pictures, sounds, LaTeX images or styling (text beside them is kept), except the picture of an
-  image occlusion note. Note types with more than one field on either side, are left out and counted.
+  sounds, LaTeX images, styling, or pictures in cloze notes (text beside them is kept). Pictures
+  come with front/back notes (up to 4 a side) and image occlusion notes. A side that is only a
+  picture, with no text, is still left out, as Synapse's cards need text on both sides. Note types with more than one field on either side, are left out and counted.
   Subdecks become separate decks named like `Parent::Child`. Importing the same file twice makes
   a second set of decks; nothing is merged or deduplicated.
 - **Suggestions are a first step.** They come only from Ollama on this computer, from one note
@@ -664,8 +671,8 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
     the helper.
   - `cards_csv.rs` — reading CSV/TSV files of cards and writing a deck's cards as CSV.
   - `anki.rs` — reading an Anki package's collection (copied out to a temporary folder and opened
-    read-only, never attached to Synapse's database) and adding its front/back, cloze and image
-    occlusion notes (with their pictures) as new decks.
+    read-only, never attached to Synapse's database) and adding its front/back (with their
+    pictures), cloze and image occlusion notes (with their pictures) as new decks.
     `testdata/anki/` holds packages exported by Anki itself, and the script that made them.
   - `assets.rs` — the files Synapse keeps, named by hash in `assets/` beside the database: telling
     what a file is from its bytes, adding one, and serving pictures and PDFs on the `synapse:`

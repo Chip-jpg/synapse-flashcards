@@ -11,7 +11,9 @@ older Anki versions": collection.anki21), and `all.colpkg` (a whole
 collection). Copy those three here. No media is included.
 
 It also writes `occlusion.apkg` and `occlusion-legacy.apkg` from a second
-collection, with media, for image occlusion (see the end of this file).
+collection, with media, for image occlusion, and `pictures.apkg` and
+`pictures-legacy.apkg` from a third, with media, for pictures on front/back
+cards (see the end of this file).
 
 What the collection holds, as `anki.rs`'s tests expect:
 - Biology: a Basic card with HTML, a Basic card with a 2,001-character back
@@ -187,5 +189,48 @@ col.export_anki_package(out_path=os.path.join(out, "occlusion.apkg"), options=op
 options.legacy = True
 col.export_anki_package(
     out_path=os.path.join(out, "occlusion-legacy.apkg"), options=options, limit=None
+)
+col.close()
+
+
+# Pictures on front/back cards: a third collection, exported with media, in
+# the newer and the legacy format.
+#   Pictures: "Heart" (a PNG on the front, a GIF on the back); "Valve", a
+#   reversed note showing the same PNG twice on its front; "Many" (five
+#   pictures on the front, one past the four a side shows); "Gone" (a picture
+#   missing from the package, and one by web address); "Vector" (an SVG);
+#   "Sound" (a picture and a sound); a cloze note with a picture; and a note
+#   whose front is only a picture (empty).
+os.makedirs(os.path.join(out, "work3"))
+col = Collection(os.path.join(out, "work3", "collection.anki2"))
+models = col.models
+pictures = col.decks.id("Pictures")
+GIF = bytes.fromhex("47494638396101000100800000000000ffffff21f90401000000002c00000000010001000002024401003b")
+media = {
+    "heart.png": png(4, 2),
+    "dot.gif": GIF,
+    "shape.svg": b'<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>',
+}
+for number in range(1, 6):
+    media[f"p{number}.png"] = png(number, 1)
+for name, data in media.items():
+    assert col.media.write_data(name, data) == name
+
+add("Basic", pictures, 'Heart <img src="heart.png">', 'Pumps blood <img src="dot.gif">')
+add("Basic (and reversed card)", pictures, 'Valve <img src="heart.png"><img src="heart.png">', "Lets blood one way")
+add("Basic", pictures, "Many " + "".join(f'<img src="p{n}.png">' for n in range(1, 6)), "Five pictures")
+add("Basic", pictures, 'Gone <img src="gone.png">', 'Web <img src="https://example.com/a.png">')
+add("Basic", pictures, 'Vector <img src="shape.svg">', "An SVG")
+add("Basic", pictures, 'Sound <img src="heart.png">', "Beat [sound:beat.mp3]")
+add("Cloze", pictures, '{{c1::Heart}} <img src="heart.png">', "")
+add("Basic", pictures, '<img src="heart.png">', "Only a picture")
+
+options = ExportAnkiPackageOptions(
+    with_scheduling=False, with_deck_configs=False, with_media=True, legacy=False
+)
+col.export_anki_package(out_path=os.path.join(out, "pictures.apkg"), options=options, limit=None)
+options.legacy = True
+col.export_anki_package(
+    out_path=os.path.join(out, "pictures-legacy.apkg"), options=options, limit=None
 )
 col.close()
