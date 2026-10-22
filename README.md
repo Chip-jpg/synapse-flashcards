@@ -378,7 +378,7 @@ archived ones included, gets " (2)" added), how many cards it brings, and how ma
 out and why. Notes come across when their type has one front and one back, such as Anki's *Basic*,
 *Basic (and reversed card)*, *Basic (optional reversed card)* and *Basic (type in the answer)*, or
 your own types built the same way. A note becomes one card; tick the box to also add the reversed
-card for notes that have one in Anki. *(On branch `claude/nightly-2026-10-22-anki-pictures`, not
+card for notes that have one in Anki. *(On branch `claude/project-thread-coyh6l`, not
 yet released.)* When the package was exported with media included, the pictures on a front/back
 note come with its card, on the same side (a reversed card shows them the other way round), up to
 4 a side, each kept once however many cards show it; the preview counts them, and counts the
