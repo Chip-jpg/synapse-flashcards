@@ -24,6 +24,7 @@ use crate::notes::{self, Note, NoteError, NoteSummary, NOTE_TITLE_MAX_CHARS};
 use crate::recognition::{self, Engine};
 use crate::search::Piece;
 use crate::suggest;
+use crate::tags;
 
 /// The longest file name kept with a source, in characters.
 pub const FILE_NAME_MAX_CHARS: usize = 255;
@@ -460,15 +461,19 @@ impl From<sqlx::Error> for NoteFromSourceError {
 
 /// Saves a new note written from the active source `source_id` and records
 /// where it came from, in one transaction: the note is never saved without
-/// its link, or the link without the note.
+/// its link, or the link without the note. `tag_names` gives it tags, as
+/// `notes::create_note_tagged` does.
 pub async fn create_note(
     pool: &SqlitePool,
     source_id: i64,
     title: &str,
     body: &str,
     picture_ids: &[i64],
+    tag_names: Option<&[String]>,
     now: DateTime<Utc>,
 ) -> Result<Note, NoteFromSourceError> {
+    let tag_names = notes::checked_tags(tag_names)
+        .map_err(|invalid| NoteFromSourceError::Note(NoteError::Invalid(invalid)))?;
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let source = load(&mut tx, source_id)
         .await
@@ -476,9 +481,13 @@ pub async fn create_note(
     if source.deleted_at.is_some() {
         return Err(NoteFromSourceError::Source(SourceError::Deleted));
     }
-    let note = notes::insert_note(&mut tx, title, body, picture_ids, now)
+    let mut note = notes::insert_note(&mut tx, title, body, picture_ids, now)
         .await
         .map_err(NoteFromSourceError::Note)?;
+    if let Some(tag_names) = tag_names {
+        tags::set_note_tags(&mut tx, note.id, &tag_names, now).await?;
+        note.tags = tags::note_tags(&mut tx, note.id).await?;
+    }
     sqlx::query("INSERT INTO source_notes (note_id, source_id, created_at) VALUES (?1, ?2, ?3)")
         .bind(note.id)
         .bind(source_id)
@@ -493,7 +502,7 @@ pub async fn create_note(
 /// the notes library orders them).
 pub async fn source_notes(pool: &SqlitePool, id: i64) -> Result<Vec<NoteSummary>, SourceError> {
     source(pool, id).await?;
-    Ok(sqlx::query_as(
+    let found = sqlx::query_as(
         "SELECT n.id, n.title, n.created_at, n.updated_at
          FROM source_notes l JOIN notes n ON n.id = l.note_id
          WHERE l.source_id = ?1 AND n.deleted_at IS NULL
@@ -501,7 +510,8 @@ pub async fn source_notes(pool: &SqlitePool, id: i64) -> Result<Vec<NoteSummary>
     )
     .bind(id)
     .fetch_all(pool)
-    .await?)
+    .await?;
+    Ok(notes::with_tags(pool, found).await?)
 }
 
 /// The original file of an active source, read back from the store and
@@ -1047,7 +1057,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            let note = create_note(&pool, source.id, " Biology ", "Cells", &[], at(NOW))
+            let note = create_note(&pool, source.id, " Biology ", "Cells", &[], None, at(NOW))
                 .await
                 .unwrap();
             assert_eq!(note.title, "Biology");
@@ -1055,20 +1065,83 @@ mod tests {
 
             // A refused note writes neither the note nor a link.
             assert!(matches!(
-                create_note(&pool, source.id, "   ", "Cells", &[], at(NOW)).await,
+                create_note(&pool, source.id, "   ", "Cells", &[], None, at(NOW)).await,
                 Err(NoteFromSourceError::Note(NoteError::Invalid(_)))
             ));
             assert!(matches!(
-                create_note(&pool, 999, "Title", "Cells", &[], at(NOW)).await,
+                create_note(&pool, 999, "Title", "Cells", &[], None, at(NOW)).await,
                 Err(NoteFromSourceError::Source(SourceError::NotFound))
             ));
             delete_source(&pool, source.id, at(LATER)).await.unwrap();
             assert!(matches!(
-                create_note(&pool, source.id, "Title", "Cells", &[], at(NOW)).await,
+                create_note(&pool, source.id, "Title", "Cells", &[], None, at(NOW)).await,
                 Err(NoteFromSourceError::Source(SourceError::Deleted))
             ));
             assert_eq!(count(&pool, "SELECT COUNT(*) FROM notes").await, 1);
             assert_eq!(count(&pool, "SELECT COUNT(*) FROM source_notes").await, 1);
+            let _ = std::fs::remove_dir_all(store.dir());
+        });
+    }
+
+    #[test]
+    fn a_note_from_a_source_takes_tags_shown_with_its_source_and_once_deleted() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let store = scratch_store("sources-note-tags");
+            let source = create_source(&pool, &store, &pdf_document("x"), at(NOW))
+                .await
+                .unwrap();
+            let tags = |list: &[&str]| -> Vec<String> {
+                list.iter().map(|name| name.to_string()).collect()
+            };
+
+            let note = create_note(
+                &pool,
+                source.id,
+                "Biology",
+                "Cells",
+                &[],
+                Some(&tags(&["lecture", "Bio", "bio"])),
+                at(NOW),
+            )
+            .await
+            .unwrap();
+            assert_eq!(note.tags, tags(&["Bio", "lecture"]));
+            assert_eq!(
+                source_notes(&pool, source.id).await.unwrap()[0].tags,
+                tags(&["Bio", "lecture"])
+            );
+
+            // A refused tag saves neither the note nor its link.
+            assert!(matches!(
+                create_note(
+                    &pool,
+                    source.id,
+                    "Other",
+                    "Cells",
+                    &[],
+                    Some(&tags(&["two words"])),
+                    at(NOW),
+                )
+                .await,
+                Err(NoteFromSourceError::Note(NoteError::Invalid(
+                    crate::notes::InvalidNote::Tags(_)
+                )))
+            ));
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM notes").await, 1);
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM source_notes").await, 1);
+
+            // A deleted note is read with its tags.
+            crate::notes::delete_note(&pool, note.id, at(LATER))
+                .await
+                .unwrap();
+            assert_eq!(
+                crate::notes::deleted_note(&pool, note.id)
+                    .await
+                    .unwrap()
+                    .tags,
+                tags(&["Bio", "lecture"])
+            );
             let _ = std::fs::remove_dir_all(store.dir());
         });
     }
@@ -1094,6 +1167,7 @@ mod tests {
                 "Biology",
                 "Cells",
                 &[second.id, first.id],
+                None,
                 at(NOW),
             )
             .await
@@ -1113,6 +1187,7 @@ mod tests {
                     "Other",
                     "Cells",
                     &[first.id, source.asset.id],
+                    None,
                     at(NOW),
                 )
                 .await,
@@ -1136,13 +1211,13 @@ mod tests {
             let other = create_source(&pool, &store, &text_document("other"), at(NOW))
                 .await
                 .unwrap();
-            let first = create_note(&pool, source.id, "First", "a", &[], at(NOW))
+            let first = create_note(&pool, source.id, "First", "a", &[], None, at(NOW))
                 .await
                 .unwrap();
-            let second = create_note(&pool, source.id, "Second", "b", &[], at(LATER))
+            let second = create_note(&pool, source.id, "Second", "b", &[], None, at(LATER))
                 .await
                 .unwrap();
-            create_note(&pool, other.id, "Elsewhere", "c", &[], at(NOW))
+            create_note(&pool, other.id, "Elsewhere", "c", &[], None, at(NOW))
                 .await
                 .unwrap();
             crate::notes::create_note(&pool, "Unlinked", "d", at(NOW))
@@ -1182,7 +1257,7 @@ mod tests {
             let source = create_source(&pool, &store, &pdf_document("one"), at(NOW))
                 .await
                 .unwrap();
-            let note = create_note(&pool, source.id, "Biology", "Cells", &[], at(NOW))
+            let note = create_note(&pool, source.id, "Biology", "Cells", &[], None, at(NOW))
                 .await
                 .unwrap();
             let quotes: Vec<String> = [

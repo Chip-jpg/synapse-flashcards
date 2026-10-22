@@ -395,6 +395,52 @@ pub async fn all_note_tags(
     .map(sorted)
 }
 
+/// The tags of each card in `card_ids` that has any, each list sorted by name.
+pub async fn card_tags_of(
+    conn: &mut SqliteConnection,
+    card_ids: &[i64],
+) -> Result<HashMap<i64, Vec<String>>, sqlx::Error> {
+    names_of(
+        conn,
+        "SELECT l.card_id, t.name FROM card_tags l JOIN tags t ON t.id = l.tag_id
+         WHERE l.card_id IN (SELECT value FROM json_each(?1))",
+        card_ids,
+    )
+    .await
+}
+
+/// The tags of each note in `note_ids` that has any, each list sorted by name.
+pub async fn note_tags_of(
+    conn: &mut SqliteConnection,
+    note_ids: &[i64],
+) -> Result<HashMap<i64, Vec<String>>, sqlx::Error> {
+    names_of(
+        conn,
+        "SELECT l.note_id, t.name FROM note_tags l JOIN tags t ON t.id = l.tag_id
+         WHERE l.note_id IN (SELECT value FROM json_each(?1))",
+        note_ids,
+    )
+    .await
+}
+
+/// A tag-name query on some owners' links, `?1` a JSON array of their ids.
+async fn names_of(
+    conn: &mut SqliteConnection,
+    sql: &'static str,
+    ids: &[i64],
+) -> Result<HashMap<i64, Vec<String>>, sqlx::Error> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let ids = serde_json::to_string(ids).expect("ids serialize");
+    let rows: Vec<(i64, String)> = sqlx::query_as(sql).bind(ids).fetch_all(&mut *conn).await?;
+    let mut by_owner: HashMap<i64, Vec<String>> = HashMap::new();
+    for (owner, name) in rows {
+        by_owner.entry(owner).or_default().push(name);
+    }
+    Ok(sorted(by_owner))
+}
+
 /// Every tag some active card (in a deck that isn't archived) or active note
 /// has, with how many of each, sorted by name ignoring case. A tag only
 /// deleted or archived things have isn't listed, but it is kept, and comes

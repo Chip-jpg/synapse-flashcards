@@ -13,10 +13,18 @@
 //! the index's tokenizer, for the words typed as for the text. Results are
 //! ranked by FTS5's bm25, with a match in a card's front or a note's title
 //! counting twice what one in a back or a body does.
+//!
+//! Results can also be narrowed to a tag (migration 0020), chosen from a list
+//! or typed as `#name` among the words. A tag also finds the tags below it
+//! (`#bio` finds `bio::cells`), as in Anki. With a tag and no words, every
+//! card and note with the tag is listed.
 
-use sqlx::SqlitePool;
+use std::collections::{HashMap, HashSet};
+
+use sqlx::{SqliteConnection, SqlitePool};
 
 use crate::study::StudyError;
+use crate::tags;
 
 /// At most this many results are returned; `more` says whether there were
 /// others. A search is for finding something, not for listing everything.
@@ -51,10 +59,11 @@ pub struct SearchResults {
     pub more: bool,
 }
 
-/// One match. A card: `{ kind: "card", cardId, deckId, deckName, front, back }`.
-/// A note: `{ kind: "note", noteId, title, body }`. The text fields are
-/// snippets as [`Piece`]s; a long side or body is cut around its matches,
-/// with "…" where text was left out.
+/// One match. A card: `{ kind: "card", cardId, deckId, deckName, front, back,
+/// tags }`. A note: `{ kind: "note", noteId, title, body, tags }`. The text
+/// fields are snippets as [`Piece`]s; a long side or body is cut around its
+/// matches, with "…" where text was left out. `tags` are the item's tags,
+/// sorted by name.
 #[derive(Debug, PartialEq, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Hit {
@@ -65,12 +74,14 @@ pub enum Hit {
         deck_name: String,
         front: Vec<Piece>,
         back: Vec<Piece>,
+        tags: Vec<String>,
     },
     #[serde(rename_all = "camelCase")]
     Note {
         note_id: i64,
         title: Vec<Piece>,
         body: Vec<Piece>,
+        tags: Vec<String>,
     },
 }
 
@@ -103,16 +114,132 @@ fn fts_query(terms: &[String]) -> String {
         .join(" ")
 }
 
-/// Searches `scope` for `text`; `deck` limits cards to one active deck and
-/// may only be given with [`Scope::Cards`].
-///
-/// Refuses a deck that doesn't exist (`NotFound`) or is archived
-/// (`DeckArchived`). Text with no words finds nothing. Writes nothing.
+/// [`search_tagged`] with no tag chosen (a tag can still be typed).
+#[cfg(test)]
 pub async fn search(
     pool: &SqlitePool,
     text: &str,
     scope: Scope,
     deck: Option<i64>,
+) -> Result<SearchResults, StudyError> {
+    search_tagged(pool, text, scope, deck, None).await
+}
+
+/// Splits what was typed into the words to search for and the tags asked
+/// for: each word starting with `#` is a tag (`#bio`), added to `chosen`.
+/// Tags come back lowercase, each once, at most [`MAX_TERMS`] of them; a lone
+/// `#` is nothing.
+pub fn typed_tags(text: &str, chosen: Option<&str>) -> (String, Vec<String>) {
+    let mut words = Vec::new();
+    let mut wanted: Vec<String> = Vec::new();
+    let mut add = |name: &str| {
+        let name = name.trim().trim_matches(',').to_lowercase();
+        if !name.is_empty() && !wanted.contains(&name) && wanted.len() < MAX_TERMS {
+            wanted.push(name);
+        }
+    };
+    if let Some(chosen) = chosen {
+        add(chosen);
+    }
+    for word in text.split_whitespace() {
+        match word.strip_prefix('#') {
+            Some(name) => add(name),
+            None => words.push(word),
+        }
+    }
+    (words.join(" "), wanted)
+}
+
+/// Whether a tag named `name` is what `wanted` (lowercase) asks for: the tag
+/// itself, ignoring case, or one below it in a `::` hierarchy.
+fn tag_matches(name: &str, wanted: &str) -> bool {
+    let name = name.to_lowercase();
+    name == wanted
+        || name
+            .strip_prefix(wanted)
+            .is_some_and(|rest| rest.starts_with("::"))
+}
+
+/// The cards and notes that have every tag in `wanted` (each as
+/// [`tag_matches`] reads it), deleted ones included: the main query leaves
+/// those out. Two JSON arrays of ids, for `json_each`.
+async fn tagged(
+    conn: &mut SqliteConnection,
+    wanted: &[String],
+) -> Result<(String, String), sqlx::Error> {
+    let all: Vec<(i64, String)> = sqlx::query_as("SELECT id, name FROM tags")
+        .fetch_all(&mut *conn)
+        .await?;
+    // For each tag asked for, the ids of the tags that answer it.
+    let groups: Vec<HashSet<i64>> = wanted
+        .iter()
+        .map(|wanted| {
+            all.iter()
+                .filter(|(_, name)| tag_matches(name, wanted))
+                .map(|(id, _)| *id)
+                .collect()
+        })
+        .collect();
+    if groups.iter().any(HashSet::is_empty) {
+        return Ok(("[]".to_string(), "[]".to_string()));
+    }
+    let ids: Vec<i64> = groups.iter().flatten().copied().collect();
+    let ids = serde_json::to_string(&ids).expect("ids serialize");
+
+    let mut lists = Vec::with_capacity(2);
+    for sql in [
+        "SELECT card_id, tag_id FROM card_tags WHERE tag_id IN (SELECT value FROM json_each(?1))",
+        "SELECT note_id, tag_id FROM note_tags WHERE tag_id IN (SELECT value FROM json_each(?1))",
+    ] {
+        let links: Vec<(i64, i64)> = sqlx::query_as(sql).bind(&ids).fetch_all(&mut *conn).await?;
+        let mut owned: HashMap<i64, HashSet<i64>> = HashMap::new();
+        for (owner, tag) in links {
+            owned.entry(owner).or_default().insert(tag);
+        }
+        let mut matching: Vec<i64> = owned
+            .into_iter()
+            .filter(|(_, tags)| groups.iter().all(|group| !group.is_disjoint(tags)))
+            .map(|(owner, _)| owner)
+            .collect();
+        matching.sort_unstable();
+        lists.push(serde_json::to_string(&matching).expect("ids serialize"));
+    }
+    let notes = lists.pop().unwrap_or_default();
+    let cards = lists.pop().unwrap_or_default();
+    Ok((cards, notes))
+}
+
+/// The opening of a text with no match to mark: its first `words` words,
+/// with "…" if there were more.
+fn opening(text: &str, words: usize) -> Vec<Piece> {
+    let mut shown: Vec<&str> = text.split_whitespace().collect();
+    let cut = shown.len() > words;
+    shown.truncate(words);
+    let mut text = shown.join(" ");
+    if cut {
+        text.push('…');
+    }
+    if text.is_empty() {
+        return Vec::new();
+    }
+    vec![Piece { text, hit: false }]
+}
+
+/// Searches `scope` for `text`; `deck` limits cards to one active deck and
+/// may only be given with [`Scope::Cards`]; `tag` (and any `#tag` typed in
+/// `text`, see [`typed_tags`]) limits both to what has that tag.
+///
+/// Refuses a deck that doesn't exist (`NotFound`) or is archived
+/// (`DeckArchived`). Text with no words and no tag finds nothing; a tag with
+/// no words lists everything that has it, notes first (most recently edited
+/// first), then cards by deck. A tag nothing has finds nothing. Writes
+/// nothing.
+pub async fn search_tagged(
+    pool: &SqlitePool,
+    text: &str,
+    scope: Scope,
+    deck: Option<i64>,
+    tag: Option<&str>,
 ) -> Result<SearchResults, StudyError> {
     // Both reads see the same database, even if something is saved between.
     let mut tx = pool.begin().await?;
@@ -130,16 +257,37 @@ pub async fn search(
         }
     }
 
-    let terms = terms(text);
-    if terms.is_empty() {
+    let (text, wanted) = typed_tags(text, tag);
+    let terms = terms(&text);
+    if terms.is_empty() && wanted.is_empty() {
         return Ok(SearchResults {
             results: Vec::new(),
             more: false,
         });
     }
-    let query = fts_query(&terms);
     let cards = scope != Scope::Notes;
     let notes = scope != Scope::Cards && deck.is_none();
+    let (tagged_cards, tagged_notes) = if wanted.is_empty() {
+        (None, None)
+    } else {
+        let (cards, notes) = tagged(&mut tx, &wanted).await?;
+        (Some(cards), Some(notes))
+    };
+
+    if terms.is_empty() {
+        let results = listed_by_tag(
+            &mut tx,
+            cards,
+            notes,
+            deck,
+            tagged_cards.as_deref().unwrap_or("[]"),
+            tagged_notes.as_deref().unwrap_or("[]"),
+        )
+        .await?;
+        tx.commit().await?;
+        return Ok(results);
+    }
+    let query = fts_query(&terms);
 
     // First the best matches that may be shown, without snippets: building a
     // snippet for every match of a short prefix would be wasted work.
@@ -152,7 +300,9 @@ pub async fn search(
          WHERE search_index MATCH ?1
            AND ((?2 AND c.deleted_at IS NULL AND d.archived_at IS NULL
                  AND d.id IS NOT NULL AND (?3 IS NULL OR c.deck_id = ?3))
-             OR (?4 AND n.id IS NOT NULL AND n.deleted_at IS NULL))
+             OR (?4 AND n.id IS NOT NULL AND n.deleted_at IS NULL
+                 AND (?7 IS NULL OR n.id IN (SELECT value FROM json_each(?7)))))
+           AND (?6 IS NULL OR c.id IS NULL OR c.id IN (SELECT value FROM json_each(?6)))
          ORDER BY bm25(search_index, 2.0, 1.0), s.rowid
          LIMIT ?5",
     )
@@ -161,6 +311,8 @@ pub async fn search(
     .bind(deck)
     .bind(notes)
     .bind((RESULT_LIMIT + 1) as i64)
+    .bind(tagged_cards.as_deref())
+    .bind(tagged_notes.as_deref())
     .fetch_all(&mut *tx)
     .await?;
 
@@ -191,6 +343,7 @@ pub async fn search(
     .bind(MARK_END.to_string())
     .fetch_all(&mut *tx)
     .await?;
+    let (card_tags, note_tags) = tags_of(&mut tx, ranked.iter().map(|row| row.0)).await?;
     tx.commit().await?;
 
     let results = ranked
@@ -204,6 +357,7 @@ pub async fn search(
                     deck_name: deck_name.clone()?,
                     front: pieces(head),
                     back: pieces(body),
+                    tags: card_tags.get(&(rowid / 2)).cloned().unwrap_or_default(),
                 }
             } else {
                 // A title is at most 200 characters: shown whole.
@@ -211,9 +365,106 @@ pub async fn search(
                     note_id: rowid / 2,
                     title: pieces(whole_head),
                     body: pieces(body),
+                    tags: note_tags.get(&(rowid / 2)).cloned().unwrap_or_default(),
                 }
             })
         })
+        .collect();
+    Ok(SearchResults { results, more })
+}
+
+/// The tags of the results, by search rowid (`2 * id` a card, `2 * id + 1` a
+/// note): the cards' by card id, the notes' by note id.
+async fn tags_of(
+    conn: &mut SqliteConnection,
+    rowids: impl Iterator<Item = i64>,
+) -> Result<(HashMap<i64, Vec<String>>, HashMap<i64, Vec<String>>), sqlx::Error> {
+    let (cards, notes): (Vec<i64>, Vec<i64>) = rowids.partition(|rowid| rowid % 2 == 0);
+    let cards: Vec<i64> = cards.into_iter().map(|rowid| rowid / 2).collect();
+    let notes: Vec<i64> = notes.into_iter().map(|rowid| rowid / 2).collect();
+    Ok((
+        tags::card_tags_of(conn, &cards).await?,
+        tags::note_tags_of(conn, &notes).await?,
+    ))
+}
+
+/// Everything shown that has the tags asked for, when no words were typed:
+/// notes first, most recently edited first, then cards by deck name and in
+/// the order they were added. Snippets are the opening of each text, nothing
+/// marked.
+async fn listed_by_tag(
+    conn: &mut SqliteConnection,
+    cards: bool,
+    notes: bool,
+    deck: Option<i64>,
+    tagged_cards: &str,
+    tagged_notes: &str,
+) -> Result<SearchResults, sqlx::Error> {
+    let limit = (RESULT_LIMIT + 1) as i64;
+    let found_notes: Vec<(i64, String, String)> = if notes {
+        sqlx::query_as(
+            "SELECT id, title, body FROM notes
+             WHERE deleted_at IS NULL AND id IN (SELECT value FROM json_each(?1))
+             ORDER BY updated_at DESC, id DESC
+             LIMIT ?2",
+        )
+        .bind(tagged_notes)
+        .bind(limit)
+        .fetch_all(&mut *conn)
+        .await?
+    } else {
+        Vec::new()
+    };
+    let found_cards: Vec<(i64, i64, String, String, String)> =
+        if cards && (found_notes.len() as i64) < limit {
+            sqlx::query_as(
+                "SELECT c.id, d.id, d.name, c.front, c.back
+                 FROM flashcards c JOIN decks d ON d.id = c.deck_id
+                 WHERE c.deleted_at IS NULL AND d.archived_at IS NULL
+                   AND (?2 IS NULL OR d.id = ?2)
+                   AND c.id IN (SELECT value FROM json_each(?1))
+                 ORDER BY d.name COLLATE NOCASE, d.id, c.id
+                 LIMIT ?3",
+            )
+            .bind(tagged_cards)
+            .bind(deck)
+            .bind(limit - found_notes.len() as i64)
+            .fetch_all(&mut *conn)
+            .await?
+        } else {
+            Vec::new()
+        };
+
+    let more = found_notes.len() + found_cards.len() > RESULT_LIMIT;
+    let rowids = found_notes
+        .iter()
+        .map(|note| note.0 * 2 + 1)
+        .chain(found_cards.iter().map(|card| card.0 * 2));
+    let (card_tags, note_tags) = tags_of(conn, rowids).await?;
+    let results = found_notes
+        .into_iter()
+        .map(|(note_id, title, body)| Hit::Note {
+            note_id,
+            title: vec![Piece {
+                text: title,
+                hit: false,
+            }],
+            body: opening(&body, 24),
+            tags: note_tags.get(&note_id).cloned().unwrap_or_default(),
+        })
+        .chain(
+            found_cards
+                .into_iter()
+                .map(|(card_id, deck_id, deck_name, front, back)| Hit::Card {
+                    card_id,
+                    deck_id,
+                    deck_name,
+                    front: opening(&front, 12),
+                    back: opening(&back, 24),
+                    tags: card_tags.get(&card_id).cloned().unwrap_or_default(),
+                }),
+        )
+        .take(RESULT_LIMIT)
         .collect();
     Ok(SearchResults { results, more })
 }
@@ -430,6 +681,215 @@ mod tests {
                 [format!("card {cell}")]
             );
             assert!(found(&pool, " \"*\" ", Scope::All, None).await.is_empty());
+        });
+    }
+
+    fn tag_list(list: &[&str]) -> Vec<String> {
+        list.iter().map(|name| name.to_string()).collect()
+    }
+
+    async fn tag_card(pool: &SqlitePool, card: i64, list: &[&str]) {
+        authoring::set_card_tags(pool, card, &tag_list(list), at(NOW))
+            .await
+            .unwrap();
+    }
+
+    async fn tag_note(pool: &SqlitePool, note: i64, list: &[&str]) {
+        notes::set_note_tags(pool, note, &tag_list(list), at(NOW))
+            .await
+            .unwrap();
+    }
+
+    async fn found_tagged(
+        pool: &SqlitePool,
+        text: &str,
+        scope: Scope,
+        deck: Option<i64>,
+        tag: Option<&str>,
+    ) -> Vec<String> {
+        let mut found: Vec<String> = search_tagged(pool, text, scope, deck, tag)
+            .await
+            .unwrap()
+            .results
+            .iter()
+            .map(|hit| match hit {
+                Hit::Card { card_id, .. } => format!("card {card_id}"),
+                Hit::Note { note_id, .. } => format!("note {note_id}"),
+            })
+            .collect();
+        found.sort();
+        found
+    }
+
+    #[test]
+    fn hash_words_are_tags_and_the_rest_is_searched() {
+        assert_eq!(
+            typed_tags("mito #Bio cell #exam, #", Some("Chosen")),
+            (
+                "mito cell".to_string(),
+                vec!["chosen".to_string(), "bio".to_string(), "exam".to_string()]
+            )
+        );
+        assert_eq!(
+            typed_tags("#bio #BIO", None),
+            (String::new(), vec!["bio".to_string()])
+        );
+        assert!(tag_matches("Bio", "bio"));
+        assert!(tag_matches("bio::Cells", "bio"));
+        assert!(tag_matches("bio::cells::x", "bio::cells"));
+        assert!(!tag_matches("biology", "bio"));
+        assert!(!tag_matches("bio", "bio::cells"));
+    }
+
+    #[test]
+    fn a_tag_narrows_cards_and_notes_and_finds_the_tags_below_it() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let biology = deck(&pool, "Biology").await;
+            let cells = card(&pool, biology, "Mitosis phases", "Four").await;
+            let genes = card(&pool, biology, "Mitosis genes", "Copied").await;
+            let other = card(&pool, biology, "Mitosis plain", "None").await;
+            let lecture = note(&pool, "Mitosis lecture", "Phases").await;
+            let untagged = note(&pool, "Mitosis untagged", "Phases").await;
+            tag_card(&pool, cells, &["bio::cells", "exam"]).await;
+            tag_card(&pool, genes, &["Bio"]).await;
+            tag_note(&pool, lecture, &["bio"]).await;
+
+            // Chosen, or typed as #bio, any case; bio::cells is below bio.
+            let expected = vec![
+                format!("card {cells}"),
+                format!("card {genes}"),
+                format!("note {lecture}"),
+            ];
+            assert_eq!(
+                found_tagged(&pool, "mitosis", Scope::All, None, Some("BIO")).await,
+                expected
+            );
+            assert_eq!(
+                found_tagged(&pool, "mitosis #bio", Scope::All, None, None).await,
+                expected
+            );
+            // Two tags: both are needed.
+            assert_eq!(
+                found_tagged(&pool, "#exam mito", Scope::All, None, Some("bio")).await,
+                vec![format!("card {cells}")]
+            );
+            // A tag, or the start of one, that nothing has finds nothing.
+            assert!(found_tagged(&pool, "mitosis #bi", Scope::All, None, None)
+                .await
+                .is_empty());
+            assert!(
+                found_tagged(&pool, "mitosis", Scope::All, None, Some("nope"))
+                    .await
+                    .is_empty()
+            );
+            // Scope and deck still apply.
+            assert_eq!(
+                found_tagged(&pool, "mitosis", Scope::Notes, None, Some("bio")).await,
+                vec![format!("note {lecture}")]
+            );
+            assert_eq!(
+                found_tagged(&pool, "#bio", Scope::Cards, Some(biology), None).await,
+                vec![format!("card {cells}"), format!("card {genes}")]
+            );
+            // Without a tag, nothing changes.
+            assert_eq!(
+                found(&pool, "mitosis", Scope::All, None).await.len(),
+                5,
+                "{other} {untagged}"
+            );
+        });
+    }
+
+    #[test]
+    fn a_tag_alone_lists_what_has_it_with_its_tags() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let biology = deck(&pool, "Biology").await;
+            let chemistry = deck(&pool, "Chemistry").await;
+            let atom = card(&pool, chemistry, "Atom", "Smallest unit").await;
+            let long = "word ".repeat(40);
+            let cell = card(&pool, biology, "Cell", &long).await;
+            let older = note(&pool, "Older", "Body").await;
+            let newer = notes::create_note(&pool, "Newer", "Body", at("2026-10-19T13:00:00Z"))
+                .await
+                .unwrap()
+                .id;
+            let deleted = note(&pool, "Deleted", "Body").await;
+            for id in [atom, cell] {
+                tag_card(&pool, id, &["exam", "Z"]).await;
+            }
+            for id in [older, newer, deleted] {
+                tag_note(&pool, id, &["exam"]).await;
+            }
+            notes::delete_note(&pool, deleted, at(NOW)).await.unwrap();
+
+            let result = search_tagged(&pool, "", Scope::All, None, Some("exam"))
+                .await
+                .unwrap();
+            assert!(!result.more);
+            // Notes newest first, then cards by deck name.
+            let order: Vec<String> = result
+                .results
+                .iter()
+                .map(|hit| match hit {
+                    Hit::Card { card_id, .. } => format!("card {card_id}"),
+                    Hit::Note { note_id, .. } => format!("note {note_id}"),
+                })
+                .collect();
+            assert_eq!(
+                order,
+                [
+                    format!("note {newer}"),
+                    format!("note {older}"),
+                    format!("card {cell}"),
+                    format!("card {atom}"),
+                ]
+            );
+            match &result.results[2] {
+                Hit::Card {
+                    front, back, tags, ..
+                } => {
+                    assert_eq!(joined(front), "Cell");
+                    assert_eq!(joined(back), format!("{}…", "word ".repeat(24).trim_end()));
+                    assert_eq!(tags, &tag_list(&["exam", "Z"]));
+                }
+                other => panic!("expected a card, got {other:?}"),
+            }
+            match &result.results[0] {
+                Hit::Note { tags, .. } => assert_eq!(tags, &tag_list(&["exam"])),
+                other => panic!("expected a note, got {other:?}"),
+            }
+
+            // Results found by words carry their tags too.
+            let result = search(&pool, "atom", Scope::All, None).await.unwrap();
+            match &result.results[0] {
+                Hit::Card { tags, .. } => assert_eq!(tags, &tag_list(&["exam", "Z"])),
+                other => panic!("expected a card, got {other:?}"),
+            }
+            // Nothing typed and no tag still finds nothing.
+            assert!(search(&pool, "  # ", Scope::All, None)
+                .await
+                .unwrap()
+                .results
+                .is_empty());
+        });
+    }
+
+    #[test]
+    fn a_tag_alone_stops_at_the_limit() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let biology = deck(&pool, "Biology").await;
+            for n in 0..=RESULT_LIMIT {
+                let id = card(&pool, biology, &format!("Card {n}"), "back").await;
+                tag_card(&pool, id, &["many"]).await;
+            }
+            let result = search_tagged(&pool, "", Scope::All, None, Some("many"))
+                .await
+                .unwrap();
+            assert_eq!(result.results.len(), RESULT_LIMIT);
+            assert!(result.more);
         });
     }
 

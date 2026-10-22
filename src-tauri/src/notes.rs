@@ -93,7 +93,7 @@ pub struct DeletedNote {
 }
 
 /// A deleted note opened from the library's history to be read:
-/// `{ id, title, body, createdAt, updatedAt, deletedAt, pictures }`.
+/// `{ id, title, body, createdAt, updatedAt, deletedAt, pictures, tags }`.
 ///
 /// Reading only: nothing takes a deleted note's id to change it, so it must be
 /// restored before it can be edited or used to write a card.
@@ -111,6 +111,8 @@ pub struct DeletedNoteText {
     pub deleted_at: String,
     /// The pictures it showed under its text, in order (kept while deleted).
     pub pictures: Vec<Asset>,
+    /// Its tags, sorted by name (kept while deleted, `tags.rs`).
+    pub tags: Vec<String>,
 }
 
 /// What was wrong with a note the user wrote. Nothing was saved.
@@ -201,7 +203,7 @@ pub async fn notes(pool: &SqlitePool) -> Result<Vec<NoteSummary>, sqlx::Error> {
 }
 
 /// Fills in each listed note's tags.
-async fn with_tags(
+pub(crate) async fn with_tags(
     pool: &SqlitePool,
     mut notes: Vec<NoteSummary>,
 ) -> Result<Vec<NoteSummary>, sqlx::Error> {
@@ -349,6 +351,7 @@ pub async fn deleted_note(pool: &SqlitePool, note_id: i64) -> Result<DeletedNote
         pictures: pictures::note_pictures(&mut conn, note_id)
             .await
             .map_err(NoteError::Internal)?,
+        tags: tags::note_tags(&mut conn, note_id).await?,
         id: row.id,
         title: row.title,
         body: row.body,
@@ -407,7 +410,9 @@ pub async fn create_note_tagged(
 }
 
 /// Checks the tag names sent with a note, if any.
-fn checked_tags(tag_names: Option<&[String]>) -> Result<Option<Vec<String>>, InvalidNote> {
+pub(crate) fn checked_tags(
+    tag_names: Option<&[String]>,
+) -> Result<Option<Vec<String>>, InvalidNote> {
     tag_names
         .map(tags::checked_names)
         .transpose()
@@ -1481,6 +1486,7 @@ mod tests {
                     updated_at: to_db_time(at(LATER)),
                     deleted_at: to_db_time(at(DELETED)),
                     pictures: Vec::new(),
+                    tags: Vec::new(),
                 }
             );
             // Reading wrote nothing, and the note is still out of the library.

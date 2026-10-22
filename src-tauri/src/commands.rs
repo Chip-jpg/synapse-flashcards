@@ -1243,7 +1243,9 @@ pub async fn search_notes(
 /// The *Search* screen: every active card (in decks that aren't archived) and
 /// every active note matching `{ query }`, each word as a prefix, ignoring
 /// case and accents, best first. `{ scope }` is "all", "cards" or "notes";
-/// `{ deckId }` limits cards to one active deck, with scope "cards" only.
+/// `{ deckId }` limits cards to one active deck, with scope "cards" only;
+/// `{ tag }` (a tag's name), or a word typed as `#name`, limits both to what
+/// has that tag, or one below it. A tag with no words lists what has it.
 /// Reads only. Returns `{ results, more }`; see `search::Hit`.
 #[tauri::command]
 pub async fn search_everything(
@@ -1252,6 +1254,7 @@ pub async fn search_everything(
     query: String,
     scope: Scope,
     deck_id: Option<i64>,
+    tag: Option<String>,
 ) -> Result<SearchResults, CommandError> {
     if query.chars().count() > search::MAX_QUERY_CHARS {
         return Err(CommandError::invalid(
@@ -1267,7 +1270,7 @@ pub async fn search_everything(
         return Err(CommandError::invalid(DECK_NOT_FOUND));
     }
     let pool = pool(&app, &database).await?;
-    search::search(&pool, &query, scope, deck_id)
+    search::search_tagged(&pool, &query, scope, deck_id, tag.as_deref())
         .await
         .map_err(|err| {
             study_error(
@@ -3513,8 +3516,8 @@ pub async fn get_note_source(
 }
 
 /// Saves a new note written from a source and records that it came from it,
-/// together: `{ sourceId, title, body, pictures? }` (picture ids, in order, as
-/// `create_note` takes them). Returns the [`Note`]. A refused
+/// together: `{ sourceId, title, body, pictures?, tags? }` (picture ids, in
+/// order, and tag names, as `create_note` takes them). Returns the [`Note`]. A refused
 /// title or text points at its field, as `create_note` does; a deleted
 /// source rejects with kind "stale". Nothing is written either way.
 #[tauri::command]
@@ -3525,23 +3528,32 @@ pub async fn create_note_from_source(
     title: String,
     body: String,
     pictures: Option<Vec<i64>>,
+    tags: Option<Vec<String>>,
 ) -> Result<Note, CommandError> {
     let pool = pool(&app, &database).await?;
     let pictures = pictures.unwrap_or_default();
-    sources::create_note(&pool, source_id, &title, &body, &pictures, Utc::now())
-        .await
-        .map_err(|err| match err {
-            sources::NoteFromSourceError::Note(err) => note_error(
-                err,
-                "saving a note from a source",
-                "Synapse couldn't save the note.",
-            ),
-            sources::NoteFromSourceError::Source(err) => source_error(
-                err,
-                "saving a note from a source",
-                "Synapse couldn't save the note.",
-            ),
-        })
+    sources::create_note(
+        &pool,
+        source_id,
+        &title,
+        &body,
+        &pictures,
+        tags.as_deref(),
+        Utc::now(),
+    )
+    .await
+    .map_err(|err| match err {
+        sources::NoteFromSourceError::Note(err) => note_error(
+            err,
+            "saving a note from a source",
+            "Synapse couldn't save the note.",
+        ),
+        sources::NoteFromSourceError::Source(err) => source_error(
+            err,
+            "saving a note from a source",
+            "Synapse couldn't save the note.",
+        ),
+    })
 }
 
 /// The active notes written from an active source, by `{ sourceId }`.
