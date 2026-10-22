@@ -192,6 +192,52 @@ fn a_helper_that_spends_too_long_on_a_page_is_stopped() {
 }
 
 #[test]
+fn the_helper_hands_back_a_picture_with_the_asked_part_framed() {
+    let marks = vec![ocr::Mark {
+        left: 0.0,
+        top: 0.0,
+        width: 0.5,
+        height: 0.5,
+    }];
+    let (answers, result) = run(
+        &Job::MarkedPictureForModel { marks },
+        &sample_png(),
+        &CancellationToken::new(),
+        ocr::PAGE_TIMEOUT,
+    );
+    result.unwrap();
+    let [(0, PageOutcome::Picture(png))] = answers.as_slice() else {
+        panic!("{answers:?}");
+    };
+    let original = image::load_from_memory(&sample_png()).unwrap().into_rgb8();
+    let sent = image::load_from_memory_with_format(png, image::ImageFormat::Png)
+        .unwrap()
+        .into_rgb8();
+    assert_eq!(sent.dimensions(), original.dimensions());
+    // The frame is drawn just inside the mark; the rest is the picture.
+    assert_eq!(sent.get_pixel(0, 0).0, [255, 255, 255]);
+    assert_eq!(sent.get_pixel(2, 40).0, [230, 0, 30]);
+    let (width, height) = sent.dimensions();
+    assert_eq!(
+        sent.get_pixel(width - 1, height - 1),
+        original.get_pixel(width - 1, height - 1)
+    );
+
+    // Something that isn't a picture is a problem, as for the other jobs.
+    let (answers, result) = run(
+        &Job::MarkedPictureForModel { marks: Vec::new() },
+        b"not a picture",
+        &CancellationToken::new(),
+        ocr::PAGE_TIMEOUT,
+    );
+    result.unwrap();
+    assert!(
+        matches!(answers.as_slice(), [(0, PageOutcome::Problem(_))]),
+        "{answers:?}"
+    );
+}
+
+#[test]
 fn the_helper_hands_back_pictures_for_a_vision_model_without_reading_them() {
     let (answers, result) = run(
         &Job::PictureForModel,

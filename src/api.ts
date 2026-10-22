@@ -1041,7 +1041,9 @@ export type HelpOutcome = { status: "written"; help: CardHelp } | { status: "sto
 
 /**
  * Asks `model`, in Ollama on this computer, for `kind` of help with a card,
- * written from its front and back only. Nothing is saved. Resolves with
+ * written from its front and back only; for a picture card, `model` is a
+ * vision model (`getVisionModels`), shown its picture with the asked part
+ * framed and its labels. Nothing is saved. Resolves with
  * `{ status: "stopped" }` if `stopCardHelp` is called first; rejects with kind
  * "stale" if the card was deleted or the model has left Ollama.
  */

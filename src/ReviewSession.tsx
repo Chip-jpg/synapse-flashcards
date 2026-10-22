@@ -404,10 +404,14 @@ function Card({
       )}
 
       {/* After the answer, since the help repeats it. Rating never waits on it.
-          Help is written from a card's text, and a picture card's answer is in
-          its picture, so it has none. */}
-      {revealed && !occlusion && (
-        <CardHelp card={card} offered={offerHelp} againStreak={againStreak} />
+          A picture card's answer is in its picture, so a vision model writes it. */}
+      {revealed && (
+        <CardHelp
+          card={card}
+          offered={offerHelp}
+          againStreak={againStreak}
+          picture={occlusion !== null}
+        />
       )}
     </article>
   );

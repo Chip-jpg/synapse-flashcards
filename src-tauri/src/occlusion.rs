@@ -935,6 +935,32 @@ mod tests {
                 })
             );
 
+            // After three Agains in a row, help is offered for a picture
+            // card too: a vision model sees its picture (`aid.rs`).
+            for _ in 0..crate::aid::HELP_AFTER_AGAINS {
+                sqlx::query(
+                    "INSERT INTO review_logs (card_id, rating, state_before, scheduled_days,
+                         elapsed_days, stability_after, difficulty_after, reviewed_at)
+                     VALUES (?1, 1, 'Learning', 0, 0, 1, 5, '2026-10-18T10:00:00Z')",
+                )
+                .bind(card.id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            let SessionCard::Due {
+                card: again,
+                offer_help,
+                ..
+            } = study::session_card(&pool, session_id, at(NOW))
+                .await
+                .unwrap()
+            else {
+                panic!("expected a card");
+            };
+            assert_eq!(again.id, card.id);
+            assert!(offer_help);
+
             // Once one card is rated, its sibling waits until tomorrow.
             study::record_review(&pool, session_id, card.id, card.reps, Rating::Good, at(NOW))
                 .await

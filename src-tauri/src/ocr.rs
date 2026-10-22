@@ -206,7 +206,27 @@ pub enum Job {
     /// The bytes are a PDF; answer the picture of this page (from 1) as a PNG
     /// no larger than [`MODEL_MAX_SIDE`]. Nothing is recognised.
     PageForModel { page: u32 },
+    /// The bytes are a picture; answer it, as page 0, as
+    /// [`Job::PictureForModel`] does, with each of `marks` framed
+    /// ([`mark_picture`]), so a vision model can tell which part of it a
+    /// picture card asks about. Nothing is recognised.
+    MarkedPictureForModel { marks: Vec<Mark> },
 }
+
+/// A part of a picture to frame, in fractions (0 to 1) of its width and
+/// height, as image occlusion boxes are stored.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Mark {
+    pub left: f64,
+    pub top: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// The colour of a mark's frame: a strong red, with a white edge on either
+/// side so it shows on dark and red pictures too.
+const MARK_COLOUR: [u8; 3] = [230, 0, 30];
+const MARK_EDGE: [u8; 3] = [255, 255, 255];
 
 /// One line of the helper's answer.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -803,6 +823,48 @@ pub fn picture_for_model(picture: RgbImage) -> Result<Vec<u8>, String> {
     Ok(png)
 }
 
+/// Draws a frame around each of `marks` on `picture`, inside its edges: a
+/// red band a little thicker on larger pictures, with a white line on either
+/// side of it. Marks are clamped to the picture; one that is empty after
+/// that is left out.
+pub fn mark_picture(picture: &mut RgbImage, marks: &[Mark]) {
+    let (width, height) = picture.dimensions();
+    if width == 0 || height == 0 {
+        return;
+    }
+    let band = (width.max(height) / 250).max(3);
+    let to_pixels = |start: f64, size: f64, whole: u32| -> Option<(u32, u32)> {
+        if !start.is_finite() || !size.is_finite() {
+            return None;
+        }
+        let from = (start.clamp(0.0, 1.0) * f64::from(whole)).round() as u32;
+        let to = ((start + size).clamp(0.0, 1.0) * f64::from(whole)).round() as u32;
+        (to > from).then(|| (from, to.min(whole) - 1))
+    };
+    for mark in marks {
+        let (Some((left, right)), Some((top, bottom))) = (
+            to_pixels(mark.left, mark.width, width),
+            to_pixels(mark.top, mark.height, height),
+        ) else {
+            continue;
+        };
+        // Distance in from the frame's outer edge, for each pixel near it.
+        for y in top..=bottom {
+            for x in left..=right {
+                let depth = (x - left).min(right - x).min(y - top).min(bottom - y);
+                let colour = if depth == 0 || depth == band + 1 {
+                    MARK_EDGE
+                } else if depth <= band {
+                    MARK_COLOUR
+                } else {
+                    continue;
+                };
+                picture.put_pixel(x, y, image::Rgb(colour));
+            }
+        }
+    }
+}
+
 /// The picture of page `page` of a PDF, as [`picture_for_model`] gives it.
 /// The PDF failing to open at all is the `Err`.
 pub fn pdf_page_for_model(pdf: &[u8], page: u32) -> Result<PageOutcome, String> {
@@ -882,6 +944,24 @@ pub fn ocr_helper() -> i32 {
                     },
                     Err(_) => return 4,
                 },
+            };
+            written &= write(line);
+        }
+        Job::MarkedPictureForModel { marks } => {
+            let line = match decode_picture(&bytes) {
+                Err(problem) => HelperLine::Problem { page: 0, problem },
+                Ok(picture) => {
+                    // Scaled first, so the frame is as thick on any picture.
+                    let mut picture = scaled_to(picture, MODEL_MAX_SIDE);
+                    mark_picture(&mut picture, &marks);
+                    match picture_for_model(picture) {
+                        Ok(png) => HelperLine::Picture {
+                            page: 0,
+                            png: base64_png(&png),
+                        },
+                        Err(_) => return 4,
+                    }
+                }
             };
             written &= write(line);
         }
@@ -1429,5 +1509,66 @@ mod tests {
             "The cell is the basic unit of life.\nMitochondria make ATP.\n\n\
              A new paragraph starts here."
         );
+    }
+}
+
+#[cfg(test)]
+mod mark_tests {
+    use super::*;
+
+    #[test]
+    fn a_mark_is_framed_in_red_with_white_edges_and_its_inside_left_alone() {
+        let mut picture = RgbImage::from_pixel(1000, 500, image::Rgb([0, 0, 255]));
+        let mark = Mark {
+            left: 0.1,
+            top: 0.2,
+            width: 0.3,
+            height: 0.4,
+        };
+        mark_picture(&mut picture, &[mark]);
+        // Pixels 100..=399 across, 100..=299 down; a band of 4 on 1,000 px.
+        assert_eq!(picture.get_pixel(100, 150).0, MARK_EDGE);
+        assert_eq!(picture.get_pixel(101, 150).0, MARK_COLOUR);
+        assert_eq!(picture.get_pixel(104, 150).0, MARK_COLOUR);
+        assert_eq!(picture.get_pixel(105, 150).0, MARK_EDGE);
+        assert_eq!(picture.get_pixel(106, 150).0, [0, 0, 255]);
+        assert_eq!(picture.get_pixel(399, 299).0, MARK_EDGE);
+        assert_eq!(picture.get_pixel(397, 297).0, MARK_COLOUR);
+        assert_eq!(picture.get_pixel(250, 200).0, [0, 0, 255]);
+        // Outside the mark nothing changes.
+        assert_eq!(picture.get_pixel(99, 150).0, [0, 0, 255]);
+        assert_eq!(picture.get_pixel(250, 300).0, [0, 0, 255]);
+    }
+
+    #[test]
+    fn marks_are_kept_inside_the_picture_and_empty_or_broken_ones_are_skipped() {
+        let mut picture = RgbImage::from_pixel(100, 100, image::Rgb([0, 0, 0]));
+        mark_picture(
+            &mut picture,
+            &[
+                Mark {
+                    left: 0.9,
+                    top: 0.9,
+                    width: 0.5,
+                    height: 0.5,
+                },
+                Mark {
+                    left: 0.5,
+                    top: 0.5,
+                    width: 0.0,
+                    height: 0.2,
+                },
+                Mark {
+                    left: f64::NAN,
+                    top: 0.0,
+                    width: 0.2,
+                    height: 0.2,
+                },
+            ],
+        );
+        assert_eq!(picture.get_pixel(99, 99).0, MARK_EDGE);
+        assert_eq!(picture.get_pixel(90, 95).0, MARK_EDGE);
+        assert_eq!(picture.get_pixel(50, 55).0, [0, 0, 0]);
+        assert_eq!(picture.get_pixel(5, 5).0, [0, 0, 0]);
     }
 }

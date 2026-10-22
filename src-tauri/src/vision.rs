@@ -247,7 +247,7 @@ async fn agreement_on(
 
 /// Has the helper carry out `job`, which answers one page, and returns that
 /// page's outcome.
-async fn prepare(
+pub(crate) async fn prepare(
     helper: Helper,
     job: Job,
     bytes: Vec<u8>,

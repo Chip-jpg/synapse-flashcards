@@ -442,9 +442,9 @@ pub async fn session_card(
                     remaining,
                 },
                 again_streak,
-                // Help is written from the card's text, and an image
-                // occlusion card's answer is in its picture.
-                offer_help: again_streak >= aid::HELP_AFTER_AGAINS && occlusion.is_none(),
+                // A picture card's help is written by a vision model, which
+                // sees its picture (`aid::picture_help`).
+                offer_help: again_streak >= aid::HELP_AFTER_AGAINS,
                 cloze,
                 pictures,
                 occlusion,
