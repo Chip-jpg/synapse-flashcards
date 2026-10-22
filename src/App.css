@@ -3148,3 +3148,95 @@ textarea.field-input {
   width: auto;
   padding-block: 0.25rem;
 }
+
+/* Tags on cards and notes: small chips, read or removed. */
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin: 0.375rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  max-width: 100%;
+  padding: 0.0625rem 0.625rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--primary-ink);
+  background-color: var(--primary-soft);
+  border: 1px solid var(--primary-line);
+  border-radius: var(--radius-full);
+}
+
+.tag-name {
+  overflow-wrap: anywhere;
+}
+
+.tag-remove {
+  display: inline-grid;
+  place-items: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin-right: -0.375rem;
+  padding: 0;
+  font: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  color: var(--primary-ink);
+  background: none;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.tag-remove:hover {
+  background-color: var(--primary-soft-hover);
+}
+
+.tag-remove:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.tag-field {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.tag-field .tag-list {
+  margin: 0;
+}
+
+.tag-field .tag-input {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.note-tag-filter {
+  max-width: 20rem;
+}
+
+/* The Tags screen: one row a tag, its counts, and Rename / Find. */
+.tag-item {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.tag-item .tag-chip {
+  font-size: 0.9375rem;
+}
+
+.tag-rename .form-actions {
+  margin-top: 0.75rem;
+}

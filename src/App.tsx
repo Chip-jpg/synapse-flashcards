@@ -9,6 +9,7 @@ import { ReviewSession } from "./ReviewSession";
 import { NEW_SEARCH, SearchScreen, type SearchCriteria } from "./Search";
 import { Settings } from "./Settings";
 import { Shell, type Place } from "./Shell";
+import { TagsScreen } from "./Tags";
 import { SourcesArea, type SourceNoteDraft } from "./Sources";
 import { StatisticsScreen } from "./Statistics";
 import { DiscardDialog, UnsavedChangesProvider, useUnsavedTracker } from "./unsaved";
@@ -32,6 +33,7 @@ type View =
       draft?: SourceNoteDraft;
     }
   | { screen: "sources"; sourceId?: number; notice?: string | null }
+  | { screen: "tags" }
   | { screen: "stats" }
   | { screen: "archived" }
   | { screen: "backup" }
@@ -43,6 +45,7 @@ const DECKS: View = { screen: "decks", notice: null };
 const PLACE_VIEWS: Record<Place, View> = {
   desk: DECKS,
   search: { screen: "search", criteria: NEW_SEARCH, returnTo: null },
+  tags: { screen: "tags" },
   notes: { screen: "notes" },
   sources: { screen: "sources" },
   stats: { screen: "stats" },
@@ -64,6 +67,8 @@ function locate(view: View): { place: Place; atPlace: boolean; trail: string[] }
       return { place: "desk", atPlace: false, trail: ["Study Desk", "Review"] };
     case "search":
       return { place: "search", atPlace: true, trail: ["Synapse", "Search"] };
+    case "tags":
+      return { place: "tags", atPlace: true, trail: ["Synapse", "Tags"] };
     case "notes":
       return view.search
         ? { place: "search", atPlace: false, trail: ["Search", "Note"] }
@@ -249,6 +254,14 @@ function App() {
               show({ screen: "notes", noteId, fromSource: sourceId })
             }
             onMakeNote={(draft) => show({ screen: "notes", draft })}
+          />
+        )}
+        {view.screen === "tags" && (
+          <TagsScreen
+            key={`${restores}:${visits}`}
+            onFind={(tag) =>
+              show({ screen: "search", criteria: { ...NEW_SEARCH, tag }, returnTo: null })
+            }
           />
         )}
         {view.screen === "stats" && <StatisticsScreen key={`${restores}:${visits}`} />}

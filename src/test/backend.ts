@@ -202,6 +202,8 @@ export function fakeBackend(overrides: Record<string, Handler> = {}) {
       decks: [{ id: deck.id, name: deck.name, percent: null }],
       archivedOwn: 0,
     }),
+    // No tags are in use unless a test says so.
+    get_tags: () => [],
     // No note comes from a kept source unless a test says so.
     get_note_source: () => null,
     locate_quotes: () => null,

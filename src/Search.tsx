@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useId, useRef, useState } from "react";
 import {
   getDecks,
+  getTags,
   searchEverything,
   toCommandError,
   type Deck,
@@ -8,8 +9,10 @@ import {
   type SearchResults,
   type SearchScope,
   type SnippetPiece,
+  type TagSummary,
 } from "./api";
 import { ArrowRightIcon, DeckIcon, NoteIcon } from "./icons";
+import { TagChips } from "./tagInput";
 import { useFocusOnMount } from "./ui";
 
 /** What is being searched for, kept while a result is open so Back returns to it. */
@@ -17,13 +20,21 @@ export type SearchCriteria = {
   query: string;
   scope: SearchScope;
   deckId: number | null;
+  /** A tag's name: only what has it (or a tag below it) is found. */
+  tag: string | null;
 };
 
 export const NEW_SEARCH: SearchCriteria = {
   query: "",
   scope: "all",
   deckId: null,
+  tag: null,
 };
+
+/** Whether `criteria` asks for anything: some words, a typed `#tag`, or a chosen tag. */
+function asksForSomething(criteria: SearchCriteria): boolean {
+  return criteria.query.trim() !== "" || criteria.tag !== null;
+}
 
 /** The longest search Rust accepts, in characters. */
 const MAX_QUERY_CHARS = 500;
@@ -72,11 +83,15 @@ export function SearchScreen({
   const [notice, setNotice] = useState<string | null>(null);
   // The decks to filter cards by. If they can't be read, every deck is searched.
   const [decks, setDecks] = useState<Deck[]>([]);
+  // The tags to filter by. If they can't be read, there's no list (a tag can
+  // still be typed as #name).
+  const [tags, setTags] = useState<TagSummary[]>([]);
   const inputRef = useFocusOnMount<HTMLInputElement>(returnTo === null);
   // The result to focus once results arrive; used once.
   const focusKey = useRef(returnTo);
   const scopeId = useId();
   const deckId = useId();
+  const tagId = useId();
 
   useEffect(() => {
     let current = true;
@@ -85,19 +100,24 @@ export function SearchScreen({
         if (current) setDecks(list);
       })
       .catch(() => {});
+    getTags()
+      .then((list) => {
+        if (current) setTags(list);
+      })
+      .catch(() => {});
     return () => {
       current = false;
     };
   }, []);
 
   useEffect(() => {
-    if (criteria.query.trim() === "") {
+    if (!asksForSomething(criteria)) {
       setState({ status: "idle" });
       return;
     }
     let current = true;
     setState({ status: "searching" });
-    searchEverything(criteria.query, criteria.scope, criteria.deckId).then(
+    searchEverything(criteria.query, criteria.scope, criteria.deckId, criteria.tag).then(
       (found) => {
         if (current) setState({ status: "ready", criteria, found });
       },
@@ -148,7 +168,9 @@ export function SearchScreen({
   if (state.status === "searching") status = "Searching…";
   else if (state.status === "ready") {
     const count = state.found.results.length;
-    if (count === 0) status = `Nothing matches “${trimmed}”.`;
+    const tagged = criteria.tag === null ? "" : ` tagged ${criteria.tag}`;
+    if (count === 0)
+      status = trimmed === "" ? `Nothing is${tagged}.` : `Nothing${tagged} matches “${trimmed}”.`;
     else if (state.found.more)
       status = `The best ${count} results. Add a word to narrow them down.`;
     else status = count === 1 ? "1 result." : `${count} results.`;
@@ -206,7 +228,9 @@ export function SearchScreen({
           </div>
           <p id="search-everything-hint" className="field-hint">
             Finds words that start with what you type, ignoring capitals and accents; every word
-            must match. Deleted cards and notes, and cards in archived decks, aren't searched.
+            must match. Type #bio, or choose a tag below, to find only what's tagged bio (or a
+            tag under it, such as bio::cells). Deleted cards and notes, and cards in archived
+            decks, aren't searched.
           </p>
         </div>
 
@@ -247,6 +271,32 @@ export function SearchScreen({
                 {decks.map((deck) => (
                   <option key={deck.id} value={deck.id}>
                     {deck.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          {(tags.length > 0 || criteria.tag !== null) && (
+            <div className="field">
+              <label className="field-label" htmlFor={tagId}>
+                Tag
+              </label>
+              <select
+                id={tagId}
+                className="field-input"
+                value={criteria.tag ?? ""}
+                onChange={(event) =>
+                  change({ tag: event.target.value === "" ? null : event.target.value })
+                }
+              >
+                <option value="">Any tag</option>
+                {criteria.tag !== null &&
+                  !tags.some((tag) => tag.name === criteria.tag) && (
+                    <option value={criteria.tag}>{criteria.tag}</option>
+                  )}
+                {tags.map((tag) => (
+                  <option key={tag.id} value={tag.name}>
+                    {tag.name}
                   </option>
                 ))}
               </select>
@@ -322,6 +372,7 @@ function SearchResult({
           <p className="search-snippet">
             <Snippet pieces={isCard ? hit.back : hit.body} />
           </p>
+          <TagChips tags={hit.tags} />
         </div>
       </div>
       <button

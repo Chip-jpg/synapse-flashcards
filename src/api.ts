@@ -278,6 +278,8 @@ export type DeletedNoteText = DeletedNote & {
   body: string;
   /** The pictures it showed under its text, in order. */
   pictures: Asset[];
+  /** The tags it had, kept while it's deleted (absent from older test data: none). */
+  tags?: string[];
 };
 
 /** Mirrors `Note` in `src-tauri/src/notes.rs`. `body` is plain text with its line breaks. */
@@ -311,7 +313,8 @@ export type Field =
   | "frontPictures"
   | "backPictures"
   | "header"
-  | "boxes";
+  | "boxes"
+  | "tags";
 
 /** Mirrors `CommandError` in `src-tauri/src/commands.rs`. */
 export type CommandError = {
@@ -918,7 +921,8 @@ export type SnippetPiece = { text: string; hit: boolean };
 
 /**
  * One search result. Text comes as snippets: a long side or body is cut
- * around its matches, with "…" where text was left out.
+ * around its matches, with "…" where text was left out. `tags` are its tags,
+ * sorted by name ignoring case (absent from older test data: none).
  */
 export type SearchHit =
   | {
@@ -928,8 +932,15 @@ export type SearchHit =
       deckName: string;
       front: SnippetPiece[];
       back: SnippetPiece[];
+      tags?: string[];
     }
-  | { kind: "note"; noteId: number; title: SnippetPiece[]; body: SnippetPiece[] };
+  | {
+      kind: "note";
+      noteId: number;
+      title: SnippetPiece[];
+      body: SnippetPiece[];
+      tags?: string[];
+    };
 
 /** The best results first, at most 50; `more` says whether others matched too. */
 export type SearchResults = { results: SearchHit[]; more: boolean };
@@ -939,14 +950,17 @@ export type SearchResults = { results: SearchHit[]; more: boolean };
  * note at once. Each word matches the start of a word, ignoring capitals and
  * accents; every word must match. `deckId` limits cards to one active deck,
  * with scope "cards" only; refused as stale if that deck was archived since.
+ * `tag`, or a word typed as `#name`, keeps only what has that tag (or one
+ * below it, `bio::cells` for `bio`); a tag with no words lists what has it.
  * Reads only.
  */
 export function searchEverything(
   query: string,
   scope: SearchScope,
   deckId: number | null,
+  tag: string | null = null,
 ): Promise<SearchResults> {
-  return invoke<SearchResults>("search_everything", { query, scope, deckId });
+  return invoke<SearchResults>("search_everything", { query, scope, deckId, tag });
 }
 
 /** Every deleted note, most recently deleted first. Read-only history. */
@@ -1531,9 +1545,10 @@ export function createNoteFromSource(
   sourceId: number,
   title: string,
   body: string,
-  pictures?: number[]
+  pictures?: number[],
+  tags?: string[]
 ): Promise<Note> {
-  return invoke<Note>("create_note_from_source", { sourceId, title, body, pictures });
+  return invoke<Note>("create_note_from_source", { sourceId, title, body, pictures, tags });
 }
 
 /** The active notes written from an active source, most recently edited first. */

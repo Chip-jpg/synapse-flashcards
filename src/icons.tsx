@@ -121,6 +121,15 @@ export function SearchIcon() {
   );
 }
 
+export function TagIcon() {
+  return (
+    <Icon>
+      <path d="M3.5 12.6V4.5a1 1 0 0 1 1-1h8.1a1 1 0 0 1 .7.3l7.2 7.2a1 1 0 0 1 0 1.4l-8.1 8.1a1 1 0 0 1-1.4 0l-7.2-7.2a1 1 0 0 1-.3-.7z" />
+      <circle cx="8.5" cy="8.5" r="1.5" />
+    </Icon>
+  );
+}
+
 export function NoteIcon() {
   return (
     <Icon>

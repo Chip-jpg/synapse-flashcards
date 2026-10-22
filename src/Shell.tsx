@@ -9,14 +9,25 @@ import {
   LogoIcon,
   SearchIcon,
   SlidersIcon,
+  TagIcon,
 } from "./icons";
 
 /** The places the sidebar leads to. */
-export type Place = "desk" | "search" | "notes" | "sources" | "stats" | "archived" | "backup" | "settings";
+export type Place =
+  | "desk"
+  | "search"
+  | "tags"
+  | "notes"
+  | "sources"
+  | "stats"
+  | "archived"
+  | "backup"
+  | "settings";
 
 const PLACES: { place: Place; label: string; icon: ReactNode }[] = [
   { place: "desk", label: "Study Desk", icon: <DeskIcon /> },
   { place: "search", label: "Search", icon: <SearchIcon /> },
+  { place: "tags", label: "Tags", icon: <TagIcon /> },
   { place: "notes", label: "Notes", icon: <BookIcon /> },
   { place: "sources", label: "Sources", icon: <FileIcon /> },
   { place: "stats", label: "Statistics", icon: <ChartIcon /> },
