@@ -311,7 +311,8 @@ export type Field =
   | "frontPictures"
   | "backPictures"
   | "header"
-  | "boxes";
+  | "boxes"
+  | "tags";
 
 /** Mirrors `CommandError` in `src-tauri/src/commands.rs`. */
 export type CommandError = {
@@ -464,8 +465,8 @@ export function createFlashcards(deckId: number, cards: CardText[]): Promise<Dec
  * distinct `{{cN::…}}` number. Resolves with the updated deck. A refused text
  * rejects with kind "invalid" and field "text".
  */
-export function createCloze(deckId: number, text: string): Promise<DeckDetail> {
-  return invoke<DeckDetail>("create_cloze", { deckId, text });
+export function createCloze(deckId: number, text: string, tags?: string[]): Promise<DeckDetail> {
+  return invoke<DeckDetail>("create_cloze", { deckId, text, tags });
 }
 
 /** Mirrors `ClozeSaved` in `src-tauri/src/commands.rs`. */
@@ -475,9 +476,11 @@ export type ClozeSaved = { changes: ClozeChanges; deck: DeckDetail };
  * Replaces the text of a cloze card's cloze. Numbers still in it keep their
  * cards and schedules; a number that left it has its card deleted; a new
  * number gets a card (its deleted one back, if it had one in this deck).
+ * `tags`, when given, replaces every active card's tags; either way a card
+ * the edit adds or brings back gets the text's tags.
  */
-export function updateCloze(cardId: number, text: string): Promise<ClozeSaved> {
-  return invoke<ClozeSaved>("update_cloze", { cardId, text });
+export function updateCloze(cardId: number, text: string, tags?: string[]): Promise<ClozeSaved> {
+  return invoke<ClozeSaved>("update_cloze", { cardId, text, tags });
 }
 
 /**
@@ -501,8 +504,9 @@ export function createOcclusion(
   header: string,
   mode: OcclusionMode,
   boxes: OcclusionBox[],
+  tags?: string[],
 ): Promise<DeckDetail> {
-  return invoke<DeckDetail>("create_occlusion", { deckId, assetId, header, mode, boxes });
+  return invoke<DeckDetail>("create_occlusion", { deckId, assetId, header, mode, boxes, tags });
 }
 
 /** The picture and boxes an image occlusion card was made from, for its edit form. */
@@ -521,8 +525,9 @@ export function updateOcclusion(
   header: string,
   mode: OcclusionMode,
   boxes: OcclusionBox[],
+  tags?: string[],
 ): Promise<ClozeSaved> {
-  return invoke<ClozeSaved>("update_occlusion", { cardId, header, mode, boxes });
+  return invoke<ClozeSaved>("update_occlusion", { cardId, header, mode, boxes, tags });
 }
 
 /** Replaces a card's text, keeping its schedule and history; resolves with its deck. */

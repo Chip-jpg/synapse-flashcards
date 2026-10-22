@@ -3,6 +3,7 @@ import type {
   CardText,
   CommandError,
   Deck,
+  DeckCard,
   DeckDetail,
   ImportedFile,
   Note,
@@ -75,6 +76,85 @@ export function keptSource(file: ImportedFile): SourceImport {
   };
 }
 
+/** Sorts tag names as Rust does: by name, ignoring capitals. */
+function sortTags(names: string[]): string[] {
+  return [...names].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+}
+
+/** `tags` with each of `names` added unless already there (ignoring capitals), sorted. */
+function withTags(tags: string[], names: string[]): string[] {
+  const next = [...tags];
+  for (const name of names) {
+    if (!next.some((tag) => tag.toLowerCase() === name.toLowerCase())) next.push(name);
+  }
+  return sortTags(next);
+}
+
+/** The tags `cards` use, as `get_tags` lists them (no note has tags here). */
+export function tagSummaries(cards: DeckCard[]) {
+  const names = withTags([], cards.flatMap((card) => card.tags ?? []));
+  return names.map((name, n) => ({
+    id: n + 1,
+    name,
+    cards: cards.filter((card) =>
+      (card.tags ?? []).some((tag) => tag.toLowerCase() === name.toLowerCase()),
+    ).length,
+    notes: 0,
+  }));
+}
+
+/**
+ * Answers `update_flashcard`, `get_tags`, `set_card_tags` and
+ * `tag_flashcards` on the deck `current()` returns, changing its cards as
+ * Rust would. A test with its own deck passes them on with it.
+ */
+export function cardTagHandlers(current: () => DeckDetail): Record<string, Handler> {
+  return {
+    update_flashcard: (args) => {
+      const { cardId, front, back, tags } = args as {
+        cardId: number;
+        front: string;
+        back: string;
+        tags?: string[];
+      };
+      current().cards = current().cards.map((card) =>
+        card.id === cardId
+          ? { ...card, front, back, tags: tags ? withTags([], tags) : card.tags }
+          : card,
+      );
+      return current();
+    },
+    get_tags: () => tagSummaries(current().cards),
+    set_card_tags: (args) => {
+      const { cardId, tags } = args as { cardId: number; tags: string[] };
+      current().cards = current().cards.map((card) =>
+        card.id === cardId ? { ...card, tags: withTags([], tags) } : card,
+      );
+      return current();
+    },
+    tag_flashcards: (args) => {
+      const { cardIds, add, remove } = args as {
+        cardIds: number[];
+        add: string[];
+        remove: string[];
+      };
+      let changed = 0;
+      current().cards = current().cards.map((card) => {
+        if (!cardIds.includes(card.id)) return card;
+        const before = card.tags ?? [];
+        const lower = remove.map((name) => name.toLowerCase());
+        const tags = withTags(
+          before.filter((tag) => !lower.includes(tag.toLowerCase())),
+          add,
+        );
+        if (tags.join(" ") !== sortTags(before).join(" ")) changed += 1;
+        return { ...card, tags };
+      });
+      return { changed, deck: current() };
+    },
+  };
+}
+
 /** A promise the test settles itself, to hold the app in a "saving" or "checking" state. */
 export function deferred<T = unknown>() {
   let resolve!: (value: T) => void;
@@ -136,11 +216,12 @@ export function fakeBackend(overrides: Record<string, Handler> = {}) {
     get_deleted_notes: () => [],
     get_note: () => note,
     create_flashcard: (args) => {
-      const { front, back } = args as { front: string; back: string };
-      deck.cards = [...deck.cards, { id: 11, front, back }];
+      const { front, back, tags } = args as { front: string; back: string; tags?: string[] };
+      deck.cards = [...deck.cards, { id: 11, front, back, tags: withTags([], tags ?? []) }];
       deck.cardCount = deck.cards.length;
       return deck;
     },
+    ...cardTagHandlers(() => deck),
     create_flashcards: (args) => {
       const { cards } = args as { cards: CardText[] };
       deck.cards = [...deck.cards, ...cards.map((card, n) => ({ id: 20 + n, ...card }))];

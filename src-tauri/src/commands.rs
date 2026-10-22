@@ -787,6 +787,7 @@ pub async fn preview_cloze(
 /// "invalid" and field "boxes"; a refused header, field "header"; refused
 /// tags, field "tags". `tags` are given to every card.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn create_occlusion(
     app: AppHandle,
     database: State<'_, Database>,

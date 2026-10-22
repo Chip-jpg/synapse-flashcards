@@ -22,10 +22,13 @@ import {
 } from "./api";
 import {
   CardSearchField,
+  CardTagFilter,
   cardCount,
   matchingCards,
   RestoreSelected,
   SelectionActions,
+  tagCounts,
+  taggedCards,
 } from "./CardBulkActions";
 import { FormActions, TextField, useFormSave } from "./forms";
 import {
@@ -42,6 +45,7 @@ import { formatDateTime, Message, useFocusOnMount } from "./ui";
 import { useUnsavedChanges } from "./unsaved";
 import { appendText } from "./pictureText";
 import { PictureField, PictureGallery, samePictures, usePictureAdder } from "./pictures";
+import { sameTags, TagChips, TagField } from "./tagInput";
 
 /** A card with no pictures, as cards from before pictures (and tests) arrive. */
 const NO_PICTURES: CardPictures = { front: [], back: [] };
@@ -263,6 +267,14 @@ export function DeckDetail({
           `${cardCount(moved)} moved to ${toDeckName}, with ${moved === 1 ? "its schedule" : "their schedules"} unchanged.`,
         )
       }
+      onBulkTagged={(deck, changed) =>
+        showSaved(
+          deck,
+          changed === 0
+            ? "No card's tags changed: the selected cards already had them as asked."
+            : `Tags changed on ${cardCount(changed)}. Nothing else about ${changed === 1 ? "it" : "them"} changed.`,
+        )
+      }
       onBulkStale={(message) =>
         // The selected cards aren't all in this deck any more, or a deck was
         // archived meanwhile. Nothing was changed; say why, and reload.
@@ -292,6 +304,7 @@ function DeckView({
   onRestoredSelected,
   onBulkDeleted,
   onBulkMoved,
+  onBulkTagged,
   onBulkStale,
   onRename,
   onArchived,
@@ -320,6 +333,8 @@ function DeckView({
   onBulkDeleted: (deck: Deck, deleted: number) => void;
   /** The selected cards were moved to the deck named `toDeckName`. */
   onBulkMoved: (deck: Deck, moved: number, toDeckName: string) => void;
+  /** The selected cards' tags were changed; `changed` of them had a change. */
+  onBulkTagged: (deck: Deck, changed: number) => void;
   /** A change to the selected cards was refused because this screen is out of date. */
   onBulkStale: (message: string) => void;
   onRename: () => void;
@@ -342,6 +357,8 @@ function DeckView({
   // The search and selections last as long as this view: any change to the
   // deck remounts it (see `ViewState`), which clears them.
   const [query, setQuery] = useState("");
+  // The tag the cards are filtered by, or "" for every card.
+  const [tagFilter, setTagFilter] = useState("");
   const [selected, setSelected] = useState<ReadonlySet<number>>(new Set());
   // Deleted cards selected for *Restore selected*. Only one of the two lists
   // has a selection at a time, so only one selection bar is ever shown:
@@ -358,7 +375,13 @@ function DeckView({
     setDeletedSelected(change);
   }
   // Kept between renders, so ticking a card doesn't search the deck again.
-  const shown = useMemo(() => matchingCards(deck.cards, query), [deck.cards, query]);
+  const shown = useMemo(
+    () => taggedCards(matchingCards(deck.cards, query), tagFilter),
+    [deck.cards, query, tagFilter],
+  );
+  const deckTags = useMemo(() => tagCounts(deck.cards), [deck.cards]);
+  const searching = query.trim() !== "";
+  const filtering = tagFilter !== "";
   // Each cloze text's and each picture's cards, in the deck's order, worked
   // out once per deck.
   const cardsOfText = useMemo(() => {
@@ -485,6 +508,9 @@ function DeckView({
         {deck.cards.length >= 2 && (
           <CardSearchField query={query} shown={shown.length} onChange={setQuery} />
         )}
+        {deckTags.length > 0 && (
+          <CardTagFilter tags={deckTags} tag={tagFilter} onChange={setTagFilter} />
+        )}
         {deck.cards.length > 0 && shown.length > 0 && (
           <label className="select-all">
             <SelectAllBox
@@ -492,16 +518,22 @@ function DeckView({
               mixed={shownSelected > 0 && !allShownSelected}
               onChange={toggleShown}
             />
-            {query.trim() === ""
+            {!searching && !filtering
               ? "Select all cards"
-              : `Select all ${shown.length === 1 ? "matching card" : `${shown.length} matching cards`}`}
+              : !searching
+                ? `Select all ${cardCount(shown.length)} tagged ${tagFilter}`
+                : `Select all ${shown.length === 1 ? "matching card" : `${shown.length} matching cards`}`}
           </label>
         )}
         {deck.cards.length === 0 ? (
           <p className="empty">Choose Add card to write this deck's first card.</p>
         ) : shown.length === 0 ? (
           <p className="empty">
-            No cards in this deck match “{query.trim()}”. Try other words, or clear the search.
+            {searching && filtering
+              ? `No cards tagged ${tagFilter} match “${query.trim()}”. Try other words, or another tag.`
+              : searching
+                ? `No cards in this deck match “${query.trim()}”. Try other words, or clear the search.`
+                : `No cards in this deck are tagged ${tagFilter}.`}
           </p>
         ) : (
           <ul className="card-list">
@@ -528,9 +560,17 @@ function DeckView({
             deck={deck}
             selected={selectedIds}
             hidden={selectedIds.length - shownSelected}
+            hiddenBy={
+              searching && filtering
+                ? "the search and tag filter"
+                : filtering
+                  ? "the tag filter"
+                  : "the search"
+            }
             onClear={() => setSelected(new Set())}
             onDeleted={onBulkDeleted}
             onMoved={onBulkMoved}
+            onTagged={onBulkTagged}
             onStale={onBulkStale}
           />
         )}
@@ -751,6 +791,7 @@ function CardText({
   clozeNumber,
   pictures,
   pictureNumber,
+  tags,
 }: {
   frontId: string;
   front: string;
@@ -761,6 +802,8 @@ function CardText({
   pictures?: CardPictures;
   /** A picture card's number, shown as a tag: the card hides that box. */
   pictureNumber?: number;
+  /** The card's tags, shown as chips under its back. */
+  tags?: string[];
 }) {
   return (
     <div className="card-sides">
@@ -786,6 +829,11 @@ function CardText({
         listLabel="Pictures on the back"
         compact
       />
+      {tags && tags.length > 0 && (
+        <div className="card-tags">
+          <TagChips tags={tags} />
+        </div>
+      )}
     </div>
   );
 }
@@ -888,6 +936,7 @@ function CardItem({
         clozeNumber={card.cloze?.number}
         pictures={card.pictures}
         pictureNumber={card.occlusion?.number}
+        tags={card.tags}
       />
 
       {confirming ? (
@@ -1279,6 +1328,7 @@ function DeletedCardItem({
         back={card.back}
         clozeNumber={card.cloze?.number}
         pictureNumber={card.occlusion?.number}
+        tags={card.tags}
       />
       <p className="item-meta">{`Deleted ${formatDateTime(card.deletedAt)}`}</p>
 
@@ -1427,6 +1477,12 @@ function CardForm({
   const [frontPictures, setFrontPictures] = useState<Asset[]>(initialPictures.front);
   const [backPictures, setBackPictures] = useState<Asset[]>(initialPictures.back);
   const [preview, setPreview] = useState<Preview>({ status: "none" });
+  const initialTags = card?.tags ?? [];
+  const [tags, setTags] = useState<string[]>(initialTags);
+  // An edit sends tags only when they changed, so the cards of a cloze text
+  // tagged one by one keep their own; a new card sends none for none.
+  const tagsChanged = !sameTags(tags, initialTags);
+  const sentTags = card ? (tagsChanged ? tags : undefined) : tags.length > 0 ? tags : undefined;
   // Once a kind has been chosen, focus stays on the choice rather than
   // jumping to the field that appears.
   const [chosen, setChosen] = useState(false);
@@ -1435,16 +1491,17 @@ function CardForm({
       back !== initialBack ||
       text !== initialText ||
       !samePictures(frontPictures, initialPictures.front) ||
-      !samePictures(backPictures, initialPictures.back),
+      !samePictures(backPictures, initialPictures.back) ||
+      tagsChanged,
   );
   const { saving, submit, fieldError, formError, edited } = useFormSave(
     async (): Promise<{ deck: Deck; notice: string }> => {
       if (kind === "cloze") {
         if (card) {
-          const saved = await updateCloze(card.id, text);
+          const saved = await updateCloze(card.id, text, sentTags);
           return { deck: saved.deck, notice: describeChanges(saved.changes, true, true) };
         }
-        const saved = await createCloze(deck.id, text);
+        const saved = await createCloze(deck.id, text, sentTags);
         const added = saved.cardCount - deck.cardCount;
         return {
           deck: saved,
@@ -1460,8 +1517,8 @@ function CardForm({
         back: backPictures.map((picture) => picture.id),
       };
       const saved = card
-        ? await updateFlashcard(card.id, front, back, pictures)
-        : await createFlashcard(deck.id, front, back, pictures);
+        ? await updateFlashcard(card.id, front, back, pictures, sentTags)
+        : await createFlashcard(deck.id, front, back, pictures, sentTags);
       return { deck: saved, notice: card ? "Card updated." : "Card added." };
     },
     (saved) => onSaved(saved.deck, saved.notice),
@@ -1471,6 +1528,7 @@ function CardForm({
       text: "card-text",
       frontPictures: "card-front-pictures",
       backPictures: "card-back-pictures",
+      tags: "card-tags",
     },
   );
   const changeFrontPictures = (next: Asset[]) => {
@@ -1696,6 +1754,21 @@ function CardForm({
           </div>
         </>
       )}
+
+      <TagField
+        id="card-tags"
+        hint={
+          (kind === "cloze" ? "Optional. Given to every card of this text. " : "Optional. ") +
+          "One word each, such as exam or bio::cells; a space or comma starts the next."
+        }
+        tags={tags}
+        onChange={(next) => {
+          setTags(next);
+          edited("tags");
+        }}
+        error={fieldError("tags")}
+        disabled={saving}
+      />
 
       <FormActions
         saveLabel={card ? "Save changes" : kind === "cloze" ? "Save cards" : "Save card"}

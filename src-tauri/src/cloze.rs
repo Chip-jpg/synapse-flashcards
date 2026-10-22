@@ -1489,8 +1489,11 @@ mod tests {
         names.iter().map(|name| name.to_string()).collect()
     }
 
+    /// Cards' tags by cloze number.
+    type TagsByNumber = Vec<(i64, Vec<String>)>;
+
     /// Each active cloze card's tags by number, and each deleted one's.
-    fn cloze_tags(deck: &DeckDetail) -> (Vec<(i64, Vec<String>)>, Vec<(i64, Vec<String>)>) {
+    fn cloze_tags(deck: &DeckDetail) -> (TagsByNumber, TagsByNumber) {
         let mut active: Vec<_> = deck
             .cards
             .iter()
