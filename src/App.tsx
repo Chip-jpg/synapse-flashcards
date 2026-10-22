@@ -5,7 +5,7 @@ import { Backup } from "./Backup";
 import { Dashboard } from "./Dashboard";
 import { DeckDetail } from "./DeckDetail";
 import { NotesArea } from "./Notes";
-import { ReviewSession } from "./ReviewSession";
+import { ReviewSession, type ReviewedTag } from "./ReviewSession";
 import { NEW_SEARCH, SearchScreen, type SearchCriteria } from "./Search";
 import { Settings } from "./Settings";
 import { Shell, type Place } from "./Shell";
@@ -22,6 +22,7 @@ type View =
   | { screen: "decks"; notice: string | null; fromNotes?: boolean }
   | { screen: "deck"; deckId: number; justCreated: boolean; cardId?: number; search?: FromSearch }
   | { screen: "session"; sessionId: number; deckName: string }
+  | { screen: "tagReview"; tag: ReviewedTag }
   | { screen: "search"; criteria: SearchCriteria; returnTo: string | null }
   | {
       screen: "notes";
@@ -64,6 +65,7 @@ function locate(view: View): { place: Place; atPlace: boolean; trail: string[] }
         ? { place: "search", atPlace: false, trail: ["Search", "Deck"] }
         : { place: "desk", atPlace: false, trail: ["Study Desk", "Deck"] };
     case "session":
+    case "tagReview":
       return { place: "desk", atPlace: false, trail: ["Study Desk", "Review"] };
     case "search":
       return { place: "search", atPlace: true, trail: ["Synapse", "Search"] };
@@ -159,6 +161,7 @@ function App() {
             notice={view.notice}
             fromNotes={view.fromNotes ?? false}
             onStart={startReview}
+            onStartTag={(tag) => show({ screen: "tagReview", tag })}
             onOpen={(deckId) => show({ screen: "deck", deckId, justCreated: false })}
             onCreated={(deck) => show({ screen: "deck", deckId: deck.id, justCreated: true })}
             onOpenNotes={() => show({ screen: "notes" })}
@@ -190,6 +193,9 @@ function App() {
             deckName={view.deckName}
             onExit={() => show(DECKS)}
           />
+        )}
+        {view.screen === "tagReview" && (
+          <ReviewSession key={`tag:${view.tag.id}`} tag={view.tag} onExit={() => show(DECKS)} />
         )}
         {view.screen === "search" && (
           <SearchScreen

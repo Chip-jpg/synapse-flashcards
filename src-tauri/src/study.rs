@@ -123,6 +123,10 @@ pub enum SessionCard {
         /// An image occlusion card's picture and boxes
         /// (`occlusion::session_view`); `null` for any other card.
         occlusion: Option<Box<SessionOcclusion>>,
+        /// On a tag review, which spans decks, the name of the card's deck;
+        /// left out in a deck's own session.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        deck: Option<String>,
     },
     Completed {
         cards_reviewed: i64,
@@ -428,33 +432,47 @@ pub async fn session_card(
     if ended_at.is_none() {
         if let Some(card) = next_due_card(&mut tx, deck_id, &now).await? {
             let remaining = count_due_cards(&mut tx, deck_id, &now).await?;
-            let again_streak = aid::again_streak(&mut tx, card.id).await?;
-            let cloze = cloze::session_parts(&mut tx, card.id).await?;
-            let pictures = pictures::card_pictures(&mut tx, card.id).await?;
-            let occlusion = occlusion::session_view(&mut tx, card.id)
-                .await?
-                .map(Box::new);
+            let progress = SessionProgress {
+                reviewed: cards_reviewed,
+                remaining,
+            };
+            let due = due_card(&mut tx, card, progress, None).await?;
             tx.commit().await?;
-            return Ok(SessionCard::Due {
-                card,
-                progress: SessionProgress {
-                    reviewed: cards_reviewed,
-                    remaining,
-                },
-                again_streak,
-                // A picture card's help is written by a vision model, which
-                // sees its picture (`aid::picture_help`).
-                offer_help: again_streak >= aid::HELP_AFTER_AGAINS,
-                cloze,
-                pictures,
-                occlusion,
-            });
+            return Ok(due);
         }
         finish_session(&mut tx, session_id, &now).await?;
     }
 
     tx.commit().await?;
     Ok(SessionCard::Completed { cards_reviewed })
+}
+
+/// A due card as a review shows it, with what goes with it: its Again
+/// streak, its cloze pieces, pictures or picture card.
+async fn due_card(
+    conn: &mut SqliteConnection,
+    card: Flashcard,
+    progress: SessionProgress,
+    deck: Option<String>,
+) -> Result<SessionCard, StudyError> {
+    let again_streak = aid::again_streak(&mut *conn, card.id).await?;
+    let cloze = cloze::session_parts(&mut *conn, card.id).await?;
+    let pictures = pictures::card_pictures(&mut *conn, card.id).await?;
+    let occlusion = occlusion::session_view(&mut *conn, card.id)
+        .await?
+        .map(Box::new);
+    Ok(SessionCard::Due {
+        card,
+        progress,
+        again_streak,
+        // A picture card's help is written by a vision model, which sees its
+        // picture (`aid::picture_help`).
+        offer_help: again_streak >= aid::HELP_AFTER_AGAINS,
+        cloze,
+        pictures,
+        occlusion,
+        deck,
+    })
 }
 
 /// A card's scheduling columns, as read inside a review transaction.
@@ -493,6 +511,69 @@ impl ScheduleRow {
             lapses: self.lapses,
         })
     }
+}
+
+/// Rates a due card whose schedule `row` was just read in this transaction:
+/// runs FSRS with the parameters and desired retention in use (the card's
+/// deck's), updates the card and appends its `review_logs` row. The caller
+/// has checked the card may be rated now; shared by deck and tag reviews.
+#[allow(clippy::too_many_arguments)]
+async fn rate_card(
+    tx: &mut SqliteConnection,
+    card_id: i64,
+    deck_id: i64,
+    expected_reps: i64,
+    row: ScheduleRow,
+    rating: Rating,
+    now_time: DateTime<Utc>,
+) -> Result<(), StudyError> {
+    let now = to_db_time(now_time);
+    let current = row.into_schedule()?;
+    // The user's own FSRS parameters if they applied some, read for this
+    // rating only: nothing scheduled before changes.
+    let parameters = optimizer::parameters_for_review(&mut *tx).await?;
+    // The desired retention for this deck, likewise for this rating only.
+    let retention = retention::for_deck(&mut *tx, deck_id).await?;
+    let outcome = scheduler::review(&current, rating, now_time, &parameters, retention)?;
+
+    let updated = sqlx::query(
+        "UPDATE flashcards
+         SET fsrs_state = ?1, fsrs_stability = ?2, fsrs_difficulty = ?3,
+             due = ?4, last_review = ?5, reps = ?6, lapses = ?7, updated_at = ?5
+         WHERE id = ?8 AND reps = ?9 AND deleted_at IS NULL",
+    )
+    .bind(outcome.state.as_str())
+    .bind(f64::from(outcome.memory.stability))
+    .bind(f64::from(outcome.memory.difficulty))
+    .bind(to_db_time(outcome.due))
+    .bind(&now)
+    .bind(outcome.reps)
+    .bind(outcome.lapses)
+    .bind(card_id)
+    .bind(expected_reps)
+    .execute(&mut *tx)
+    .await?;
+    if updated.rows_affected() != 1 {
+        return Err(StudyError::Stale);
+    }
+
+    sqlx::query(
+        "INSERT INTO review_logs (card_id, rating, state_before, scheduled_days,
+                                  elapsed_days, stability_after, difficulty_after, reviewed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    )
+    .bind(card_id)
+    .bind(rating.number())
+    .bind(current.state.as_str())
+    .bind(outcome.scheduled_days)
+    .bind(outcome.elapsed_days)
+    .bind(f64::from(outcome.memory.stability))
+    .bind(f64::from(outcome.memory.difficulty))
+    .bind(&now)
+    .execute(&mut *tx)
+    .await?;
+
+    Ok(())
 }
 
 /// Records one review within a session. In a single transaction it:
@@ -548,49 +629,15 @@ pub async fn record_review(
         return Err(StudyError::Stale);
     };
 
-    let current = row.into_schedule()?;
-    // The user's own FSRS parameters if they applied some, read for this
-    // rating only: nothing scheduled before changes.
-    let parameters = optimizer::parameters_for_review(&mut tx).await?;
-    // The desired retention for this deck, likewise for this rating only.
-    let retention = retention::for_deck(&mut tx, deck_id).await?;
-    let outcome = scheduler::review(&current, rating, now_time, &parameters, retention)?;
-
-    let updated = sqlx::query(
-        "UPDATE flashcards
-         SET fsrs_state = ?1, fsrs_stability = ?2, fsrs_difficulty = ?3,
-             due = ?4, last_review = ?5, reps = ?6, lapses = ?7, updated_at = ?5
-         WHERE id = ?8 AND reps = ?9 AND deleted_at IS NULL",
+    rate_card(
+        &mut tx,
+        card_id,
+        deck_id,
+        expected_reps,
+        row,
+        rating,
+        now_time,
     )
-    .bind(outcome.state.as_str())
-    .bind(f64::from(outcome.memory.stability))
-    .bind(f64::from(outcome.memory.difficulty))
-    .bind(to_db_time(outcome.due))
-    .bind(&now)
-    .bind(outcome.reps)
-    .bind(outcome.lapses)
-    .bind(card_id)
-    .bind(expected_reps)
-    .execute(&mut *tx)
-    .await?;
-    if updated.rows_affected() != 1 {
-        return Err(StudyError::Stale);
-    }
-
-    sqlx::query(
-        "INSERT INTO review_logs (card_id, rating, state_before, scheduled_days,
-                                  elapsed_days, stability_after, difficulty_after, reviewed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-    )
-    .bind(card_id)
-    .bind(rating.number())
-    .bind(current.state.as_str())
-    .bind(outcome.scheduled_days)
-    .bind(outcome.elapsed_days)
-    .bind(f64::from(outcome.memory.stability))
-    .bind(f64::from(outcome.memory.difficulty))
-    .bind(&now)
-    .execute(&mut *tx)
     .await?;
 
     let counted = sqlx::query(
@@ -610,6 +657,199 @@ pub async fn record_review(
         finish_session(&mut tx, session_id, &now).await?;
     }
 
+    tx.commit().await?;
+    Ok(())
+}
+
+/// A tag on the Study Desk: `{ id, name, dueCount, decks }`, with how many
+/// of its cards are due now (as a tag review hands them out) and in how many
+/// decks those are.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct TagDue {
+    pub id: i64,
+    pub name: String,
+    pub due_count: i64,
+    pub decks: i64,
+}
+
+/// SQL for the cards a tag review of tag `?1` can hand out at `?2`, with
+/// `?3` the [`bury_since`] bound: the tag's active cards in active decks,
+/// due and not buried. The Sample deck takes no tags, so it never appears.
+macro_rules! tag_due_cards {
+    ($select:literal, $order:literal) => {
+        concat!(
+            $select,
+            " FROM card_tags l
+             JOIN flashcards f ON f.id = l.card_id
+             JOIN decks d ON d.id = f.deck_id
+             WHERE l.tag_id = ?1 AND f.deleted_at IS NULL AND d.archived_at IS NULL
+               AND (f.due IS NULL OR f.due <= ?2)
+               AND f.id NOT IN (",
+            buried_cards!("?3"),
+            ") ",
+            $order
+        )
+    };
+}
+
+/// Every tag some active card in an active deck has, with its due cards
+/// ([`TagDue`]), sorted by name ignoring case. A tag reviews cards from every
+/// deck at once; nothing about it is stored (see [`tag_card`]).
+pub async fn tags_due(pool: &SqlitePool, now: DateTime<Utc>) -> Result<Vec<TagDue>, sqlx::Error> {
+    let now = to_db_time(now);
+    let since = bury_since(&now)?;
+    let mut conn = pool.acquire().await?;
+    let tags: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT DISTINCT t.id, t.name FROM tags t
+         JOIN card_tags l ON l.tag_id = t.id
+         JOIN flashcards f ON f.id = l.card_id
+         JOIN decks d ON d.id = f.deck_id
+         WHERE f.deleted_at IS NULL AND d.archived_at IS NULL",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut list = Vec::with_capacity(tags.len());
+    for (id, name) in tags {
+        let (due_count, decks): (i64, i64) = sqlx::query_as(tag_due_cards!(
+            "SELECT COUNT(*), COUNT(DISTINCT f.deck_id)",
+            ""
+        ))
+        .bind(id)
+        .bind(&now)
+        .bind(&since)
+        .fetch_one(&mut *conn)
+        .await?;
+        list.push(TagDue {
+            id,
+            name,
+            due_count,
+            decks,
+        });
+    }
+    list.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then(a.name.cmp(&b.name))
+    });
+    Ok(list)
+}
+
+/// The next card a review of one tag shows, from any active deck, or that
+/// it is done. Unlike a deck's session, a tag review stores nothing of its
+/// own: which cards are due is read afresh each time, and the review screen
+/// counts its own ratings and sends them as `reviewed`, for "Card 2 of 5".
+/// So closing the app forgets only that count; the cards stay due as they
+/// were. The order is a session's: cards in review by `due`, then new cards,
+/// ties by id. A tag that doesn't exist is [`StudyError::NotFound`].
+pub async fn tag_card(
+    pool: &SqlitePool,
+    tag_id: i64,
+    reviewed: i64,
+    now: DateTime<Utc>,
+) -> Result<SessionCard, StudyError> {
+    let now = to_db_time(now);
+    let since = bury_since(&now)?;
+    let mut tx = pool.begin().await?;
+    let exists: Option<i64> = sqlx::query_scalar("SELECT id FROM tags WHERE id = ?1")
+        .bind(tag_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    if exists.is_none() {
+        return Err(StudyError::NotFound);
+    }
+    let next: Option<(i64, String, String, i64, String)> = sqlx::query_as(tag_due_cards!(
+        "SELECT f.id, f.front, f.back, f.reps, d.name",
+        "ORDER BY f.due IS NULL, f.due, f.id LIMIT 1"
+    ))
+    .bind(tag_id)
+    .bind(&now)
+    .bind(&since)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let reviewed = reviewed.max(0);
+    let Some((id, front, back, reps, deck)) = next else {
+        return Ok(SessionCard::Completed {
+            cards_reviewed: reviewed,
+        });
+    };
+    let remaining: i64 = sqlx::query_scalar(tag_due_cards!("SELECT COUNT(*)", ""))
+        .bind(tag_id)
+        .bind(&now)
+        .bind(&since)
+        .fetch_one(&mut *tx)
+        .await?;
+    let card = Flashcard {
+        id,
+        front,
+        back,
+        reps,
+    };
+    let progress = SessionProgress {
+        reviewed,
+        remaining,
+    };
+    let due = due_card(&mut tx, card, progress, Some(deck)).await?;
+    tx.commit().await?;
+    Ok(due)
+}
+
+/// Records one rating in a review of tag `tag_id`, exactly as a deck review
+/// rates a card (the card's schedule and a `review_logs` row, with its own
+/// deck's desired retention), but counted in no deck session. Refused as
+/// [`StudyError::Stale`] unless the card still has the tag and is an active,
+/// due, unburied card of an active deck at `expected_reps`.
+pub async fn record_tag_review(
+    pool: &SqlitePool,
+    tag_id: i64,
+    card_id: i64,
+    expected_reps: i64,
+    rating: Rating,
+    now: DateTime<Utc>,
+) -> Result<(), StudyError> {
+    let now_time = now;
+    let now = to_db_time(now);
+    let since = bury_since(&now)?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let exists: Option<i64> = sqlx::query_scalar("SELECT id FROM tags WHERE id = ?1")
+        .bind(tag_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    if exists.is_none() {
+        return Err(StudyError::NotFound);
+    }
+    let deck_id: Option<i64> = sqlx::query_scalar(tag_due_cards!(
+        "SELECT f.deck_id",
+        "AND f.id = ?4 AND f.reps = ?5"
+    ))
+    .bind(tag_id)
+    .bind(&now)
+    .bind(&since)
+    .bind(card_id)
+    .bind(expected_reps)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(deck_id) = deck_id else {
+        return Err(StudyError::Stale);
+    };
+    let row = sqlx::query_as::<_, ScheduleRow>(
+        "SELECT fsrs_state, fsrs_stability, fsrs_difficulty, last_review, reps, lapses
+         FROM flashcards WHERE id = ?1",
+    )
+    .bind(card_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    rate_card(
+        &mut tx,
+        card_id,
+        deck_id,
+        expected_reps,
+        row,
+        rating,
+        now_time,
+    )
+    .await?;
     tx.commit().await?;
     Ok(())
 }
@@ -1509,6 +1749,155 @@ mod tests {
                 assert!(plan.contains("review_logs USING"), "{plan}");
                 assert!(!plan.contains("SCAN review_logs"), "{plan}");
             }
+        });
+    }
+
+    /// Adds tag `name` (once) to `card`; returns the tag's id.
+    async fn tag(pool: &SqlitePool, card: i64, name: &str) -> i64 {
+        let mut conn = pool.acquire().await.unwrap();
+        let ids = crate::tags::tag_ids(&mut conn, &[name.to_string()], at(NOW))
+            .await
+            .unwrap();
+        crate::tags::link_new_card(&mut conn, card, &ids)
+            .await
+            .unwrap();
+        ids[0]
+    }
+
+    async fn tag_due(
+        pool: &SqlitePool,
+        tag: i64,
+        reviewed: i64,
+        now: DateTime<Utc>,
+    ) -> Option<(i64, SessionProgress, Option<String>)> {
+        match tag_card(pool, tag, reviewed, now).await.unwrap() {
+            SessionCard::Due {
+                card,
+                progress,
+                deck,
+                ..
+            } => Some((card.id, progress, deck)),
+            SessionCard::Completed { cards_reviewed } => {
+                assert_eq!(cards_reviewed, reviewed);
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn a_tag_is_reviewed_across_decks() {
+        tauri::async_runtime::block_on(async {
+            let (pool, _) = seeded().await;
+            let now = at(NOW);
+            let bio = add_deck(&pool, "Biology").await;
+            let chem = add_deck(&pool, "Chemistry").await;
+            let old = add_deck(&pool, "Old").await;
+            let early = add_card(&pool, chem, Some(now - TimeDelta::days(2))).await;
+            let late = add_card(&pool, bio, Some(now - TimeDelta::days(1))).await;
+            let new = add_card(&pool, bio, None).await;
+            let later = add_card(&pool, chem, Some(now + TimeDelta::days(3))).await;
+            let untagged = add_card(&pool, bio, None).await;
+            let gone = add_card(&pool, bio, None).await;
+            let archived = add_card(&pool, old, None).await;
+            let exam = tag(&pool, early, "exam").await;
+            for card in [late, new, later, gone, archived] {
+                tag(&pool, card, "exam").await;
+            }
+            let other = tag(&pool, untagged, "other").await;
+            sqlx::query("UPDATE flashcards SET deleted_at = ?1 WHERE id = ?2")
+                .bind(NOW)
+                .bind(gone)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("UPDATE decks SET archived_at = ?1 WHERE id = ?2")
+                .bind(NOW)
+                .bind(old)
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            let listed = tags_due(&pool, now).await.unwrap();
+            assert_eq!(
+                listed,
+                vec![
+                    TagDue {
+                        id: exam,
+                        name: "exam".into(),
+                        due_count: 3,
+                        decks: 2
+                    },
+                    TagDue {
+                        id: other,
+                        name: "other".into(),
+                        due_count: 1,
+                        decks: 1
+                    },
+                ]
+            );
+
+            // Cards in review by due date, then new ones, from either deck.
+            let mut reviewed = 0;
+            let mut order = Vec::new();
+            while let Some((card, progress, deck)) = tag_due(&pool, exam, reviewed, now).await {
+                assert_eq!(progress, at_card(reviewed, 3 - reviewed));
+                let reps: i64 = sqlx::query_scalar("SELECT reps FROM flashcards WHERE id = ?1")
+                    .bind(card)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                record_tag_review(&pool, exam, card, reps, Rating::Good, now)
+                    .await
+                    .unwrap();
+                // Rated once: the same rating again is stale.
+                assert!(matches!(
+                    record_tag_review(&pool, exam, card, reps, Rating::Good, now).await,
+                    Err(StudyError::Stale)
+                ));
+                order.push((card, deck.unwrap()));
+                reviewed += 1;
+            }
+            assert_eq!(
+                order,
+                vec![
+                    (early, "Chemistry".to_string()),
+                    (late, "Biology".to_string()),
+                    (new, "Biology".to_string()),
+                ]
+            );
+            // Logged as any review, and no session was opened or counted.
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM review_logs").await, 3);
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM sessions").await, 0);
+            assert_eq!(tags_due(&pool, now).await.unwrap()[0].due_count, 0);
+
+            // A card without the tag, or not due, can't be rated through it.
+            assert!(matches!(
+                record_tag_review(&pool, exam, untagged, 0, Rating::Good, now).await,
+                Err(StudyError::Stale)
+            ));
+            assert!(matches!(
+                record_tag_review(&pool, exam, later, 0, Rating::Good, now).await,
+                Err(StudyError::Stale)
+            ));
+            assert!(matches!(
+                tag_card(&pool, 999, 0, now).await,
+                Err(StudyError::NotFound)
+            ));
+            assert!(matches!(
+                record_tag_review(&pool, 999, untagged, 0, Rating::Good, now).await,
+                Err(StudyError::NotFound)
+            ));
+        });
+    }
+
+    #[test]
+    fn a_deck_session_card_has_no_deck_field() {
+        tauri::async_runtime::block_on(async {
+            let (pool, deck) = seeded().await;
+            let session = start(&pool, deck, at(NOW)).await;
+            let card = session_card(&pool, session, at(NOW)).await.unwrap();
+            let json = serde_json::to_value(card).unwrap();
+            assert!(json.get("deck").is_none());
         });
     }
 }

@@ -1,31 +1,39 @@
 import { useEffect, useState } from "react";
 import {
   getDecks,
+  getTagsDue,
   getToday,
   toCommandError,
   type Deck,
   type DeckDetail,
+  type TagDue,
   type TodaySummary,
 } from "./api";
 import { CreateDeckForm } from "./CreateDeckForm";
 import { ArrowRightIcon, BookIcon, CheckIcon, PlayIcon, PlusIcon } from "./icons";
+import type { ReviewedTag } from "./ReviewSession";
 import { Message, useFocusOnMount } from "./ui";
 import { useStartReview } from "./useStartReview";
 
 type DecksState =
   | { status: "loading" }
   | { status: "error"; message: string }
-  | { status: "ready"; decks: Deck[]; today: TodaySummary | null };
+  | { status: "ready"; decks: Deck[]; today: TodaySummary | null; tags: TagDue[] };
 
 /**
- * Fetches the active decks and today's review count, and describes the
- * outcome; never rejects. Today's count is a side note: if it can't be read,
- * the desk shows without it rather than failing.
+ * Fetches the active decks, today's review count and the tags with cards due,
+ * and describes the outcome; never rejects. Today's count and the tags are
+ * side notes: if they can't be read, the desk shows without them rather than
+ * failing.
  */
 async function loadDecks(): Promise<DecksState> {
   try {
-    const [decks, today] = await Promise.all([getDecks(), getToday().catch(() => null)]);
-    return { status: "ready", decks, today };
+    const [decks, today, tags] = await Promise.all([
+      getDecks(),
+      getToday().catch(() => null),
+      getTagsDue().catch(() => []),
+    ]);
+    return { status: "ready", decks, today, tags };
   } catch (err) {
     return { status: "error", message: toCommandError(err).message };
   }
@@ -40,6 +48,7 @@ export function Dashboard({
   notice: initialNotice,
   fromNotes,
   onStart,
+  onStartTag = () => {},
   onOpen,
   onCreated,
   onOpenNotes,
@@ -50,6 +59,8 @@ export function Dashboard({
   /** The user just left the notes area, so focus returns to "Open notes". */
   fromNotes: boolean;
   onStart: (sessionId: number, deckName: string) => void;
+  /** Review the due cards with a tag, from every deck. */
+  onStartTag?: (tag: ReviewedTag) => void;
   onOpen: (deckId: number) => void;
   onCreated: (deck: DeckDetail) => void;
   onOpenNotes: () => void;
@@ -129,6 +140,7 @@ export function Dashboard({
     <StudyDesk
       decks={state.decks}
       today={state.today}
+      tags={state.tags}
       notice={notice}
       focus={focus}
       onCreate={() => {
@@ -136,6 +148,7 @@ export function Dashboard({
         setCreating(true);
       }}
       onStart={onStart}
+      onStartTag={onStartTag}
       onOpen={onOpen}
       onOpenNotes={onOpenNotes}
       onChanged={() => reload()}
@@ -146,21 +159,25 @@ export function Dashboard({
 function StudyDesk({
   decks,
   today,
+  tags,
   notice,
   focus,
   onCreate,
   onStart,
+  onStartTag,
   onOpen,
   onOpenNotes,
   onChanged,
 }: {
   decks: Deck[];
   today: TodaySummary | null;
+  tags: TagDue[];
   notice: string | null;
   /** What takes focus when the desk appears, if anything. */
   focus: "list" | "create" | "notice" | "notes" | null;
   onCreate: () => void;
   onStart: (sessionId: number, deckName: string) => void;
+  onStartTag: (tag: ReviewedTag) => void;
   onOpen: (deckId: number) => void;
   onOpenNotes: () => void;
   onChanged: () => void;
@@ -219,6 +236,8 @@ function StudyDesk({
               ))}
             </ul>
           </section>
+
+          <TagReviews tags={tags} onStart={onStartTag} />
         </>
       )}
 
@@ -325,6 +344,63 @@ function NothingDue() {
           All caught up
         </p>
       </div>
+    </section>
+  );
+}
+
+/**
+ * Reviewing by tag: each tag with cards due, from however many decks, and a
+ * way to review just those. Shown only when some tag has cards due.
+ */
+function TagReviews({
+  tags,
+  onStart,
+}: {
+  tags: TagDue[];
+  onStart: (tag: ReviewedTag) => void;
+}) {
+  const due = tags.filter((tag) => tag.dueCount > 0);
+  if (due.length === 0) return null;
+
+  return (
+    <section className="deck-section" aria-labelledby="tag-review-heading">
+      <h3 id="tag-review-heading" className="section-title">
+        Review by tag <span className="count">{due.length}</span>
+      </h3>
+      <p className="field-hint">
+        Review the due cards with one tag, from every deck that has them.
+      </p>
+      <ul className="deck-list">
+        {due.map((tag) => {
+          const nameId = `tag-review-${tag.id}`;
+          return (
+            <li key={tag.id}>
+              <article className="deck-row" aria-labelledby={nameId}>
+                <div className="deck-row-main">
+                  <h4 id={nameId} className="deck-name">
+                    {tag.name}
+                  </h4>
+                  <p className="due-line">
+                    <span className="dot" aria-hidden="true" />
+                    {`${tag.dueCount} ${tag.dueCount === 1 ? "card" : "cards"} due in ${tag.decks} ${tag.decks === 1 ? "deck" : "decks"}`}
+                  </p>
+                </div>
+                <div className="deck-actions">
+                  <button
+                    type="button"
+                    className="button button-tonal button-small"
+                    aria-describedby={nameId}
+                    onClick={() => onStart({ id: tag.id, name: tag.name })}
+                  >
+                    <PlayIcon />
+                    Review tag
+                  </button>
+                </div>
+              </article>
+            </li>
+          );
+        })}
+      </ul>
     </section>
   );
 }

@@ -68,8 +68,9 @@ export function CardsCsv({
       </div>
       <p className="field-hint">
         Add cards from a CSV or TSV file, with the front in the first column and the back in the
-        second, or save a deck's cards as a CSV file. Only the text of each card is copied, not its
-        schedule or reviews, so this isn't a backup.
+        second, or save a deck's cards as a CSV file. A third column headed Tags gives each card its
+        tags, separated by spaces. Only the text and tags of each card are copied, not its schedule
+        or reviews, so this isn't a backup.
       </p>
       {loadError ? (
         <p className="message-error" role="alert">
@@ -207,7 +208,11 @@ function ImportCards({
     try {
       const saved = await importCardsCsv(
         preview.deck.id,
-        rows.map((row) => ({ front: row.front, back: row.back })),
+        rows.map((row) =>
+          preview.file.tagsColumn
+            ? { front: row.front, back: row.back, tags: row.tags ?? [] }
+            : { front: row.front, back: row.back },
+        ),
         preview.skipDuplicates
       );
       setState({ kind: "idle" });
@@ -361,7 +366,9 @@ function CardsPreview({
       </p>
       {file.rowsWithExtraColumns > 0 && (
         <p className="field-hint">
-          {`${rowCount(file.rowsWithExtraColumns)} ${file.rowsWithExtraColumns === 1 ? "has" : "have"} more than two columns. Only the first two are read.`}
+          {file.tagsColumn
+            ? `${rowCount(file.rowsWithExtraColumns)} ${file.rowsWithExtraColumns === 1 ? "has" : "have"} more than three columns. Only the front, back and tags are read.`
+            : `${rowCount(file.rowsWithExtraColumns)} ${file.rowsWithExtraColumns === 1 ? "has" : "have"} more than two columns. Only the first two are read. To add tags, head the third column Tags.`}
         </p>
       )}
       {problems > 0 && (
@@ -393,6 +400,7 @@ function CardsPreview({
               <th scope="col">Line</th>
               <th scope="col">Front</th>
               <th scope="col">Back</th>
+              {file.tagsColumn && <th scope="col">Tags</th>}
               <th scope="col">What happens</th>
             </tr>
           </thead>
@@ -404,6 +412,7 @@ function CardsPreview({
                   <td>{row.line}</td>
                   <td className="csv-cell">{row.front}</td>
                   <td className="csv-cell">{row.clozeCards ? "(cloze text)" : row.back}</td>
+                  {file.tagsColumn && <td className="csv-cell">{(row.tags ?? []).join(" ")}</td>}
                   <td className={row.problem ? "csv-status csv-status-problem" : "csv-status"}>
                     {rowStatus(row, skipDuplicates)}
                   </td>

@@ -230,6 +230,24 @@ pub async fn set_card_tags(
     set_links(conn, Owner::Card, card_id, &ids).await
 }
 
+/// Gives a card just added, which has no tags yet, the tags `tag_ids` (from
+/// [`tag_ids`], at most [`TAGS_MAX`], each once). For imports, which look
+/// every name up once rather than once a card.
+pub async fn link_new_card(
+    conn: &mut SqliteConnection,
+    card_id: i64,
+    tag_ids: &[i64],
+) -> Result<(), sqlx::Error> {
+    for &tag_id in tag_ids {
+        sqlx::query(Owner::Card.insert_sql())
+            .bind(card_id)
+            .bind(tag_id)
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(())
+}
+
 /// Replaces an active note's tags with the already-checked `names`. Run in
 /// the transaction that saves the note, after it has been checked.
 pub async fn set_note_tags(
