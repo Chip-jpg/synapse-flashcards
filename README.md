@@ -48,6 +48,9 @@ migrations, validation, scheduling, and every business rule; React only calls ty
   it back unchanged. A note written in Markdown is
   shown formatted (headings, lists, emphasis, quotes, code, tables), or as its plain text if you
   prefer; it's stored and edited as plain text either way.
+- **Tags** — label cards and notes with one-word tags (`biology`, `bio::cells`), filter a deck, the
+  notes or *Search* by tag, tag many cards at once, rename tags on the *Tags* screen, and review
+  one tag's due cards from every deck together.
 - **Cards from a spreadsheet** — add front/back cards to a deck from a CSV or TSV file, after
   checking every row, and save a deck's cards as a CSV file.
 - **Picture cards (image occlusion)** — draw boxes over a picture (a diagram, a map, a labelled
@@ -139,9 +142,9 @@ thing that replaces it is *Import data*, and only after you confirm.
 
 ## Using it
 
-**Find your way around.** The sidebar has five places: the **Study Desk** (your decks, with the
-first one that has cards due at the top), **Notes**, **Statistics**, **Archived decks**, and
-**Backup & restore**.
+**Find your way around.** The sidebar has nine places: the **Study Desk** (your decks, with the
+first one that has cards due at the top), **Search**, **Tags**, **Notes**, **Sources**,
+**Statistics**, **Archived decks**, **Backup & restore**, and **Settings**.
 In a narrow window it becomes a bar across the top.
 
 **Unsaved changes are never dropped silently.** If you've typed something in a form (a deck, card,
@@ -262,6 +265,22 @@ exactly when it would have been here. All the selected cards change together, or
 of them was changed meanwhile, nothing happens and the screen reloads. The Sample deck and
 archived decks can't be moved to or from.
 
+**Tags.** A tag is one word you give cards and notes to find them again across decks: `biology`,
+`exam-june`, or `bio::cells` for a tag inside another (spaces and commas end a tag, so use `-` or
+`::` to join words). Capitals don't matter (`Bio` and `bio` are one tag), a tag is at most 60
+characters, and a card or note has at most 20. Every card form and the note form have a *Tags*
+field: type a word and press space, comma or Enter to add it, Backspace to take the last one off;
+tags you already use are offered as you type. On a cloze or picture card the tags go on every card
+of that text or picture. The deck screen shows each card's tags, *Show cards tagged* filters it to
+one tag (`bio` also shows `bio::cells`), and with cards ticked *Tag selected* adds tags to all of
+them or removes one, without touching their text or schedule. The notes library has the same
+filter, and *Search* has a tag chooser, or type `#bio`. The *Tags* screen lists every tag in use
+with how many cards and notes have it; *Rename* changes a tag everywhere (a name another tag
+already has is refused, so tags are never merged), and *Find* opens it in *Search*. On the Study
+Desk, *Review by tag* reviews the due cards with a tag from every active deck together, each
+showing its deck; ratings are recorded exactly as in a deck's review. Deleting a card or note, or
+archiving its deck, keeps its tags for when it comes back.
+
 **Rename or archive a deck.** Also on the deck screen. Archiving asks for confirmation, then moves
 the deck to *Archived decks*: it can't be reviewed, changed, or given new cards, and any unfinished
 session in it is closed. Its cards and history are kept, and its name stays taken.
@@ -358,7 +377,8 @@ the page link is there while you check the drafts or take the quiz.
 
 **Import cards from a spreadsheet.** *Backup & restore* → *Cards in a spreadsheet* → choose a deck
 → *Choose a CSV file*. The front goes in the first column and the back in the second; other columns
-are ignored. Commas, semicolons, and tabs all work, as do quoted cells with line breaks, a header
+are ignored, except a third column whose header is *Tags*, read as the cards' tags separated by
+spaces. Commas, semicolons, and tabs all work, as do quoted cells with line breaks, a header
 row such as *Front, Back*, and files saved as UTF-8 or by older versions of Excel. Synapse shows
 every row before adding anything: rows that break a card's rules (a blank side, more than 2,000
 characters) are named and left out, and so, unless you untick the box, are cards whose front is
@@ -368,7 +388,8 @@ is a cloze text, checked as one typed in the deck screen and making one card per
 5,000 rows and 10 MB per file.
 
 **Export cards to a spreadsheet.** In the same place, choose a deck → *Export as CSV*. You get a
-standard CSV file with a *front* and a *back* column, which spreadsheets open and Synapse can import
+standard CSV file with a *front* and a *back* column (and a *tags* column when any card has
+tags), which spreadsheets open and Synapse can import
 again. A cloze text is written once, however many cards it made, with the text in *front* and *back*
 left empty, so importing it makes it a cloze text again. Only the cards' text is saved, not their
 schedules or reviews, so it isn't a backup.
@@ -397,7 +418,8 @@ how many had one. Image occlusion notes (Anki's *Image Occlusion*) become pictur
 per box number, with their picture kept by Synapse, when the package was exported with media
 included; rectangles come across as drawn, ellipses and polygons as the box around them, rotated
 shapes unrotated, and text shapes not at all (the preview counts notes with any of these).
-Formatting becomes plain text with its line breaks. Left out: image occlusion notes whose picture
+Each note's tags go on every card it adds; tags Synapse can't take (over 60 characters, or past 20
+on a card) are counted in the preview. Formatting becomes plain text with its line breaks. Left out: image occlusion notes whose picture
 isn't in the file or whose shapes can't be read, cloze notes Synapse can't read (nested deletions, an empty answer, a number over 999), other
 note types, notes with an empty side or text, and sides or texts over 2,000 characters. *Add* creates every deck and card together, or nothing. Up to 50,000 cards and 1,000
 decks at a time.
@@ -563,7 +585,7 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   to a different deck on the way back.
 - **Notes are plain text.** Markdown is shown formatted when you read a note, but there's no
   formatting toolbar or live preview while editing, no reference-style links, footnotes or maths, and
-  links can't be opened from a note. No attachments, audio, web clips, tags, or folders. Search
+  links can't be opened from a note. No attachments, audio, web clips, or folders. Search
   is exact text only (no fuzzy matching, no search inside deleted notes) and has no index, so each
   search reads every note.
   Importing a file makes a note from its text only: layout and images are left out of the note (the
@@ -582,15 +604,15 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   assuming you review everything due and add no new cards; same-day repeats after *Again* aren't
   counted. The sample deck and archived decks always follow the value for all decks.
 - **Three card types.** Basic front/back, cloze, and picture cards (image occlusion, boxes only:
-  no freehand or polygon shapes). Front/back and cloze cards are text only: no images, audio, or
-  tags. A card can't change type, and a picture card's picture can't be swapped. Anki's cloze and
+  no freehand or polygon shapes). Cloze cards are text only, and no card has audio. A card can't change type, and a picture card's picture can't be swapped. Anki's cloze and
   image occlusion notes are imported without their *Back Extra*.
 - **Search matches words, not meanings.** *Search* finds words by their start (no fuzzy matching,
   no matching inside a word, no synonyms), never searches deleted cards or notes, and shows at most
   50 results. Words are split on anything that isn't a letter or digit, so text in scripts written
   without spaces (Chinese, Japanese) is only found from the start of a run. The deck screen's own
   *Search cards* and the library's *Search notes* are plain contains-text filters.
-- **Bulk actions are delete, move and restore.** There are no tags or folders.
+- **Bulk actions are delete, move, restore and tagging.** There are no folders, and two tags can't
+  be merged: rename one and re-tag its cards instead.
 - **Statistics are counts, not scores.** The Study Desk counts today's reviews and the different
   cards they were for; the *Statistics* screen adds the last 30 days, true retention, cards by
   state, and a 14-day due forecast. There are no streaks, XP, or mastery percentages. Review
@@ -604,7 +626,7 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   wrote as `'=…` (a `'` and then a formula character) loses its first `'` on import, as Synapse's
   own exports need.
 - **Anki imports bring text, not history.** Every imported card starts as new: Anki's schedule,
-  review history, tags, flags, suspended state and note links aren't imported, and neither are
+  review history, flags, suspended state and note links aren't imported, and neither are
   sounds, LaTeX images, styling, or pictures in cloze notes (text beside them is kept). Pictures
   come with front/back notes (up to 4 a side) and image occlusion notes. A side that is only a
   picture, with no text, is still left out, as Synapse's cards need text on both sides. Note types with more than one field on either side, are left out and counted.
@@ -704,5 +726,5 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
     built-in engine.
   - `export.rs` / `import.rs` — writing a `.zip` backup with every kept file, and checking and
     restoring one (kept files included).
-- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0019`), embedded in the
+- **`src-tauri/migrations/`** — forward-only `sqlx` migrations (`0001`–`0020`), embedded in the
   binary at compile time.

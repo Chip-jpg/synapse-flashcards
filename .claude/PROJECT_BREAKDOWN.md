@@ -7,7 +7,7 @@ Those are two different levels of maturity, and keeping them separate is essenti
 - The current application is real, released, and usable without AI.
 - The broader study-companion vision is the roadmap, not a list of features already implemented.
 
-As of this update, the latest published release is v0.9.1, released from `main` by the Release workflow on October 22, 2026 (the `v0.9.1` tag names the commit): pictures from Anki front/back notes (section 4.7b), *Select all* for deleted cards (section 4.2), and help with picture cards from a local vision model (section 4.8); no migration. v0.9.0 (October 21, 2026) was the second major feature, "Text recognition" (sections 4.17–4.20): a built-in OCR engine, scanned PDF pages, text from pictures, and reading with a local vision model in Ollama (migration 0019). v0.8.1 (October 21, 2026) added restoring selected deleted cards and reading a deleted note (sections 4.2 and 4.3). v0.8.0 (October 20, 2026) was the first major feature, "Sources and pictures" (sections 4.13–4.16): kept originals, pictures, image occlusion, and backup format 2. Since v0.5.0 (October 18, 2026), the 2026-10-19 and 2026-10-20 rounds shipped v0.5.1, v0.6.0, v0.7.0, v0.7.1, v0.7.2, v0.7.3 and v0.8.0, 2026-10-21 v0.8.1 and v0.9.0, and 2026-10-22 v0.9.1 (section 13); their features are described in sections 4 and 5, some still marked with the branch they were written on. v0.5.0 added importing files as notes (section 4.7). v0.4.0 added the first AI feature: cards suggested from a note by a model in Ollama on the user's computer (section 4.6). v0.3.2 added unsaved-changes protection and the first frontend test suite (sections 4.5 and 12). The rest of this breakdown was first written against v0.3.1 and has been updated wherever those changes reach.
+As of this update, the latest published release is v0.10.0, released from `main` by the Release workflow on October 24, 2026 (the `v0.10.0` tag names the commit): the third major feature, "Tags" (section 4.21): tags on every kind of card and on notes, filters, *Search* by tag, a Tags screen, tags from Anki and CSV, and reviewing a tag across decks (migration 0020). v0.9.1 (October 22, 2026) added pictures from Anki front/back notes (section 4.7b), *Select all* for deleted cards (section 4.2), and help with picture cards from a local vision model (section 4.8); no migration. v0.9.0 (October 21, 2026) was the second major feature, "Text recognition" (sections 4.17–4.20): a built-in OCR engine, scanned PDF pages, text from pictures, and reading with a local vision model in Ollama (migration 0019). v0.8.1 (October 21, 2026) added restoring selected deleted cards and reading a deleted note (sections 4.2 and 4.3). v0.8.0 (October 20, 2026) was the first major feature, "Sources and pictures" (sections 4.13–4.16): kept originals, pictures, image occlusion, and backup format 2. Since v0.5.0 (October 18, 2026), the 2026-10-19 and 2026-10-20 rounds shipped v0.5.1, v0.6.0, v0.7.0, v0.7.1, v0.7.2, v0.7.3 and v0.8.0, 2026-10-21 v0.8.1 and v0.9.0, 2026-10-22 v0.9.1, and 2026-10-24 v0.10.0 (section 13); their features are described in sections 4 and 5, some still marked with the branch they were written on. v0.5.0 added importing files as notes (section 4.7). v0.4.0 added the first AI feature: cards suggested from a note by a model in Ollama on the user's computer (section 4.6). v0.3.2 added unsaved-changes protection and the first frontend test suite (sections 4.5 and 12). The rest of this breakdown was first written against v0.3.1 and has been updated wherever those changes reach.
 
 This breakdown combines that current repository documentation, your implementation reports, and the original product/specification documents. The older specification is useful for architecture and intent, but parts of its feature-status descriptions are outdated—for example, it predates the restore/unarchive work.
 
@@ -88,14 +88,14 @@ ______________________________________________________________________
 | Repository | `Chip-jpg/synapse-flashcards` |
 | Visibility | Public, by your deliberate choice |
 | Development environments | Your local Windows setup, and Claude Code cloud sessions (Linux) |
-| Latest published release | v0.9.1 (October 22, 2026) |
-| Release commit | The commit the `v0.9.1` tag points at, on `main` |
-| Windows installer | `Synapse_0.9.1_x64-setup.exe` |
-| Windows MSI | `Synapse_0.9.1_x64_en-US.msi` |
+| Latest published release | v0.10.0 (October 24, 2026) |
+| Release commit | The commit the `v0.10.0` tag points at, on `main` |
+| Windows installer | `Synapse_0.10.0_x64-setup.exe` |
+| Windows MSI | `Synapse_0.10.0_x64_en-US.msi` |
 | Installer signing | Release notes say the installers are unsigned |
 | How releases are built | The manual **Release** GitHub Actions workflow on `windows-latest` (since v0.3.2; section 13) |
-| Database migrations documented in current README | `0001`–`0019` |
-| Frontend tests | Vitest + Testing Library: 319 tests at v0.9.1 (`npm test`; section 12.4) |
+| Database migrations documented in current README | `0001`–`0020` |
+| Frontend tests | Vitest + Testing Library: 361 tests at v0.10.0 (`npm test`; section 12.4) |
 | AI generation | Cards suggested from a note by a local model in Ollama, since v0.4.0 (section 4.6) |
 | File import | PDF, TXT, MD, DOCX, PPTX as notes, since v0.5.0 (section 4.7); originals kept as sources since v0.8.0 (sections 4.13, 4.16) |
 
@@ -652,6 +652,19 @@ Released in v0.9.0 (written on branch `claude/project-thread-y4d3wh`), on top of
 - **Frontend** (`ReadWith.tsx`). *Read with*: *Built in* or a vision model, remembered in web storage (`synapse.readWith`). Wired into *Read scanned pages*, *Read this page*, reading a scanned PDF on import, *Text in picture* (with *Read again* and the agreement shown) and *Note from a photo*. *Find labels* always uses the built-in engine (only it gives positions).
 - **Checked** with Ollama 0.40.6 on CPU and qwen2.5vl:3b, in the real app on Linux with a scratch database: an Italian scanned page read with every accent right (about 4 minutes a page on CPU; 8 s warm in a direct call); a photo read again agreed 96% with the built-in reading. Not checked on Windows.
 
+## 4.21 Tags
+
+Released in v0.10.0: the third major feature. Foundation on branch `claude/project-thread-riahrm` (PR #54), with three pieces merged into it: cards (#57), notes, search and the Tags screen (#55), Anki, CSV and reviewing by tag (#56). Contract: `/mnt/project-files/planning/tags-contract.md` (project files); review-by-tag plan: `tags-study-plan.md`.
+
+- **A tag** (`tags.rs`). One word: trimmed, 1–60 characters (`TAG_MAX_CHARS`), no whitespace or comma; `::` for a hierarchy (`bio::cells`). Unique ignoring case, compared in Rust (`to_lowercase`, so `É`/`é` match); the case first written is kept. At most 20 a card or note (`TAGS_MAX`). Every kind of card takes tags; the Sample deck takes none (Rust).
+- **Schema (migration 0020).** `tags (id, name UNIQUE NOCASE, created_at)`, `card_tags`, `note_tags` (`WITHOUT ROWID`). Triggers: tags never deleted, only `name` updated; link rows never updated, inserted or deleted only for an active card in an active deck / an active note, so deleted and archived things keep their tags. A tag no active thing uses isn't listed (`get_tags`). Renaming renames everywhere, deleted things included; renaming onto another tag's name is refused (no merge). Tagging changes no text, schedule, `updated_at`, or note `updatedAt`.
+- **Commands.** Optional `tags` on `create_flashcard`/`update_flashcard`/`create_note`/`update_note`/`create_note_from_source` and on `create_cloze`/`update_cloze`/`create_occlusion`/`update_occlusion` (every active card of the text; cards an edit adds or restores get the text's tags, `authoring::tag_text_cards`). `get_tags`, `set_card_tags`, `tag_flashcards` (bulk add/remove, stale as `delete_flashcards`), `set_note_tags`, `rename_tag`. A refused tag reports field `"tags"`. `DeckCard`, `DeletedCard`, `Note`, `NoteSummary`, the deleted-note reader and `get_source_notes` carry `tags`.
+- **Screens.** `src/tagInput.tsx` (`TagField`: chips, space/comma/Enter/blur adds, Backspace removes, tags in use offered as buttons; a `<datalist>` doesn't work on WebKitGTK) on every card form and the note form. Deck screen: chips, *Show cards tagged* (hierarchy-aware, `hasTag`), *Tag selected*. Notes: chips, library filter. *Search*: a tag chooser or `#tag` (`search.rs`'s optional `tag`). *Tags* sidebar screen (`Tags.tsx`): counts, *Rename*, *Find*.
+- **Review by tag** (no migration, no session row). `study::tags_due`, `tag_card`, `record_tag_review` (`rate_card` split out of `record_review`); commands `get_tags_due`, `get_tag_card`, `review_tag_card`. *Review by tag* on the Study Desk; `ReviewSession` has a tag mode, each card shows its deck.
+- **In and out.** Anki notes' tags go on every card they add (`tags::link_new_card`); refused or past-20 tags are counted (`tagsLeftOut`). Fixtures `tags.apkg`, `tags-legacy.apkg`. CSV: a third column is tags only when the header names it `Tags` (or `tag`, `etichette`); export adds `tags` when any card has one.
+- **Backups.** Format 2 unchanged; schema 20, so v0.9.1 refuses a v0.10.0 backup as newer.
+- **Not done:** merging tags, deleting a tag, tags on sources, per-tag statistics. Not checked on Windows.
+
 ______________________________________________________________________
 
 ## 5. FSRS and personalization
@@ -869,6 +882,7 @@ Current README identifies these main files:
 | `pictureText.tsx` | Reading the text in a kept picture, and the panel that shows it as recognised text |
 | `deckChoices.ts` | The decks a card can be added to, for both card-from-note screens |
 | `ScannedPages.tsx` | Reading a PDF source's scanned pages: progress and Stop, the summary, and the label on recognised text |
+| `tagInput.tsx`, `Tags.tsx` | The tags field and chips shared by the card and note forms, and the Tags screen (rename, find) |
 | `ReadWith.tsx` | Choosing the reader (built in or a local vision model in Ollama), remembered per computer, and the agreement hint |
 | `Search.tsx` | Search: every card and note at once, with snippets and filters |
 | `Statistics.tsx` | Statistics: reviews per day, true retention, cards by state, due forecast (plain SVG charts) |
@@ -914,6 +928,7 @@ For example, hiding a Restore button is useful UX, but the Rust command must sti
 | `sources.rs` | Imported documents kept as sources, with each page's text, and the note saved from each |
 | `ocr.rs` | The built-in text recognition engine, the scanned picture on a PDF page, and the `--recognise-text` helper process |
 | `recognition.rs` | What was read from each kept picture or PDF page, and reading them through the helper (stoppable) |
+| `tags.rs` | Tags on cards and notes: checking names, replacing and bulk-changing lists, listing and renaming |
 | `vision.rs` | Reading a picture or a source's pages with a local vision model in Ollama, and checking its answer |
 | `export.rs` | Backup creation (format 2: the database and every kept file) |
 | `import.rs` | Backup checking and replacement, kept files included |
@@ -1067,6 +1082,7 @@ The project history gives this high-level progression:
 | `0017` | Pictures in notes and on card sides (`note_pictures`, `card_pictures`; branch `claude/sources-pictures-04zgws`; section 4.14) |
 | `0018` | Image occlusion: `occlusions`, and `occlusion_id`/`occlusion_number` on `flashcards` (branch `claude/sources-image-occlusion-8pmk5r`; section 4.15) |
 | `0019` | Text recognition: `recognitions`, what was read from each kept picture or PDF page (branch `claude/project-thread-50ujao`; section 4.17) |
+| `0020` | Tags: `tags`, `card_tags`, `note_tags` (branch `claude/project-thread-riahrm`; section 4.21) |
 
 The first seven are described in the original specification. The final three are established by your later feature reports and repository history.
 
@@ -1235,9 +1251,8 @@ The current README is explicit about these gaps.
 ### Organization
 
 - Fuzzy or meaning-based search. *Search* (section 4.10) matches word prefixes across all active cards and notes; within one deck, cards can also be filtered by exact text (section 4.2), and notes by exact text.
-- Tags.
 - Folders.
-- Bulk actions beyond deleting, moving and restoring a deck's selected cards (and *Restore all*).
+- Bulk actions beyond deleting, moving, restoring and tagging a deck's selected cards (and *Restore all*); merging or deleting tags.
 - Card movement between decks through restoration.
 - External deck formats beyond CSV/TSV and Anki packages (Anki: front/back and cloze text only, section 4.7b).
 
@@ -1394,6 +1409,7 @@ ______________________________________________________________________
 | v0.8.1 | Restore selected deleted cards, and read a deleted note without restoring it |
 | v0.9.0 | Text recognition: built-in OCR engine and `recognitions` (0019), scanned PDF pages on the Sources screen and on import, text from pictures and *Note from a photo*, *Find labels* for picture cards, reading with a local vision model in Ollama |
 | v0.9.1 | Pictures from Anki front/back notes, *Select all* for deleted cards (one selection bar at a time), help with picture cards from a local vision model |
+| v0.10.0 | Tags (0020): on every kind of card and on notes, filters, *Search* by tag, a Tags screen with rename, tags from Anki and CSV, reviewing a tag across decks |
 
 Not every feature was committed at the same time as its release bump. Session progress and keyboard ratings were committed September 22 and packaged later.
 
