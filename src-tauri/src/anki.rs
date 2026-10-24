@@ -2,7 +2,8 @@
 //! as new cards in new decks.
 //!
 //! The text of front/back and cloze notes travels, with the pictures of
-//! front/back notes, and image occlusion notes with their picture. Every
+//! front/back notes, and image occlusion notes with their picture. A note's
+//! tags go on each of its cards ([`anki_tags`]). Every
 //! imported card starts as a brand-new card, exactly like one the user typed:
 //! Anki's schedule and review history are not imported, and neither are
 //! sounds, videos, or pictures in cloze notes.
@@ -100,6 +101,7 @@ use crate::occlusion::{
     insert_occlusion, renumber, validate_occlusion, Mode, Occlusion, OcclusionBox, NUMBER_MAX,
 };
 use crate::pictures::{set_card_pictures, CardPictures, CARD_SIDE_PICTURES_MAX};
+use crate::tags::{self, TAGS_MAX};
 
 /// The largest package read. Its media, which are most of a big package, are
 /// never read, so this is only a sanity limit.
@@ -157,6 +159,9 @@ pub struct AnkiNote {
     /// The cards it adds one way: 1, or a cloze text's deletion numbers, or
     /// an image occlusion's box numbers.
     pub cards: usize,
+    /// Its Anki tags that Synapse takes ([`anki_tags`]), on every card it
+    /// adds, reversed ones included.
+    pub tags: Vec<String>,
 }
 
 /// An image occlusion note: the name of its picture in the package's media,
@@ -247,6 +252,9 @@ pub struct AnkiPackage {
     pub media_removed: usize,
     /// Pictures of front/back notes left out, by why.
     pub pictures_left_out: PicturesLeftOut,
+    /// Tags of the notes to add that Synapse can't take (over 60 characters,
+    /// with a comma, or past a card's 20), one for each note that had it.
+    pub tags_left_out: usize,
     /// Cloze notes to add with text in another field (such as "Back Extra"),
     /// which is left out.
     pub extra_removed: usize,
@@ -905,8 +913,8 @@ pub async fn read_collection(path: &Path) -> Result<AnkiPackage, AnkiError> {
         entry.reviewed |= reps > 0;
     }
 
-    let notes: Vec<(i64, i64, String)> =
-        sqlx::query_as("SELECT id, mid, flds FROM notes ORDER BY id")
+    let notes: Vec<(i64, i64, String, String)> =
+        sqlx::query_as("SELECT id, mid, flds, tags FROM notes ORDER BY id")
             .fetch_all(&mut conn)
             .await
             .map_err(unreadable)?;
@@ -916,13 +924,14 @@ pub async fn read_collection(path: &Path) -> Result<AnkiPackage, AnkiError> {
         skipped: Skipped::default(),
         media_removed: 0,
         pictures_left_out: PicturesLeftOut::default(),
+        tags_left_out: 0,
         extra_removed: 0,
         reviewed: 0,
         occlusion_approximated: 0,
         pictures: HashMap::new(),
     };
     let mut by_deck: HashMap<i64, Vec<AnkiNote>> = HashMap::new();
-    for (id, note_type, fields) in notes {
+    for (id, note_type, fields, tags) in notes {
         let shape = match shapes.get(&note_type) {
             Some(Shape::ImageOcclusion(None)) => {
                 package.skipped.image_occlusion += 1;
@@ -964,6 +973,7 @@ pub async fn read_collection(path: &Path) -> Result<AnkiPackage, AnkiError> {
                 let (back_pictures, back_unnamed) = picture_names(back_html);
                 package.pictures_left_out.missing += front_unnamed + back_unnamed;
                 let note = AnkiNote {
+                    tags: Vec::new(),
                     front: card.front,
                     back: card.back,
                     reversible: reverse_ord.is_some_and(|ord| note_cards.ords.contains(&ord)),
@@ -1005,6 +1015,7 @@ pub async fn read_collection(path: &Path) -> Result<AnkiPackage, AnkiError> {
                 let numbers = cloze.numbers();
                 let first = numbers.first().copied().unwrap_or(1);
                 let note = AnkiNote {
+                    tags: Vec::new(),
                     front: cloze.front(first),
                     back: cloze.back(first),
                     reversible: false,
@@ -1033,6 +1044,7 @@ pub async fn read_collection(path: &Path) -> Result<AnkiPackage, AnkiError> {
                 let numbers = occlusion.occlusion.numbers();
                 let first = numbers.first().copied().unwrap_or(1);
                 let note = AnkiNote {
+                    tags: Vec::new(),
                     front: occlusion.occlusion.front(first),
                     back: occlusion.occlusion.back(first),
                     reversible: false,
@@ -1056,6 +1068,9 @@ pub async fn read_collection(path: &Path) -> Result<AnkiPackage, AnkiError> {
         if note_cards.reviewed {
             package.reviewed += 1;
         }
+        let (tags, left_out) = anki_tags(&tags);
+        package.tags_left_out += left_out;
+        let note = AnkiNote { tags, ..note };
         by_deck.entry(note_cards.deck).or_default().push(note);
     }
 
@@ -1080,6 +1095,33 @@ pub async fn read_collection(path: &Path) -> Result<AnkiPackage, AnkiError> {
         return Err(AnkiError::TooManyCards);
     }
     Ok(package)
+}
+
+/// A note's tags as Synapse takes them, and how many it leaves out. Anki
+/// keeps a note's tags in one field, separated by spaces (`" bio::cells
+/// exam "`), so every tag is already one word, and `::` hierarchies come as
+/// they are. A tag Synapse refuses ([`tags::checked_name`]: over 60
+/// characters, or with a comma) is left out, as is one repeated ignoring
+/// case, quietly, and every tag past a card's [`TAGS_MAX`], counted.
+pub fn anki_tags(field: &str) -> (Vec<String>, usize) {
+    let mut seen = HashSet::new();
+    let mut kept = Vec::new();
+    let mut left_out = 0;
+    for tag in field.split_whitespace() {
+        let Ok(tag) = tags::checked_name(tag) else {
+            left_out += 1;
+            continue;
+        };
+        if !seen.insert(tag.to_lowercase()) {
+            continue;
+        }
+        if kept.len() == TAGS_MAX {
+            left_out += 1;
+        } else {
+            kept.push(tag.to_string());
+        }
+    }
+    (kept, left_out)
 }
 
 /// Why an image occlusion note is left out.
@@ -1574,7 +1616,8 @@ pub async fn planned_names(
 /// Saves a package: a new deck for each of its decks, a new card for each
 /// front/back note (with its pictures) and a cloze text with a new card per
 /// number for each cloze note, plus the reversed card of each reversible note
-/// with `both_directions` (its pictures the other way round). Each picture is
+/// with `both_directions` (its pictures the other way round), each card with
+/// its note's tags. Each picture is
 /// kept once. All or nothing, in one transaction. Names are chosen
 /// again at this moment, so a deck created since the preview is never
 /// clashed with.
@@ -1618,6 +1661,22 @@ pub async fn import_package(
         .map(|deck| deck.anki_name.as_str())
         .collect();
     let names = deck_names(taken.iter().map(String::as_str), &wanted);
+    // Every tag the notes have, looked up (or added) once.
+    let tag_names: Vec<String> = package
+        .decks
+        .iter()
+        .flat_map(|deck| &deck.notes)
+        .flat_map(|note| &note.tags)
+        .cloned()
+        .collect();
+    let ids = tags::tag_ids(&mut tx, &tag_names, kept_at)
+        .await
+        .map_err(AuthoringError::from)?;
+    let tag_ids: HashMap<String, i64> = tag_names
+        .iter()
+        .map(|name| name.to_lowercase())
+        .zip(ids)
+        .collect();
 
     let mut imported = AnkiImported {
         decks: Vec::new(),
@@ -1639,10 +1698,8 @@ pub async fn import_package(
         // Every card the one way first (a cloze note's text with all its
         // cards), then the reversed ones, so a note's two cards aren't
         // studied one straight after the other.
-        let forward = deck
-            .notes
-            .iter()
-            .map(|note| match (&note.cloze, &note.occlusion) {
+        let forward = deck.notes.iter().map(|note| {
+            let card = match (&note.cloze, &note.occlusion) {
                 (Some(text), _) => ToSave::Cloze(text),
                 (None, Some(occlusion)) => ToSave::Occlusion(occlusion),
                 (None, None) => ToSave::Card(
@@ -1651,22 +1708,34 @@ pub async fn import_package(
                     &note.pictures.front,
                     &note.pictures.back,
                 ),
-            });
+            };
+            (card, &note.tags)
+        });
         let reversed = deck
             .notes
             .iter()
             .filter(|note| both_directions && note.reversible)
             .map(|note| {
-                ToSave::Card(
+                let card = ToSave::Card(
                     &note.back,
                     &note.front,
                     &note.pictures.back,
                     &note.pictures.front,
-                )
+                );
+                (card, &note.tags)
             });
         let mut cards = 0;
-        for (index, card) in forward.chain(reversed).enumerate() {
+        for (index, (card, note_tags)) in forward.chain(reversed).enumerate() {
             let refused = |problem| AuthoringError::InvalidCard(index, problem);
+            // A cloze or picture note's cards are the ones added after this.
+            let before: i64 = if note_tags.is_empty() {
+                0
+            } else {
+                sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM flashcards")
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(AuthoringError::from)?
+            };
             match card {
                 ToSave::Card(front, back, front_pictures, back_pictures) => {
                     let card = validate_card(front, back).map_err(refused)?;
@@ -1700,6 +1769,24 @@ pub async fn import_package(
                             .map_err(refused)?;
                     let asset_id = kept.keep(&mut tx, &note.picture).await?.id;
                     cards += insert_occlusion(&mut tx, id, asset_id, &occlusion, &now)
+                        .await
+                        .map_err(AuthoringError::from)?;
+                }
+            }
+            if !note_tags.is_empty() {
+                let ids: Vec<i64> = note_tags
+                    .iter()
+                    .filter_map(|name| tag_ids.get(&name.to_lowercase()).copied())
+                    .collect();
+                let added: Vec<i64> =
+                    sqlx::query_scalar("SELECT id FROM flashcards WHERE id > ?1 AND deck_id = ?2")
+                        .bind(before)
+                        .bind(id)
+                        .fetch_all(&mut *tx)
+                        .await
+                        .map_err(AuthoringError::from)?;
+                for card_id in added {
+                    tags::link_new_card(&mut tx, card_id, &ids)
                         .await
                         .map_err(AuthoringError::from)?;
                 }
@@ -2094,6 +2181,10 @@ mod tests {
     /// `make_fixtures.py`), in the newer and the legacy format.
     const PICTURES_APKG: &[u8] = include_bytes!("../testdata/anki/pictures.apkg");
     const PICTURES_LEGACY_APKG: &[u8] = include_bytes!("../testdata/anki/pictures-legacy.apkg");
+    /// Notes with tags (the fourth collection in `make_fixtures.py`), in the
+    /// newer and the legacy format.
+    const TAGS_APKG: &[u8] = include_bytes!("../testdata/anki/tags.apkg");
+    const TAGS_LEGACY_APKG: &[u8] = include_bytes!("../testdata/anki/tags-legacy.apkg");
 
     /// A store folder of its own for each test that saves.
     fn test_store() -> AssetStore {
@@ -2747,6 +2838,7 @@ mod tests {
             let mut package = read_async(NEW_APKG).await.unwrap();
             // A card that fails a typed card's checks, in the last deck.
             package.decks[2].notes.push(AnkiNote {
+                tags: Vec::new(),
                 front: "x".repeat(2_001),
                 back: "y".to_string(),
                 reversible: false,
@@ -2773,6 +2865,7 @@ mod tests {
             // text and cards that would have been saved.
             package.decks[2].notes.pop();
             package.decks[2].notes.push(AnkiNote {
+                tags: Vec::new(),
                 front: "No".to_string(),
                 back: "deletion".to_string(),
                 reversible: false,
@@ -2802,6 +2895,7 @@ mod tests {
                 skipped: Skipped::default(),
                 media_removed: 0,
                 pictures_left_out: PicturesLeftOut::default(),
+                tags_left_out: 0,
                 extra_removed: 0,
                 reviewed: 0,
                 occlusion_approximated: 0,
@@ -2813,6 +2907,7 @@ mod tests {
             ));
 
             let note = AnkiNote {
+                tags: Vec::new(),
                 front: "q".to_string(),
                 back: "a".to_string(),
                 reversible: true,
@@ -3132,6 +3227,7 @@ mod tests {
             decks: vec![AnkiDeck {
                 anki_name: "Deck".to_string(),
                 notes: vec![AnkiNote {
+                    tags: Vec::new(),
                     front: "q".to_string(),
                     back: "a".to_string(),
                     reversible: false,
@@ -3148,6 +3244,7 @@ mod tests {
             skipped: Skipped::default(),
             media_removed: 0,
             pictures_left_out: PicturesLeftOut::default(),
+            tags_left_out: 0,
             extra_removed: 0,
             reviewed: 0,
             occlusion_approximated: 0,
@@ -3259,5 +3356,134 @@ mod tests {
         // Over the limit, or missing: nothing.
         assert_eq!(read_media_entry(&mut archive, "7", 10), None);
         assert_eq!(read_media_entry(&mut archive, "8", 1024), None);
+    }
+
+    #[test]
+    fn anki_tags_are_kept_as_synapse_takes_them() {
+        assert_eq!(anki_tags(""), (Vec::<String>::new(), 0));
+        assert_eq!(
+            anki_tags(" bio::cells  Exam\u{a0}exam BIO::Cells "),
+            (names(&["bio::cells", "Exam"]), 0)
+        );
+        let long = "x".repeat(tags::TAG_MAX_CHARS + 1);
+        assert_eq!(
+            anki_tags(&format!(" a {long} b,c d ")),
+            (names(&["a", "d"]), 2)
+        );
+        let many: Vec<String> = (1..=23).map(|n| format!("t{n}")).collect();
+        let (kept, left_out) = anki_tags(&many.join(" "));
+        assert_eq!(kept, many[..TAGS_MAX]);
+        assert_eq!(left_out, 3);
+    }
+
+    #[test]
+    fn tags_are_read_from_the_package() {
+        for bytes in [TAGS_APKG, TAGS_LEGACY_APKG] {
+            let package = read_bytes(bytes).unwrap();
+            assert_eq!(
+                note(&package, "Cell").1.tags,
+                names(&["bio::cells", "Exam"])
+            );
+            assert_eq!(note(&package, "chat").1.tags, names(&["french"]));
+            assert_eq!(
+                note(&package, "[...] divides cells").1.tags,
+                names(&["bio"])
+            );
+            let many: Vec<String> = (1..=20).map(|n| format!("t{n:02}")).collect();
+            assert_eq!(note(&package, "Many").1.tags, many);
+            assert!(note(&package, "Plain").1.tags.is_empty());
+            let occlusion = package.decks[0]
+                .notes
+                .iter()
+                .find(|note| note.occlusion.is_some())
+                .unwrap();
+            assert_eq!(occlusion.tags, names(&["anatomy"]));
+            // The 61-character tag, and the two past Many's twenty.
+            assert_eq!(package.tags_left_out, 3);
+        }
+    }
+
+    #[test]
+    fn every_card_of_a_note_gets_its_tags() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let store = test_store();
+            // A tag already in Synapse, written another way, is the same tag.
+            let mine = crate::authoring::create_deck(&pool, "Mine", None, at(NOW))
+                .await
+                .unwrap()
+                .id;
+            crate::authoring::create_flashcard_tagged(
+                &pool,
+                mine,
+                "q",
+                "a",
+                &Default::default(),
+                Some(&names(&["EXAM"])),
+                at(NOW),
+            )
+            .await
+            .unwrap();
+
+            let package = read_async(TAGS_APKG).await.unwrap();
+            let imported = import_package(&pool, &store, &package, true, at(NOW))
+                .await
+                .unwrap();
+            // Cell, chat and its reversed card, two cloze cards, Many,
+            // Plain, and a picture card.
+            assert_eq!(imported.cards, 8);
+            let detail = crate::authoring::deck_detail(&pool, imported.decks[0].id, at(NOW))
+                .await
+                .unwrap();
+            let tags = |front: &str| {
+                detail
+                    .cards
+                    .iter()
+                    .find(|card| card.front == front)
+                    .unwrap_or_else(|| panic!("no card {front:?}"))
+                    .tags
+                    .clone()
+            };
+            assert_eq!(tags("Cell"), names(&["bio::cells", "EXAM"]));
+            assert_eq!(tags("chat"), names(&["french"]));
+            assert_eq!(tags("cat"), names(&["french"]));
+            assert_eq!(tags("[...] divides cells"), names(&["bio"]));
+            assert_eq!(tags("Mitosis divides [...]"), names(&["bio"]));
+            assert_eq!(tags("Many").len(), TAGS_MAX);
+            assert!(tags("Plain").is_empty());
+            let picture = detail
+                .cards
+                .iter()
+                .find(|card| card.front.contains("[picture: box 1]"))
+                .unwrap();
+            assert_eq!(picture.tags, names(&["anatomy"]));
+            // Exam is the tag "EXAM" already was; each name has one row.
+            assert_eq!(
+                count(
+                    &pool,
+                    "SELECT COUNT(*) FROM tags WHERE name = 'Exam' COLLATE BINARY"
+                )
+                .await,
+                0
+            );
+            assert_eq!(
+                count(&pool, "SELECT COUNT(*) FROM tags").await,
+                1 + 3 + 20 + 1
+            );
+
+            // Importing again adds no tag rows, only links.
+            let links = count(&pool, "SELECT COUNT(*) FROM card_tags").await;
+            import_package(&pool, &store, &package, false, at(NOW))
+                .await
+                .unwrap();
+            assert_eq!(
+                count(&pool, "SELECT COUNT(*) FROM tags").await,
+                1 + 3 + 20 + 1
+            );
+            assert_eq!(
+                count(&pool, "SELECT COUNT(*) FROM card_tags").await,
+                links + links - 1 - 1
+            );
+        });
     }
 }

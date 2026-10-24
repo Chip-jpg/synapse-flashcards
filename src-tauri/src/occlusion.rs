@@ -36,8 +36,8 @@ use sqlx::{SqliteConnection, SqlitePool};
 
 use crate::assets::{self, Asset};
 use crate::authoring::{
-    active_normal_deck, changeable_card_deck, load_deck_detail, AuthoringError, DeckDetail,
-    InvalidInput, CARD_TEXT_MAX_CHARS,
+    active_normal_deck, changeable_card_deck, checked_tags, load_deck_detail, tag_text_cards,
+    AuthoringError, DeckDetail, InvalidInput, CARD_TEXT_MAX_CHARS,
 };
 use crate::cloze::{ClozeChanges, RestoreBlock};
 use crate::db::{to_db_time, DbError};
@@ -306,6 +306,21 @@ pub(crate) async fn insert_occlusion(
     occlusion: &Occlusion,
     now: &str,
 ) -> Result<usize, sqlx::Error> {
+    Ok(
+        insert_picture_cards(conn, deck_id, asset_id, occlusion, now)
+            .await?
+            .len(),
+    )
+}
+
+/// As [`insert_occlusion`], returning the new cards' ids.
+async fn insert_picture_cards(
+    conn: &mut SqliteConnection,
+    deck_id: i64,
+    asset_id: i64,
+    occlusion: &Occlusion,
+    now: &str,
+) -> Result<Vec<i64>, sqlx::Error> {
     let occlusion_id: i64 = sqlx::query_scalar(
         "INSERT INTO occlusions (asset_id, header, mode, boxes, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?5)
@@ -318,14 +333,15 @@ pub(crate) async fn insert_occlusion(
     .bind(now)
     .fetch_one(&mut *conn)
     .await?;
-    let numbers = occlusion.numbers();
-    for &number in &numbers {
-        insert_card(conn, deck_id, occlusion_id, occlusion, number, now).await?;
+    let mut card_ids = Vec::new();
+    for number in occlusion.numbers() {
+        card_ids.push(insert_card(conn, deck_id, occlusion_id, occlusion, number, now).await?);
     }
-    Ok(numbers.len())
+    Ok(card_ids)
 }
 
-/// A brand-new card for one number, started as a typed card is.
+/// A brand-new card for one number, started as a typed card is; returns its
+/// id.
 async fn insert_card(
     conn: &mut SqliteConnection,
     deck_id: i64,
@@ -333,11 +349,12 @@ async fn insert_card(
     occlusion: &Occlusion,
     number: u32,
     now: &str,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
         "INSERT INTO flashcards (deck_id, front, back, fsrs_state, due, reps, lapses,
                                  created_at, updated_at, occlusion_id, occlusion_number)
-         VALUES (?1, ?2, ?3, 'New', NULL, 0, 0, ?4, ?4, ?5, ?6)",
+         VALUES (?1, ?2, ?3, 'New', NULL, 0, 0, ?4, ?4, ?5, ?6)
+         RETURNING id",
     )
     .bind(deck_id)
     .bind(occlusion.front(number))
@@ -345,9 +362,8 @@ async fn insert_card(
     .bind(now)
     .bind(occlusion_id)
     .bind(number)
-    .execute(conn)
-    .await?;
-    Ok(())
+    .fetch_one(conn)
+    .await
 }
 
 /// Rewrites an active card's front and back from `occlusion`, if they
@@ -375,6 +391,7 @@ async fn rewrite_card(
 /// Adds an occlusion of a kept picture to a normal deck, with one new card
 /// per box number, and returns the deck. Refused, with nothing written, as
 /// adding a card refuses a deck, or if `asset_id` isn't a kept picture.
+#[cfg(test)]
 pub async fn create_occlusion(
     pool: &SqlitePool,
     deck_id: i64,
@@ -384,12 +401,39 @@ pub async fn create_occlusion(
     boxes: &[OcclusionBox],
     now: DateTime<Utc>,
 ) -> Result<DeckDetail, AuthoringError> {
+    create_occlusion_tagged(pool, deck_id, asset_id, header, mode, boxes, None, now).await
+}
+
+/// As [`create_occlusion`], giving every card the tags `tag_names` (`None`
+/// or an empty list gives none), checked before anything is written.
+#[allow(clippy::too_many_arguments)]
+pub async fn create_occlusion_tagged(
+    pool: &SqlitePool,
+    deck_id: i64,
+    asset_id: i64,
+    header: &str,
+    mode: Mode,
+    boxes: &[OcclusionBox],
+    tag_names: Option<&[String]>,
+    now: DateTime<Utc>,
+) -> Result<DeckDetail, AuthoringError> {
     let occlusion = validate_occlusion(header, mode, boxes)?;
+    let tag_names = checked_tags(tag_names)?;
+    let at = now;
     let now = to_db_time(now);
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     active_normal_deck(&mut tx, deck_id).await?;
     picture(&mut tx, asset_id).await?;
-    insert_occlusion(&mut tx, deck_id, asset_id, &occlusion, &now).await?;
+    let card_ids = insert_picture_cards(&mut tx, deck_id, asset_id, &occlusion, &now).await?;
+    tag_text_cards(
+        &mut tx,
+        tag_names.as_deref(),
+        None,
+        &card_ids,
+        &card_ids,
+        at,
+    )
+    .await?;
     let deck = load_deck_detail(&mut tx, deck_id, &now).await?;
     tx.commit().await?;
     Ok(deck)
@@ -469,6 +513,7 @@ fn summarize(changes: &[Change]) -> ClozeChanges {
 /// changed. All in one transaction; schedules, review history, ids and decks
 /// are never changed, only fronts and backs, and cards deleted or brought
 /// back exactly as deleting and restoring one would.
+#[cfg(test)]
 pub async fn update_occlusion(
     pool: &SqlitePool,
     card_id: i64,
@@ -477,7 +522,25 @@ pub async fn update_occlusion(
     boxes: &[OcclusionBox],
     now: DateTime<Utc>,
 ) -> Result<(ClozeChanges, DeckDetail), AuthoringError> {
+    update_occlusion_tagged(pool, card_id, header, mode, boxes, None, now).await
+}
+
+/// As [`update_occlusion`], also replacing the tags of every active card of
+/// the occlusion with `tag_names` when given. Given or not, a card the edit
+/// adds or brings back gets the occlusion's tags (those of `card_id`, when
+/// none are sent).
+pub async fn update_occlusion_tagged(
+    pool: &SqlitePool,
+    card_id: i64,
+    header: &str,
+    mode: Mode,
+    boxes: &[OcclusionBox],
+    tag_names: Option<&[String]>,
+    now: DateTime<Utc>,
+) -> Result<(ClozeChanges, DeckDetail), AuthoringError> {
     let occlusion = validate_occlusion(header, mode, boxes)?;
+    let tag_names = checked_tags(tag_names)?;
+    let at = now;
     let now = to_db_time(now);
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
 
@@ -521,10 +584,13 @@ pub async fn update_occlusion(
         });
     }
 
+    let mut active = Vec::new();
+    let mut came = Vec::new();
     for change in &changes {
         match *change {
             Change::Keep { card_id, number } => {
-                rewrite_card(&mut tx, card_id, &occlusion, number, &now).await?
+                rewrite_card(&mut tx, card_id, &occlusion, number, &now).await?;
+                active.push(card_id);
             }
             Change::Delete { card_id } => {
                 sqlx::query(
@@ -547,12 +613,26 @@ pub async fn update_occlusion(
                 .execute(&mut *tx)
                 .await?;
                 rewrite_card(&mut tx, card_id, &occlusion, number, &now).await?;
+                active.push(card_id);
+                came.push(card_id);
             }
             Change::Add { number } => {
-                insert_card(&mut tx, deck_id, occlusion_id, &occlusion, number, &now).await?
+                let new_card =
+                    insert_card(&mut tx, deck_id, occlusion_id, &occlusion, number, &now).await?;
+                active.push(new_card);
+                came.push(new_card);
             }
         }
     }
+    tag_text_cards(
+        &mut tx,
+        tag_names.as_deref(),
+        Some(card_id),
+        &active,
+        &came,
+        at,
+    )
+    .await?;
     sqlx::query(
         "UPDATE occlusions SET header = ?1, mode = ?2, boxes = ?3, updated_at = ?4 WHERE id = ?5",
     )
@@ -1310,5 +1390,72 @@ mod tests {
         renumber(&mut boxes);
         let numbers: Vec<u32> = boxes.iter().map(|shape| shape.number).collect();
         assert_eq!(numbers, [1, 2, 1]);
+    }
+
+    #[test]
+    fn a_picture_tags_all_its_cards_and_new_ones_get_its_tags() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let deck_id = deck(&pool, "Anatomy").await;
+            let asset_id = picture_in(&pool, "tagged-occlusion").await.id;
+            let bio = vec!["bio".to_string()];
+            let boxes = [rect(1, 0.1, 0.1, "Heart"), rect(2, 0.5, 0.5, "Lung")];
+            let deck = create_occlusion_tagged(
+                &pool,
+                deck_id,
+                asset_id,
+                "",
+                Mode::HideOne,
+                &boxes,
+                Some(&bio),
+                at(NOW),
+            )
+            .await
+            .unwrap();
+            let tags_of = |deck: &DeckDetail| {
+                let mut found: Vec<_> = deck
+                    .cards
+                    .iter()
+                    .filter_map(|card| Some((card.occlusion.as_ref()?.number, card.tags.clone())))
+                    .collect();
+                found.sort();
+                found
+            };
+            assert_eq!(tags_of(&deck), vec![(1, bio.clone()), (2, bio.clone())]);
+
+            // A new box's card gets the picture's tags when none are sent.
+            let one = card_of(&deck.cards, 1);
+            let boxes = [
+                boxes[0].clone(),
+                boxes[1].clone(),
+                rect(3, 0.7, 0.1, "Liver"),
+            ];
+            let (_, deck) =
+                update_occlusion_tagged(&pool, one, "", Mode::HideOne, &boxes, None, at(NOW))
+                    .await
+                    .unwrap();
+            assert_eq!(
+                tags_of(&deck),
+                vec![(1, bio.clone()), (2, bio.clone()), (3, bio)]
+            );
+
+            // Tags sent replace every card's.
+            let organs = vec!["organs".to_string()];
+            let (_, deck) = update_occlusion_tagged(
+                &pool,
+                one,
+                "",
+                Mode::HideOne,
+                &boxes,
+                Some(&organs),
+                at(NOW),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                tags_of(&deck),
+                vec![(1, organs.clone()), (2, organs.clone()), (3, organs)]
+            );
+        });
     }
 }

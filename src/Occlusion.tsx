@@ -31,6 +31,7 @@ import { usePictureReading } from "./pictureText";
 import { BUILT_IN } from "./ReadWith";
 import { Message } from "./ui";
 import { useUnsavedChanges } from "./unsaved";
+import { sameTags, TagField } from "./tagInput";
 
 /** The smallest box drawn with the mouse, as a fraction of the picture's side. */
 const MIN_DRAWN = 0.01;
@@ -320,6 +321,7 @@ export function OcclusionForm({
         <OcclusionEditor
           deck={deck}
           cardId={cardId}
+          initialTags={card?.tags ?? []}
           initial={loaded}
           onCancel={onCancel}
           onSaved={onSaved}
@@ -338,12 +340,15 @@ type Drag =
 function OcclusionEditor({
   deck,
   cardId,
+  initialTags,
   initial,
   onCancel,
   onSaved,
 }: {
   deck: Deck;
   cardId: number | null;
+  /** The tags of the card the form was opened on (none for a new picture). */
+  initialTags: string[];
   initial: Extract<Loaded, { status: "ready" }>;
   onCancel: () => void;
   onSaved: (deck: Deck, notice: string) => void;
@@ -369,6 +374,10 @@ function OcclusionEditor({
   // The boxes as they are now, for labels found after a wait.
   const latestBoxes = useRef(boxes);
   latestBoxes.current = boxes;
+  const [tags, setTags] = useState<string[]>(initialTags);
+  // An edit sends tags only when they changed, so the picture's cards tagged
+  // one by one keep their own.
+  const tagsChanged = !sameTags(tags, initialTags);
 
   const startState = useMemo(
     () =>
@@ -383,7 +392,7 @@ function OcclusionEditor({
   const plainBoxes = boxes.map(({ key: _key, ...shape }) => shape);
   useUnsavedChanges(
     JSON.stringify({ picture: picture?.id ?? null, header, mode, boxes: plainBoxes }) !==
-      startState,
+      startState || tagsChanged,
   );
 
   const numbers = [...new Set(boxes.map((shape) => shape.number))].sort((a, b) => a - b);
@@ -391,13 +400,26 @@ function OcclusionEditor({
   const { saving, submit, fieldError, formError, edited } = useFormSave(
     async (): Promise<{ deck: Deck; notice: string }> => {
       if (cardId !== null) {
-        const saved = await updateOcclusion(cardId, header, mode, plainBoxes);
+        const saved = await updateOcclusion(
+          cardId,
+          header,
+          mode,
+          plainBoxes,
+          tagsChanged ? tags : undefined,
+        );
         return { deck: saved.deck, notice: describeOcclusionChanges(saved.changes, true) };
       }
       if (!picture) {
         throw { kind: "invalid", message: "Choose a picture first.", field: "boxes" };
       }
-      const saved = await createOcclusion(deck.id, picture.id, header, mode, plainBoxes);
+      const saved = await createOcclusion(
+        deck.id,
+        picture.id,
+        header,
+        mode,
+        plainBoxes,
+        tags.length > 0 ? tags : undefined,
+      );
       const added = saved.cardCount - deck.cardCount;
       return {
         deck: saved,
@@ -408,7 +430,7 @@ function OcclusionEditor({
       };
     },
     (saved) => onSaved(saved.deck, saved.notice),
-    { header: "occlusion-header", boxes: "occlusion-boxes" },
+    { header: "occlusion-header", boxes: "occlusion-boxes", tags: "occlusion-tags" },
   );
 
   function changeBoxes(update: (previous: EditorBox[]) => EditorBox[]) {
@@ -895,6 +917,18 @@ function OcclusionEditor({
           </span>
         </label>
       </fieldset>
+
+      <TagField
+        id="occlusion-tags"
+        hint="Optional. Given to every card of this picture. One word each, such as exam or bio::cells; a space or comma starts the next."
+        tags={tags}
+        onChange={(next) => {
+          setTags(next);
+          edited("tags");
+        }}
+        error={fieldError("tags")}
+        disabled={saving}
+      />
 
       <FormActions
         saveLabel={editing ? "Save changes" : "Save cards"}

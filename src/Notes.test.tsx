@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { Deck, DeletedNote, NoteSummary } from "./api";
@@ -55,7 +55,7 @@ describe("deleting a note", () => {
     const notice = await screen.findByText(
       "Note deleted. It's kept in Deleted notes, where you can restore it.",
     );
-    expect(document.activeElement).toBe(notice);
+    await waitFor(() => expect(document.activeElement).toBe(notice));
     expect(notes.argsOf("delete_note")).toEqual([{ noteId: 5 }]);
     expect(screen.getByRole("button", { name: "Restore note" })).toBeTruthy();
   });
@@ -77,7 +77,7 @@ describe("restoring a note", () => {
     await user.click(await screen.findByRole("button", { name: "Restore note" }));
 
     const notice = await screen.findByText("Meiosis restored. It's back in your notes.");
-    expect(document.activeElement).toBe(notice);
+    await waitFor(() => expect(document.activeElement).toBe(notice));
     expect(screen.getAllByRole("button", { name: "Open note" })).toHaveLength(2);
     expect(screen.queryByRole("button", { name: "Restore note" })).toBeNull();
   });
@@ -116,7 +116,9 @@ describe("restoring a note", () => {
     const notice = await screen.findByText(
       "That note wasn't deleted after all. Here's your library as it is now.",
     );
-    expect(document.activeElement).toBe(notice);
+    // Focus moves once the reloaded library has rendered, which can be a
+    // moment after the notice appears on a slow runner.
+    await waitFor(() => expect(document.activeElement).toBe(notice));
     expect(notes.argsOf("get_deleted_notes")).toHaveLength(2);
     expect(screen.queryByRole("alert")).toBeNull();
   });
@@ -185,7 +187,7 @@ describe("reading a deleted note", () => {
     await user.click(await screen.findByRole("button", { name: "Restore note" }));
 
     const notice = await screen.findByText("Meiosis restored. It's back in your notes.");
-    expect(document.activeElement).toBe(notice);
+    await waitFor(() => expect(document.activeElement).toBe(notice));
     expect(notes.argsOf("restore_note")).toEqual([{ noteId: 6 }]);
     expect(screen.getAllByRole("button", { name: "Open note" })).toHaveLength(2);
     expect(screen.queryByRole("button", { name: "Read note" })).toBeNull();
@@ -220,7 +222,7 @@ describe("reading a deleted note", () => {
     const notice = await screen.findByText(
       "That note wasn't deleted after all. Here's your library as it is now.",
     );
-    expect(document.activeElement).toBe(notice);
+    await waitFor(() => expect(document.activeElement).toBe(notice));
     expect(screen.queryByRole("alert")).toBeNull();
   });
 

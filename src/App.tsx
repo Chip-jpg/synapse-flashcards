@@ -5,10 +5,11 @@ import { Backup } from "./Backup";
 import { Dashboard } from "./Dashboard";
 import { DeckDetail } from "./DeckDetail";
 import { NotesArea } from "./Notes";
-import { ReviewSession } from "./ReviewSession";
+import { ReviewSession, type ReviewedTag } from "./ReviewSession";
 import { NEW_SEARCH, SearchScreen, type SearchCriteria } from "./Search";
 import { Settings } from "./Settings";
 import { Shell, type Place } from "./Shell";
+import { TagsScreen } from "./Tags";
 import { SourcesArea, type SourceNoteDraft } from "./Sources";
 import { StatisticsScreen } from "./Statistics";
 import { DiscardDialog, UnsavedChangesProvider, useUnsavedTracker } from "./unsaved";
@@ -21,6 +22,7 @@ type View =
   | { screen: "decks"; notice: string | null; fromNotes?: boolean }
   | { screen: "deck"; deckId: number; justCreated: boolean; cardId?: number; search?: FromSearch }
   | { screen: "session"; sessionId: number; deckName: string }
+  | { screen: "tagReview"; tag: ReviewedTag }
   | { screen: "search"; criteria: SearchCriteria; returnTo: string | null }
   | {
       screen: "notes";
@@ -32,6 +34,7 @@ type View =
       draft?: SourceNoteDraft;
     }
   | { screen: "sources"; sourceId?: number; notice?: string | null }
+  | { screen: "tags" }
   | { screen: "stats" }
   | { screen: "archived" }
   | { screen: "backup" }
@@ -43,6 +46,7 @@ const DECKS: View = { screen: "decks", notice: null };
 const PLACE_VIEWS: Record<Place, View> = {
   desk: DECKS,
   search: { screen: "search", criteria: NEW_SEARCH, returnTo: null },
+  tags: { screen: "tags" },
   notes: { screen: "notes" },
   sources: { screen: "sources" },
   stats: { screen: "stats" },
@@ -61,9 +65,12 @@ function locate(view: View): { place: Place; atPlace: boolean; trail: string[] }
         ? { place: "search", atPlace: false, trail: ["Search", "Deck"] }
         : { place: "desk", atPlace: false, trail: ["Study Desk", "Deck"] };
     case "session":
+    case "tagReview":
       return { place: "desk", atPlace: false, trail: ["Study Desk", "Review"] };
     case "search":
       return { place: "search", atPlace: true, trail: ["Synapse", "Search"] };
+    case "tags":
+      return { place: "tags", atPlace: true, trail: ["Synapse", "Tags"] };
     case "notes":
       return view.search
         ? { place: "search", atPlace: false, trail: ["Search", "Note"] }
@@ -154,6 +161,7 @@ function App() {
             notice={view.notice}
             fromNotes={view.fromNotes ?? false}
             onStart={startReview}
+            onStartTag={(tag) => show({ screen: "tagReview", tag })}
             onOpen={(deckId) => show({ screen: "deck", deckId, justCreated: false })}
             onCreated={(deck) => show({ screen: "deck", deckId: deck.id, justCreated: true })}
             onOpenNotes={() => show({ screen: "notes" })}
@@ -185,6 +193,9 @@ function App() {
             deckName={view.deckName}
             onExit={() => show(DECKS)}
           />
+        )}
+        {view.screen === "tagReview" && (
+          <ReviewSession key={`tag:${view.tag.id}`} tag={view.tag} onExit={() => show(DECKS)} />
         )}
         {view.screen === "search" && (
           <SearchScreen
@@ -249,6 +260,14 @@ function App() {
               show({ screen: "notes", noteId, fromSource: sourceId })
             }
             onMakeNote={(draft) => show({ screen: "notes", draft })}
+          />
+        )}
+        {view.screen === "tags" && (
+          <TagsScreen
+            key={`${restores}:${visits}`}
+            onFind={(tag) =>
+              show({ screen: "search", criteria: { ...NEW_SEARCH, tag }, returnTo: null })
+            }
           />
         )}
         {view.screen === "stats" && <StatisticsScreen key={`${restores}:${visits}`} />}

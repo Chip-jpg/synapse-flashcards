@@ -920,9 +920,10 @@ mod tests {
             assert_eq!(pages_to_read(&pool, source.id).await.unwrap(), vec![3]);
 
             // A quote from the recognised text is found on its page.
-            let note = sources::create_note(&pool, source.id, "Scan", PAGE_TEXT, &[], at(NOW))
-                .await
-                .unwrap();
+            let note =
+                sources::create_note(&pool, source.id, "Scan", PAGE_TEXT, &[], None, at(NOW))
+                    .await
+                    .unwrap();
             let quote = "the Calvin cycle fixes carbon dioxide".to_string();
             let located = sources::locate_quotes(&pool, note.id, std::slice::from_ref(&quote))
                 .await

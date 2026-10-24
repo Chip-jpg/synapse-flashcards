@@ -37,12 +37,13 @@ use crate::assets::Asset;
 use crate::authoring::required_text;
 use crate::db::{to_db_time, DbError};
 use crate::pictures::{self, PictureError, PictureProblem, NOTE_PICTURES_MAX};
+use crate::tags::{self, TagProblem};
 
 pub const NOTE_TITLE_MAX_CHARS: usize = 200;
 /// About 15,000 words: room for a long lecture's notes.
 pub const NOTE_BODY_MAX_CHARS: usize = 100_000;
 
-/// One note in the library: `{ id, title, createdAt, updatedAt }`.
+/// One note in the library: `{ id, title, createdAt, updatedAt, tags }`.
 #[derive(Debug, PartialEq, serde::Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteSummary {
@@ -52,9 +53,12 @@ pub struct NoteSummary {
     pub created_at: String,
     /// When it was last saved (ISO-8601 UTC).
     pub updated_at: String,
+    /// Its tags, sorted by name (`tags.rs`).
+    #[sqlx(skip)]
+    pub tags: Vec<String>,
 }
 
-/// A whole note: `{ id, title, body, createdAt, updatedAt, pictures }`.
+/// A whole note: `{ id, title, body, createdAt, updatedAt, pictures, tags }`.
 #[derive(Debug, PartialEq, serde::Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct Note {
@@ -67,6 +71,9 @@ pub struct Note {
     /// The pictures shown under the text, in order (`pictures.rs`).
     #[sqlx(skip)]
     pub pictures: Vec<Asset>,
+    /// Its tags, sorted by name (`tags.rs`).
+    #[sqlx(skip)]
+    pub tags: Vec<String>,
 }
 
 /// A deleted note, as listed in the library's history:
@@ -86,7 +93,7 @@ pub struct DeletedNote {
 }
 
 /// A deleted note opened from the library's history to be read:
-/// `{ id, title, body, createdAt, updatedAt, deletedAt, pictures }`.
+/// `{ id, title, body, createdAt, updatedAt, deletedAt, pictures, tags }`.
 ///
 /// Reading only: nothing takes a deleted note's id to change it, so it must be
 /// restored before it can be edited or used to write a card.
@@ -104,6 +111,8 @@ pub struct DeletedNoteText {
     pub deleted_at: String,
     /// The pictures it showed under its text, in order (kept while deleted).
     pub pictures: Vec<Asset>,
+    /// Its tags, sorted by name (kept while deleted, `tags.rs`).
+    pub tags: Vec<String>,
 }
 
 /// What was wrong with a note the user wrote. Nothing was saved.
@@ -115,6 +124,8 @@ pub enum InvalidNote {
     BodyTooLong,
     /// The pictures: too many, one that isn't a kept picture, or one twice.
     Pictures(PictureProblem),
+    /// The tags: a bad name, or too many (`tags.rs`).
+    Tags(TagProblem),
 }
 
 /// Why a note operation didn't happen.
@@ -181,13 +192,27 @@ fn validate_note<'a>(title: &'a str, body: &'a str) -> Result<NoteText<'a>, Inva
 /// Every active (not deleted) note, most recently saved first (newest id
 /// first on a tie).
 pub async fn notes(pool: &SqlitePool) -> Result<Vec<NoteSummary>, sqlx::Error> {
-    sqlx::query_as::<_, NoteSummary>(
+    let notes = sqlx::query_as::<_, NoteSummary>(
         "SELECT id, title, created_at, updated_at FROM notes
          WHERE deleted_at IS NULL
          ORDER BY updated_at DESC, id DESC",
     )
     .fetch_all(pool)
-    .await
+    .await?;
+    with_tags(pool, notes).await
+}
+
+/// Fills in each listed note's tags.
+pub(crate) async fn with_tags(
+    pool: &SqlitePool,
+    mut notes: Vec<NoteSummary>,
+) -> Result<Vec<NoteSummary>, sqlx::Error> {
+    let mut conn = pool.acquire().await?;
+    let mut by_note = tags::all_note_tags(&mut conn).await?;
+    for note in &mut notes {
+        note.tags = by_note.remove(&note.id).unwrap_or_default();
+    }
+    Ok(notes)
 }
 
 /// Every deleted note, most recently deleted first. Read-only history.
@@ -232,7 +257,7 @@ pub async fn search_notes(pool: &SqlitePool, query: &str) -> Result<Vec<NoteSumm
     )
     .fetch_all(pool)
     .await?;
-    Ok(rows
+    let found = rows
         .into_iter()
         .filter(|row| {
             row.title.to_lowercase().contains(&needle) || row.body.to_lowercase().contains(&needle)
@@ -242,8 +267,10 @@ pub async fn search_notes(pool: &SqlitePool, query: &str) -> Result<Vec<NoteSumm
             title: row.title,
             created_at: row.created_at,
             updated_at: row.updated_at,
+            tags: Vec::new(),
         })
-        .collect())
+        .collect();
+    with_tags(pool, found).await
 }
 
 /// A note as stored, whether or not it has been deleted.
@@ -289,6 +316,7 @@ async fn load_active_note(conn: &mut SqliteConnection, note_id: i64) -> Result<N
         pictures: pictures::note_pictures(conn, note_id)
             .await
             .map_err(NoteError::Internal)?,
+        tags: tags::note_tags(conn, note_id).await?,
         id: row.id,
         title: row.title,
         body: row.body,
@@ -323,6 +351,7 @@ pub async fn deleted_note(pool: &SqlitePool, note_id: i64) -> Result<DeletedNote
         pictures: pictures::note_pictures(&mut conn, note_id)
             .await
             .map_err(NoteError::Internal)?,
+        tags: tags::note_tags(&mut conn, note_id).await?,
         id: row.id,
         title: row.title,
         body: row.body,
@@ -347,6 +376,7 @@ pub async fn create_note(
 
 /// Saves a new note showing the pictures `picture_ids`, in order, and returns
 /// it. The text and every picture are checked before anything is written.
+#[cfg(test)]
 pub async fn create_note_with_pictures(
     pool: &SqlitePool,
     title: &str,
@@ -354,10 +384,39 @@ pub async fn create_note_with_pictures(
     picture_ids: &[i64],
     now: DateTime<Utc>,
 ) -> Result<Note, NoteError> {
+    create_note_tagged(pool, title, body, picture_ids, None, now).await
+}
+
+/// As [`create_note_with_pictures`], also giving the note the tags
+/// `tag_names` (`tags.rs`; `None` or an empty list gives none). Everything is
+/// checked before anything is written.
+pub async fn create_note_tagged(
+    pool: &SqlitePool,
+    title: &str,
+    body: &str,
+    picture_ids: &[i64],
+    tag_names: Option<&[String]>,
+    now: DateTime<Utc>,
+) -> Result<Note, NoteError> {
+    let tag_names = checked_tags(tag_names)?;
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-    let note = insert_note(&mut tx, title, body, picture_ids, now).await?;
+    let mut note = insert_note(&mut tx, title, body, picture_ids, now).await?;
+    if let Some(tag_names) = tag_names {
+        tags::set_note_tags(&mut tx, note.id, &tag_names, now).await?;
+        note.tags = tags::note_tags(&mut tx, note.id).await?;
+    }
     tx.commit().await?;
     Ok(note)
+}
+
+/// Checks the tag names sent with a note, if any.
+pub(crate) fn checked_tags(
+    tag_names: Option<&[String]>,
+) -> Result<Option<Vec<String>>, InvalidNote> {
+    tag_names
+        .map(tags::checked_names)
+        .transpose()
+        .map_err(InvalidNote::Tags)
 }
 
 /// [`create_note_with_pictures`] on the caller's connection, so a note can be
@@ -406,6 +465,7 @@ pub async fn update_note(
 /// `picture_ids` is given (`None` keeps them), and returns it. Its id and
 /// creation time are kept; `updated_at` becomes `now`. A deleted note is
 /// refused and nothing is written.
+#[cfg(test)]
 pub async fn update_note_with_pictures(
     pool: &SqlitePool,
     note_id: i64,
@@ -414,7 +474,22 @@ pub async fn update_note_with_pictures(
     picture_ids: Option<&[i64]>,
     now: DateTime<Utc>,
 ) -> Result<Note, NoteError> {
+    update_note_tagged(pool, note_id, title, body, picture_ids, None, now).await
+}
+
+/// As [`update_note_with_pictures`], also replacing the note's tags when
+/// `tag_names` is given (`None` keeps them).
+pub async fn update_note_tagged(
+    pool: &SqlitePool,
+    note_id: i64,
+    title: &str,
+    body: &str,
+    picture_ids: Option<&[i64]>,
+    tag_names: Option<&[String]>,
+    now: DateTime<Utc>,
+) -> Result<Note, NoteError> {
     let text = validate_note(title, body)?;
+    let tag_names = checked_tags(tag_names)?;
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
 
     // Stops here, before writing anything, if the note is missing or deleted.
@@ -452,7 +527,32 @@ pub async fn update_note_with_pictures(
             .await
             .map_err(NoteError::Internal)?,
     };
+    if let Some(tag_names) = tag_names {
+        tags::set_note_tags(&mut tx, note_id, &tag_names, now).await?;
+    }
+    note.tags = tags::note_tags(&mut tx, note_id).await?;
 
+    tx.commit().await?;
+    Ok(note)
+}
+
+/// Replaces an active note's tags with `tag_names` and returns the note. Only
+/// its tags change: its text and `updated_at` stay as they were, so it keeps
+/// its place in the library. A deleted note is refused and nothing is
+/// written.
+pub async fn set_note_tags(
+    pool: &SqlitePool,
+    note_id: i64,
+    tag_names: &[String],
+    now: DateTime<Utc>,
+) -> Result<Note, NoteError> {
+    let tag_names = tags::checked_names(tag_names).map_err(InvalidNote::Tags)?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    if deletion_state(&mut tx, note_id).await?.is_some() {
+        return Err(NoteError::Deleted);
+    }
+    tags::set_note_tags(&mut tx, note_id, &tag_names, now).await?;
+    let note = load_active_note(&mut tx, note_id).await?;
     tx.commit().await?;
     Ok(note)
 }
@@ -647,6 +747,7 @@ mod tests {
                     created_at: "2026-09-16T12:00:00.000Z".to_string(),
                     updated_at: "2026-09-16T12:00:00.000Z".to_string(),
                     pictures: Vec::new(),
+                    tags: Vec::new(),
                 }
             );
             assert_eq!(super::note(&pool, note.id).await.unwrap(), note);
@@ -657,6 +758,7 @@ mod tests {
                     title: "Cell biology".to_string(),
                     created_at: note.created_at.clone(),
                     updated_at: note.updated_at.clone(),
+                    tags: Vec::new(),
                 }]
             );
         });
@@ -720,6 +822,7 @@ mod tests {
                     created_at: note.created_at,
                     updated_at: "2026-09-16T13:00:00.000Z".to_string(),
                     pictures: Vec::new(),
+                    tags: Vec::new(),
                 }
             );
             assert_eq!(super::note(&pool, note.id).await.unwrap(), edited);
@@ -1383,6 +1486,7 @@ mod tests {
                     updated_at: to_db_time(at(LATER)),
                     deleted_at: to_db_time(at(DELETED)),
                     pictures: Vec::new(),
+                    tags: Vec::new(),
                 }
             );
             // Reading wrote nothing, and the note is still out of the library.

@@ -3,13 +3,15 @@ import {
   deleteFlashcards,
   moveFlashcards,
   restoreFlashcards,
+  tagFlashcards,
   toCommandError,
   type DeckCard,
   type DeckDetail as Deck,
 } from "./api";
 import { loadDeckChoices, type DeckChoices } from "./deckChoices";
 import { SelectField } from "./forms";
-import { ArrowRightIcon, RestoreIcon, TrashIcon } from "./icons";
+import { ArrowRightIcon, RestoreIcon, TagIcon, TrashIcon } from "./icons";
+import { hasTag, TagField, tagsIn } from "./tagInput";
 
 /** "1 card", "3 cards". */
 export function cardCount(count: number): string {
@@ -30,6 +32,50 @@ export function matchingCards(cards: DeckCard[], query: string): DeckCard[] {
     (card) =>
       card.front.toLocaleLowerCase().includes(needle) ||
       card.back.toLocaleLowerCase().includes(needle),
+  );
+}
+
+/**
+ * The tags `cards` have, each once (ignoring capitals), sorted by name, with
+ * how many of the cards `taggedCards` shows for it (a tag below it, such as
+ * `bio::cells` for `bio`, counts).
+ */
+export function tagCounts(cards: DeckCard[]): { name: string; cards: number }[] {
+  return tagsIn(cards).map(({ name }) => ({ name, cards: taggedCards(cards, name).length }));
+}
+
+/** The cards with the tag `tag` or one below it, ignoring capitals; every card for "". */
+export function taggedCards(cards: DeckCard[], tag: string): DeckCard[] {
+  return tag === "" ? cards : cards.filter((card) => hasTag(card.tags, tag));
+}
+
+/**
+ * Showing only a deck's cards with one tag, beside *Search cards*. Like the
+ * search, it only narrows what is shown.
+ */
+export function CardTagFilter({
+  tags,
+  tag,
+  onChange,
+}: {
+  /** The deck's tags, from `tagCounts`. */
+  tags: { name: string; cards: number }[];
+  /** The tag shown, or "" for every card. */
+  tag: string;
+  onChange: (tag: string) => void;
+}) {
+  return (
+    <div className="card-tag-filter">
+      <SelectField
+        id="card-tag-filter"
+        label="Show cards tagged"
+        hint="Only this deck's cards with the tag you choose, or a tag below it (bio::cells for bio)."
+        value={tag}
+        placeholder="Any tag or none"
+        options={tags.map((t) => ({ value: t.name, label: `${t.name} (${cardCount(t.cards)})` }))}
+        onChange={onChange}
+      />
+    </div>
   );
 }
 
@@ -98,31 +144,37 @@ export function CardSearchField({
 }
 
 /** What the selection bar is doing: offering its actions, or asking about one. */
-type Step = { kind: "choose" } | { kind: "delete" } | { kind: "move" };
+type Step = { kind: "choose" } | { kind: "delete" } | { kind: "move" } | { kind: "tag" };
 
 /**
- * The actions for the cards selected in a deck: delete them, or move them to
- * another deck, each after a confirmation that names how many. Rust checks
- * that every selected card is still an active card of this deck, and changes
- * all of them or none.
+ * The actions for the cards selected in a deck: tag them (adding tags, or
+ * taking one off), delete them, or move them to another deck, each after a
+ * step that names how many. Rust checks that every selected card is still an
+ * active card of this deck, and changes all of them or none.
  */
 export function SelectionActions({
   deck,
   selected,
   hidden,
+  hiddenBy = "the search",
   onClear,
   onDeleted,
   onMoved,
+  onTagged,
   onStale,
 }: {
   deck: Deck;
   /** The selected cards' ids, in the deck's order. */
   selected: number[];
-  /** How many of them the search is hiding. */
+  /** How many of them the search (or tag filter) is hiding. */
   hidden: number;
+  /** What is hiding them, e.g. "the tag filter". */
+  hiddenBy?: string;
   onClear: () => void;
   onDeleted: (deck: Deck, deleted: number) => void;
   onMoved: (deck: Deck, moved: number, toDeckName: string) => void;
+  /** The selected cards' tags were changed: `changed` of them had a change. */
+  onTagged: (deck: Deck, changed: number) => void;
   /** Refused because this screen is out of date; `message` says what changed. */
   onStale: (message: string) => void;
 }) {
@@ -136,6 +188,10 @@ export function SelectionActions({
   const busyRef = useRef(false);
   const deleteRef = useRef<HTMLButtonElement>(null);
   const moveRef = useRef<HTMLButtonElement>(null);
+  const tagRef = useRef<HTMLButtonElement>(null);
+  const [addTags, setAddTags] = useState<string[]>([]);
+  const [removeTag, setRemoveTag] = useState("");
+  const [tagsError, setTagsError] = useState<string | undefined>(undefined);
   const questionRef = useRef<HTMLParagraphElement>(null);
   // The step a question was last opened for, so closing it returns focus to
   // the button that opened it.
@@ -152,8 +208,16 @@ export function SelectionActions({
       deleteRef.current?.focus();
     } else if (openedRef.current === "move") {
       moveRef.current?.focus();
+    } else if (openedRef.current === "tag") {
+      tagRef.current?.focus();
     }
   }, [step]);
+
+  // A refused tag is said under the field, which then takes focus (once the
+  // field is usable again).
+  useEffect(() => {
+    if (tagsError) document.getElementById("tag-selected-add")?.focus();
+  }, [tagsError]);
 
   // The decks to move to are loaded when Move is chosen, so the list is as
   // fresh as it can be. This deck is left out: the cards are already here.
@@ -182,6 +246,9 @@ export function SelectionActions({
     setStep({ kind: "choose" });
     setTarget("");
     setTargetError(undefined);
+    setAddTags([]);
+    setRemoveTag("");
+    setTagsError(undefined);
     setError(null);
   }
 
@@ -201,7 +268,12 @@ export function SelectionActions({
         onStale(failure.message);
         return;
       }
-      setError(failure.message);
+      if (failure.field === "tags") {
+        // A refused tag name: said under the field, which takes focus.
+        setTagsError(failure.message);
+      } else {
+        setError(failure.message);
+      }
     }
 
     busyRef.current = false;
@@ -230,13 +302,32 @@ export function SelectionActions({
     });
   }
 
+  function confirmTag() {
+    if (busyRef.current) return;
+    const add = addTags;
+    const remove = removeTag === "" ? [] : [removeTag];
+    if (add.length === 0 && remove.length === 0) {
+      setTagsError("Type a tag to add, or choose one to take off.");
+      return;
+    }
+    send(async () => {
+      const { changed, deck: updated } = await tagFlashcards(deck.id, selected, add, remove);
+      onTagged(updated, changed);
+    });
+  }
+
+  // The tags the selected cards have, which can be taken off them.
+  const selectedSet = new Set(selected);
+  const selectedTags = tagsIn(deck.cards.filter((card) => selectedSet.has(card.id)));
+
   // Selected cards stay selected while the search changes, so say when some
   // of what would be changed isn't on screen.
   let hiddenNote = "";
   if (hidden === count) {
-    hiddenNote = count === 1 ? " It's hidden by the search." : " They're all hidden by the search.";
+    hiddenNote =
+      count === 1 ? ` It's hidden by ${hiddenBy}.` : ` They're all hidden by ${hiddenBy}.`;
   } else if (hidden > 0) {
-    hiddenNote = ` ${hidden} of them ${hidden === 1 ? "is" : "are"} hidden by the search.`;
+    hiddenNote = ` ${hidden} of them ${hidden === 1 ? "is" : "are"} hidden by ${hiddenBy}.`;
   }
 
   return (
@@ -248,6 +339,15 @@ export function SelectionActions({
 
       {step.kind === "choose" && (
         <div className="deck-actions">
+          <button
+            ref={tagRef}
+            type="button"
+            className="button button-small"
+            onClick={() => setStep({ kind: "tag" })}
+          >
+            <TagIcon />
+            Tag selected
+          </button>
           <button
             ref={moveRef}
             type="button"
@@ -297,6 +397,64 @@ export function SelectionActions({
           </div>
           <p className="form-status" role="status">
             {busy ? "Deleting…" : ""}
+          </p>
+        </div>
+      )}
+
+      {step.kind === "tag" && (
+        <div className="confirm confirm-calm">
+          <p ref={questionRef} className="confirm-question" tabIndex={-1}>
+            {`Change the tags of ${count === 1 ? "this card" : `these ${count} cards`}?${hiddenNote} Tags you add join the ones ${count === 1 ? "it has" : "each has"}; nothing else about ${count === 1 ? "it" : "them"} changes.`}
+          </p>
+          <TagField
+            id="tag-selected-add"
+            label="Add tags"
+            hint="One word each, such as exam or bio::cells; a space or comma starts the next."
+            tags={addTags}
+            onChange={(next) => {
+              setAddTags(next);
+              setTagsError(undefined);
+            }}
+            error={tagsError}
+            disabled={busy}
+          />
+          {selectedTags.length > 0 && (
+            <SelectField
+              id="tag-selected-remove"
+              label="Take off a tag"
+              hint="Optional. Removed from every selected card that has it."
+              value={removeTag}
+              placeholder="Don't take one off"
+              options={selectedTags.map((t) => ({
+                value: t.name,
+                label: `${t.name} (${cardCount(t.count)})`,
+              }))}
+              onChange={(value) => {
+                setRemoveTag(value);
+                setTagsError(undefined);
+              }}
+            />
+          )}
+          <div className="deck-actions">
+            <button
+              type="button"
+              className="button button-primary button-small"
+              aria-disabled={busy}
+              onClick={confirmTag}
+            >
+              {`Save tags on ${cardCount(count)}`}
+            </button>
+            <button
+              type="button"
+              className="button button-small"
+              aria-disabled={busy}
+              onClick={back}
+            >
+              Cancel
+            </button>
+          </div>
+          <p className="form-status" role="status">
+            {busy ? "Saving tags…" : ""}
           </p>
         </div>
       )}

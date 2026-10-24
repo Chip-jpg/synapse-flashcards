@@ -56,6 +56,8 @@ export type DeckCard = {
   pictures?: CardPictures;
   /** For an image occlusion card, its picture's boxes; `null` (or absent) otherwise. */
   occlusion?: CardOcclusion | null;
+  /** Its tags, sorted by name ignoring case (absent from older test data: none). */
+  tags?: string[];
 };
 
 /**
@@ -172,6 +174,8 @@ export type DeletedCard = {
   cloze?: DeletedCloze | null;
   /** For an image occlusion card (its box number); `null` (or absent) otherwise. */
   occlusion?: DeletedCloze | null;
+  /** The tags it had when deleted, kept for when it comes back (absent: none). */
+  tags?: string[];
 };
 
 /** Mirrors `Flashcard` in `src-tauri/src/study.rs`. */
@@ -216,6 +220,8 @@ export type SessionCard =
       pictures?: CardPictures;
       /** An image occlusion card's picture and boxes; `null` (or absent) otherwise. */
       occlusion?: SessionOcclusion | null;
+      /** On a review of a tag, the name of the card's deck; absent in a deck's session. */
+      deck?: string;
     }
   | { status: "completed"; cardsReviewed: number };
 
@@ -247,6 +253,8 @@ export type NoteSummary = {
   createdAt: string;
   /** When it was last saved (ISO-8601 UTC). */
   updatedAt: string;
+  /** Its tags, sorted by name ignoring case (absent from older test data: none). */
+  tags?: string[];
 };
 
 /**
@@ -272,6 +280,8 @@ export type DeletedNoteText = DeletedNote & {
   body: string;
   /** The pictures it showed under its text, in order. */
   pictures: Asset[];
+  /** The tags it had, kept while it's deleted (absent from older test data: none). */
+  tags?: string[];
 };
 
 /** Mirrors `Note` in `src-tauri/src/notes.rs`. `body` is plain text with its line breaks. */
@@ -283,6 +293,8 @@ export type Note = {
   updatedAt: string;
   /** The pictures shown under the text, in order (absent from older test data: none). */
   pictures?: Asset[];
+  /** Its tags, sorted by name ignoring case (absent from older test data: none). */
+  tags?: string[];
 };
 
 /**
@@ -303,7 +315,8 @@ export type Field =
   | "frontPictures"
   | "backPictures"
   | "header"
-  | "boxes";
+  | "boxes"
+  | "tags";
 
 /** Mirrors `CommandError` in `src-tauri/src/commands.rs`. */
 export type CommandError = {
@@ -421,6 +434,32 @@ export function reviewCard(sessionId: number, card: Flashcard, rating: Rating): 
   });
 }
 
+/** Mirrors `TagDue` in `src-tauri/src/study.rs`: a tag with its due cards across decks. */
+export type TagDue = { id: number; name: string; dueCount: number; decks: number };
+
+/** Every tag on an active card of an active deck, with how many of its cards are due. */
+export function getTagsDue(): Promise<TagDue[]> {
+  return invoke<TagDue[]>("get_tags_due");
+}
+
+/**
+ * The next card due with a tag, from any active deck. A tag review stores no
+ * session, so the screen sends how many cards it has rated (`reviewed`).
+ */
+export function getTagCard(tagId: number, reviewed: number): Promise<SessionCard> {
+  return invoke<SessionCard>("get_tag_card", { tagId, reviewed });
+}
+
+/** Saves a rating for `card` in a review of a tag. Rejects with a `CommandError`. */
+export function reviewTagCard(tagId: number, card: Flashcard, rating: Rating): Promise<void> {
+  return invoke<void>("review_tag_card", {
+    tagId,
+    cardId: card.id,
+    expectedReps: card.reps,
+    rating,
+  });
+}
+
 /** Creates a normal deck. Rust trims and validates both fields; a blank description means none. */
 export function createDeck(name: string, description: string): Promise<DeckDetail> {
   return invoke<DeckDetail>("create_deck", { name, description });
@@ -436,9 +475,10 @@ export function createFlashcard(
   deckId: number,
   front: string,
   back: string,
-  pictures?: CardPictureIds
+  pictures?: CardPictureIds,
+  tags?: string[]
 ): Promise<DeckDetail> {
-  return invoke<DeckDetail>("create_flashcard", { deckId, front, back, pictures });
+  return invoke<DeckDetail>("create_flashcard", { deckId, front, back, pictures, tags });
 }
 
 /**
@@ -455,8 +495,8 @@ export function createFlashcards(deckId: number, cards: CardText[]): Promise<Dec
  * distinct `{{cN::…}}` number. Resolves with the updated deck. A refused text
  * rejects with kind "invalid" and field "text".
  */
-export function createCloze(deckId: number, text: string): Promise<DeckDetail> {
-  return invoke<DeckDetail>("create_cloze", { deckId, text });
+export function createCloze(deckId: number, text: string, tags?: string[]): Promise<DeckDetail> {
+  return invoke<DeckDetail>("create_cloze", { deckId, text, tags });
 }
 
 /** Mirrors `ClozeSaved` in `src-tauri/src/commands.rs`. */
@@ -466,9 +506,11 @@ export type ClozeSaved = { changes: ClozeChanges; deck: DeckDetail };
  * Replaces the text of a cloze card's cloze. Numbers still in it keep their
  * cards and schedules; a number that left it has its card deleted; a new
  * number gets a card (its deleted one back, if it had one in this deck).
+ * `tags`, when given, replaces every active card's tags; either way a card
+ * the edit adds or brings back gets the text's tags.
  */
-export function updateCloze(cardId: number, text: string): Promise<ClozeSaved> {
-  return invoke<ClozeSaved>("update_cloze", { cardId, text });
+export function updateCloze(cardId: number, text: string, tags?: string[]): Promise<ClozeSaved> {
+  return invoke<ClozeSaved>("update_cloze", { cardId, text, tags });
 }
 
 /**
@@ -492,8 +534,9 @@ export function createOcclusion(
   header: string,
   mode: OcclusionMode,
   boxes: OcclusionBox[],
+  tags?: string[],
 ): Promise<DeckDetail> {
-  return invoke<DeckDetail>("create_occlusion", { deckId, assetId, header, mode, boxes });
+  return invoke<DeckDetail>("create_occlusion", { deckId, assetId, header, mode, boxes, tags });
 }
 
 /** The picture and boxes an image occlusion card was made from, for its edit form. */
@@ -512,8 +555,9 @@ export function updateOcclusion(
   header: string,
   mode: OcclusionMode,
   boxes: OcclusionBox[],
+  tags?: string[],
 ): Promise<ClozeSaved> {
-  return invoke<ClozeSaved>("update_occlusion", { cardId, header, mode, boxes });
+  return invoke<ClozeSaved>("update_occlusion", { cardId, header, mode, boxes, tags });
 }
 
 /** Replaces a card's text, keeping its schedule and history; resolves with its deck. */
@@ -521,9 +565,10 @@ export function updateFlashcard(
   cardId: number,
   front: string,
   back: string,
-  pictures?: CardPictureIds
+  pictures?: CardPictureIds,
+  tags?: string[]
 ): Promise<DeckDetail> {
-  return invoke<DeckDetail>("update_flashcard", { cardId, front, back, pictures });
+  return invoke<DeckDetail>("update_flashcard", { cardId, front, back, pictures, tags });
 }
 
 /**
@@ -718,6 +763,8 @@ export type CardsFileRow = {
    * many cards it makes. `null` (or absent) for a front/back row.
    */
   clozeCards?: number | null;
+  /** The row's tags, checked; empty (or absent) without a tags column. */
+  tags?: string[];
 };
 
 /**
@@ -732,7 +779,9 @@ export type CardsFile =
       delimiter: "comma" | "semicolon" | "tab";
       header: boolean;
       rows: CardsFileRow[];
-      /** Rows with something in a third or later column, which is ignored. */
+      /** The header names a third column "Tags", which is read as tags (absent: no). */
+      tagsColumn?: boolean;
+      /** Rows with something in a column that isn't read, which is ignored. */
       rowsWithExtraColumns: number;
     }
   | { status: "cancelled" };
@@ -767,14 +816,15 @@ export function readCardsCsv(deckId: number): Promise<CardsFile> {
  */
 export function importCardsCsv(
   deckId: number,
-  cards: CardText[],
+  cards: (CardText & { tags?: string[] })[],
   skipDuplicates: boolean,
 ): Promise<CardsImported> {
   return invoke<CardsImported>("import_cards_csv", { deckId, cards, skipDuplicates });
 }
 
 /**
- * Saves an active deck's cards (front and back only) as a CSV file. Rust
+ * Saves an active deck's cards (front, back, and a tags column when any card
+ * has tags) as a CSV file. Rust
  * opens the OS "save as" dialog; closing it resolves with
  * `{ status: "cancelled" }` and writes nothing.
  */
@@ -851,6 +901,10 @@ export type AnkiFile =
       cardPictures: number;
       /** Pictures of front/back cards left out, by why. */
       picturesLeftOut: AnkiPicturesLeftOut;
+      /** How many different tags the cards get from their notes (absent: none). */
+      tags?: number;
+      /** Tags left out: over 60 characters, with a comma, or past a card's 20 (absent: none). */
+      tagsLeftOut?: number;
     }
   | { status: "cancelled" };
 
@@ -908,7 +962,8 @@ export type SnippetPiece = { text: string; hit: boolean };
 
 /**
  * One search result. Text comes as snippets: a long side or body is cut
- * around its matches, with "…" where text was left out.
+ * around its matches, with "…" where text was left out. `tags` are its tags,
+ * sorted by name ignoring case (absent from older test data: none).
  */
 export type SearchHit =
   | {
@@ -918,8 +973,15 @@ export type SearchHit =
       deckName: string;
       front: SnippetPiece[];
       back: SnippetPiece[];
+      tags?: string[];
     }
-  | { kind: "note"; noteId: number; title: SnippetPiece[]; body: SnippetPiece[] };
+  | {
+      kind: "note";
+      noteId: number;
+      title: SnippetPiece[];
+      body: SnippetPiece[];
+      tags?: string[];
+    };
 
 /** The best results first, at most 50; `more` says whether others matched too. */
 export type SearchResults = { results: SearchHit[]; more: boolean };
@@ -929,14 +991,17 @@ export type SearchResults = { results: SearchHit[]; more: boolean };
  * note at once. Each word matches the start of a word, ignoring capitals and
  * accents; every word must match. `deckId` limits cards to one active deck,
  * with scope "cards" only; refused as stale if that deck was archived since.
+ * `tag`, or a word typed as `#name`, keeps only what has that tag (or one
+ * below it, `bio::cells` for `bio`); a tag with no words lists what has it.
  * Reads only.
  */
 export function searchEverything(
   query: string,
   scope: SearchScope,
   deckId: number | null,
+  tag: string | null = null,
 ): Promise<SearchResults> {
-  return invoke<SearchResults>("search_everything", { query, scope, deckId });
+  return invoke<SearchResults>("search_everything", { query, scope, deckId, tag });
 }
 
 /** Every deleted note, most recently deleted first. Read-only history. */
@@ -961,8 +1026,13 @@ export function getNote(noteId: number): Promise<Note> {
 }
 
 /** Saves a new note. Rust trims and validates both fields; errors name the field to fix. */
-export function createNote(title: string, body: string, pictures?: number[]): Promise<Note> {
-  return invoke<Note>("create_note", { title, body, pictures });
+export function createNote(
+  title: string,
+  body: string,
+  pictures?: number[],
+  tags?: string[]
+): Promise<Note> {
+  return invoke<Note>("create_note", { title, body, pictures, tags });
 }
 
 /**
@@ -973,9 +1043,59 @@ export function updateNote(
   noteId: number,
   title: string,
   body: string,
-  pictures?: number[]
+  pictures?: number[],
+  tags?: string[]
 ): Promise<Note> {
-  return invoke<Note>("update_note", { noteId, title, body, pictures });
+  return invoke<Note>("update_note", { noteId, title, body, pictures, tags });
+}
+
+/**
+ * Mirrors `TagSummary` in `src-tauri/src/tags.rs`: a tag some active card (in
+ * a deck that isn't archived) or active note has, with how many of each.
+ */
+export type TagSummary = { id: number; name: string; cards: number; notes: number };
+
+/** Every tag in use, sorted by name ignoring case. */
+export function getTags(): Promise<TagSummary[]> {
+  return invoke<TagSummary[]>("get_tags");
+}
+
+/**
+ * Replaces one card's tags (any kind of card); its text and schedule stay.
+ * Resolves with its deck. A refused name rejects with field "tags"; a deleted
+ * card, or one in an archived deck, with kind "stale".
+ */
+export function setCardTags(cardId: number, tags: string[]): Promise<DeckDetail> {
+  return invoke<DeckDetail>("set_card_tags", { cardId, tags });
+}
+
+/**
+ * Adds `add` to, and takes `remove` off, several cards of one deck, keeping
+ * their other tags. `changed` counts the cards whose tags changed. Rejects with
+ * kind "stale", writing nothing, if any card is no longer an active card of
+ * the deck.
+ */
+export function tagFlashcards(
+  deckId: number,
+  cardIds: number[],
+  add: string[],
+  remove: string[]
+): Promise<ChangedCards> {
+  return invoke<ChangedCards>("tag_flashcards", { deckId, cardIds, add, remove });
+}
+
+/** Replaces a note's tags; its text and `updatedAt` stay. Resolves with the note. */
+export function setNoteTags(noteId: number, tags: string[]): Promise<Note> {
+  return invoke<Note>("set_note_tags", { noteId, tags });
+}
+
+/**
+ * Renames a tag everywhere it is used; resolves with the tags in use. Another
+ * tag with that name (ignoring case) rejects with field "tags": tags are never
+ * merged.
+ */
+export function renameTag(tagId: number, name: string): Promise<TagSummary[]> {
+  return invoke<TagSummary[]>("rename_tag", { tagId, name });
 }
 
 /**
@@ -1466,9 +1586,10 @@ export function createNoteFromSource(
   sourceId: number,
   title: string,
   body: string,
-  pictures?: number[]
+  pictures?: number[],
+  tags?: string[]
 ): Promise<Note> {
-  return invoke<Note>("create_note_from_source", { sourceId, title, body, pictures });
+  return invoke<Note>("create_note_from_source", { sourceId, title, body, pictures, tags });
 }
 
 /** The active notes written from an active source, most recently edited first. */

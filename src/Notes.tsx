@@ -57,6 +57,7 @@ import { formatDateTime, Message, useFocusOnMount } from "./ui";
 import { useUnsavedChanges } from "./unsaved";
 import { appendText, readBy, usePictureReading } from "./pictureText";
 import { PictureField, PictureGallery, samePictures, usePictureAdder } from "./pictures";
+import { hasTag, sameTags, TagChips, TagField, tagsIn } from "./tagInput";
 
 /** What takes focus when the library appears. */
 type LibraryFocus =
@@ -398,9 +399,13 @@ function NoteList({
   const photoReading = usePictureReading();
   const search = useNoteSearch();
   const searching = search.query.trim() !== "";
+  // A filter on what's shown, not a form: nothing is saved.
+  const [tag, setTag] = useState<string | null>(null);
+  const noteTags = useMemo(() => tagsIn(notes), [notes]);
   // While a new answer is on its way, the last one stays up, so the list
   // doesn't flash empty between keystrokes.
-  const shown = searching ? (search.found?.notes ?? notes) : notes;
+  const matching = searching ? (search.found?.notes ?? notes) : notes;
+  const shown = tag === null ? matching : matching.filter((note) => hasTag(note.tags, tag));
 
   /**
    * Chooses a file, keeps it as a source and reads it; its text opens as a
@@ -543,6 +548,14 @@ function NoteList({
       )}
 
       {notes.length > 0 && <NoteSearchField search={search} />}
+      {noteTags.length > 0 && (
+        <NoteTagFilter
+          tags={noteTags}
+          tag={tag}
+          shown={shown.length}
+          onChange={setTag}
+        />
+      )}
 
       {notes.length === 0 ? (
         <p className="empty" role="status">
@@ -552,9 +565,12 @@ function NoteList({
         </p>
       ) : searching && search.found?.query === search.query.trim() && shown.length === 0 ? (
         <p className="empty">
-          No notes match “{search.found.query}”. Try other words, or clear the search to see every
-          note.
+          {tag === null
+            ? `No notes match “${search.found.query}”. Try other words, or clear the search to see every note.`
+            : `No notes tagged ${tag} match “${search.found.query}”. Try other words, or show every tag.`}
         </p>
+      ) : !searching && shown.length === 0 ? (
+        <p className="empty">No notes are tagged {tag} now. Choose another tag, or every tag.</p>
       ) : (
         <ul className="card-list">
           {shown.map((note) => (
@@ -579,6 +595,48 @@ function NoteList({
         />
       )}
     </section>
+  );
+}
+
+/**
+ * Narrows the library to the notes with one tag (or a tag below it, as
+ * `bio::cells` is below `bio`). Done here: the library already has every
+ * note's tags. Combines with *Search notes*.
+ */
+function NoteTagFilter({
+  tags,
+  tag,
+  shown,
+  onChange,
+}: {
+  tags: { name: string; count: number }[];
+  tag: string | null;
+  /** How many notes are listed now. */
+  shown: number;
+  onChange: (tag: string | null) => void;
+}) {
+  return (
+    <div className="field note-tag-filter">
+      <label htmlFor="note-tag-filter" className="field-label">
+        Tag
+      </label>
+      <select
+        id="note-tag-filter"
+        className="field-input"
+        value={tag ?? ""}
+        onChange={(event) => onChange(event.target.value === "" ? null : event.target.value)}
+      >
+        <option value="">Every tag</option>
+        {tags.map((entry) => (
+          <option key={entry.name} value={entry.name}>
+            {`${entry.name} (${entry.count})`}
+          </option>
+        ))}
+      </select>
+      <p className="form-status" role="status">
+        {tag === null ? "" : `${counted(shown, "note")} shown.`}
+      </p>
+    </div>
   );
 }
 
@@ -888,6 +946,7 @@ function NoteItem({
               ? `Created ${formatDateTime(note.createdAt)}`
               : `Edited ${formatDateTime(note.updatedAt)}`}
           </p>
+          <TagChips tags={note.tags} />
         </div>
       </div>
       <button
@@ -1203,6 +1262,7 @@ function NoteView({
             {`Created ${formatDateTime(note.createdAt)}`}
             {edited && ` · Edited ${formatDateTime(note.updatedAt)}`}
           </p>
+          <TagChips tags={note.tags} />
           <NoteSourceLine noteId={note.id} onOpenSource={onOpenSource} />
         </div>
 
@@ -1449,6 +1509,7 @@ function DeletedNoteView({
             {`Deleted ${formatDateTime(note.deletedAt)} · created ${formatDateTime(note.createdAt)}`}
             {edited && ` · last edited ${formatDateTime(note.updatedAt)}`}
           </p>
+          <TagChips tags={note.tags} />
         </div>
 
         <p id="deleted-note-hint" className="field-hint">
@@ -1642,24 +1703,30 @@ function NoteForm({
   );
   const savedPictures = note?.pictures ?? [];
   const [pictures, setPictures] = useState<Asset[]>(photo ? [photo.picture] : savedPictures);
+  const savedTags = note?.tags ?? [];
+  const [tags, setTags] = useState<string[]>(savedTags);
   // Compared with what's saved: imported text, or a photo and its text, isn't
   // saved anywhere yet, so it counts as unsaved from the start.
   useUnsavedChanges(
     title !== (note?.title ?? "") ||
       body !== (note?.body ?? "") ||
-      !samePictures(pictures, savedPictures)
+      !samePictures(pictures, savedPictures) ||
+      !sameTags(tags, savedTags)
   );
   const { saving, submit, fieldError, formError, edited } = useFormSave(
     () => {
       const ids = pictures.map((picture) => picture.id);
+      // Tags are sent only when there are some to save: left out, an edit
+      // keeps the note's tags and a new note has none.
+      const newTags = tags.length > 0 ? tags : undefined;
       return note
-        ? updateNote(note.id, title, body, ids)
+        ? updateNote(note.id, title, body, ids, sameTags(tags, savedTags) ? undefined : tags)
         : imported
-          ? createNoteFromSource(imported.sourceId, title, body, ids)
-          : createNote(title, body, ids);
+          ? createNoteFromSource(imported.sourceId, title, body, ids, newTags)
+          : createNote(title, body, ids, newTags);
     },
     onSaved,
-    { title: "note-title", body: "note-body", pictures: "note-pictures" }
+    { title: "note-title", body: "note-body", pictures: "note-pictures", tags: "note-tags" }
   );
   const changePictures = (next: Asset[]) => {
     setPictures(next);
@@ -1735,6 +1802,17 @@ function NoteForm({
             edited("body");
           },
         }}
+      />
+      <TagField
+        id="note-tags"
+        hint="Optional. Words to find the note by, such as bio or exam-june: a space or comma ends each one. Up to 20, each up to 60 characters; :: makes one tag sit under another, as in bio::cells."
+        tags={tags}
+        onChange={(next) => {
+          setTags(next);
+          edited("tags");
+        }}
+        error={fieldError("tags")}
+        disabled={saving}
       />
 
       <FormActions

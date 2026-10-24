@@ -78,6 +78,7 @@ describe("the Search screen", () => {
       query: "cel",
       scope: "all",
       deckId: null,
+      tag: null,
     });
     const results = within(screen.getByRole("list", { name: "Results" })).getAllByRole("listitem");
     expect(results).toHaveLength(2);
@@ -126,6 +127,7 @@ describe("the Search screen", () => {
         query: "cell",
         scope: "cards",
         deckId: 2,
+        tag: null,
       }),
     );
 
@@ -137,6 +139,7 @@ describe("the Search screen", () => {
         query: "cell",
         scope: "notes",
         deckId: null,
+        tag: null,
       }),
     );
   });
@@ -197,6 +200,7 @@ describe("the Search screen", () => {
       query: "cell",
       scope: "all",
       deckId: null,
+      tag: null,
     });
   });
 

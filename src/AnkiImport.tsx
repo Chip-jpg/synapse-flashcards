@@ -279,6 +279,18 @@ function AnkiPreview({
         </p>
       )}
       {picturesSkipped && <p className="field-hint">{picturesSkipped}</p>}
+      {(file.tags ?? 0) > 0 && (
+        <p className="field-hint">
+          {`The cards keep their notes' tags: ${count(file.tags ?? 0, "tag", "tags")} in all.`}
+        </p>
+      )}
+      {(file.tagsLeftOut ?? 0) > 0 && (
+        <p className="field-hint">
+          {file.tagsLeftOut === 1
+            ? "1 tag is left out: it's over 60 characters, has a comma, or is past a card's 20 tags."
+            : `${count(file.tagsLeftOut ?? 0, "tag", "tags")} are left out: they're over 60 characters, have a comma, or are past a card's 20 tags.`}
+        </p>
+      )}
       {file.mediaRemoved > 0 && (
         <p className="field-hint">
           {file.mediaRemoved === 1

@@ -1,7 +1,9 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import {
   getSessionCard,
+  getTagCard,
   reviewCard,
+  reviewTagCard,
   toCommandError,
   type CardPictures,
   type ClozePart,
@@ -27,8 +29,12 @@ type SessionState =
       cloze?: ClozePart[] | null;
       pictures?: CardPictures;
       occlusion?: SessionOcclusion | null;
+      deck?: string;
     }
   | { status: "completed"; cardsReviewed: number };
+
+/** A tag reviewed across decks: its id and name. */
+export type ReviewedTag = { id: number; name: string };
 
 /**
  * The four answer buttons, with the number key that presses each one and the
@@ -41,10 +47,18 @@ const RATINGS: { value: Rating; label: string; key: string; tone: string }[] = [
   { value: 4, label: "Easy", key: "4", tone: "rating-easy" },
 ];
 
-/** Fetches the session's next card and describes the outcome; never rejects. */
-async function loadCard(sessionId: number): Promise<SessionState> {
+/**
+ * Fetches the next card, of the deck's session or of the tag (which stores no
+ * session, so it is told how many cards were rated), and describes the
+ * outcome; never rejects.
+ */
+async function loadCard(
+  sessionId: number | undefined,
+  tag: ReviewedTag | undefined,
+  reviewed: number,
+): Promise<SessionState> {
   try {
-    return await getSessionCard(sessionId);
+    return tag ? await getTagCard(tag.id, reviewed) : await getSessionCard(sessionId ?? 0);
   } catch (err) {
     return { status: "error", message: toCommandError(err).message };
   }
@@ -65,32 +79,45 @@ function isButton(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && target.tagName === "BUTTON";
 }
 
+/**
+ * Reviewing: a deck's session (`sessionId`, `deckName`), or the due cards
+ * with one tag from every deck (`tag`), one card at a time.
+ */
 export function ReviewSession({
   sessionId,
   deckName,
+  tag,
   onExit,
-}: {
-  sessionId: number;
-  deckName: string;
+}: (
+  | { sessionId: number; deckName: string; tag?: undefined }
+  | { tag: ReviewedTag; sessionId?: undefined; deckName?: undefined }
+) & {
   onExit: () => void;
 }) {
   const [state, setState] = useState<SessionState>({ status: "loading" });
   // Bumping this re-runs the load effect (Retry, or after a review).
   const [attempt, setAttempt] = useState(0);
+  // A tag review's own count of ratings, for its progress (a deck's session
+  // keeps that count in Rust).
+  const reviewed = useRef(0);
 
   useEffect(() => {
     let current = true;
-    loadCard(sessionId).then((next) => {
+    loadCard(sessionId, tag, reviewed.current).then((next) => {
       if (current) setState(next);
     });
     return () => {
       current = false;
     };
-  }, [sessionId, attempt]);
+  }, [sessionId, tag?.id, attempt]);
 
   function reload() {
     setState({ status: "loading" });
     setAttempt((n) => n + 1);
+  }
+
+  function submit(card: Flashcard, rating: Rating): Promise<void> {
+    return tag ? reviewTagCard(tag.id, card, rating) : reviewCard(sessionId, card, rating);
   }
 
   // Everything in a session follows a button press, so each new state takes
@@ -98,7 +125,15 @@ export function ReviewSession({
   return (
     <section className="session" aria-labelledby="session-heading">
       <h2 id="session-heading" className="session-title">
-        <span className="session-kicker">Reviewing</span> {deckName}
+        {tag ? (
+          <>
+            <span className="session-kicker">Reviewing tag</span> {tag.name}
+          </>
+        ) : (
+          <>
+            <span className="session-kicker">Reviewing</span> {deckName}
+          </>
+        )}
       </h2>
 
       {state.status === "loading" && (
@@ -123,16 +158,20 @@ export function ReviewSession({
       {state.status === "due" && (
         <>
           <Progress progress={state.progress} />
+          {state.deck !== undefined && <p className="session-deck">{`From ${state.deck}`}</p>}
           <Card
             key={`${state.card.id}:${state.card.reps}`}
-            sessionId={sessionId}
+            submit={submit}
             card={state.card}
             againStreak={state.againStreak ?? 0}
             offerHelp={state.offerHelp === true}
             cloze={state.cloze ?? null}
             pictures={state.pictures}
             occlusion={state.occlusion ?? null}
-            onReviewed={reload}
+            onReviewed={(rated) => {
+              if (rated) reviewed.current += 1;
+              reload();
+            }}
           />
         </>
       )}
@@ -145,7 +184,7 @@ export function ReviewSession({
           text={
             <>
               <strong className="message-title">Session complete.</strong>
-              {` You reviewed ${state.cardsReviewed} ${state.cardsReviewed === 1 ? "card" : "cards"}. No more cards are due in this deck right now.`}
+              {` You reviewed ${state.cardsReviewed} ${state.cardsReviewed === 1 ? "card" : "cards"}. ${tag ? "No more cards with this tag are due right now." : "No more cards are due in this deck right now."}`}
             </>
           }
         >
@@ -188,7 +227,7 @@ function Progress({ progress }: { progress: SessionProgress }) {
 }
 
 function Card({
-  sessionId,
+  submit,
   card,
   againStreak,
   offerHelp,
@@ -197,7 +236,8 @@ function Card({
   occlusion,
   onReviewed,
 }: {
-  sessionId: number;
+  /** Saves a rating, in the deck's session or the tag's review. */
+  submit: (card: Flashcard, rating: Rating) => Promise<void>;
   card: Flashcard;
   againStreak: number;
   offerHelp: boolean;
@@ -207,7 +247,8 @@ function Card({
   pictures: CardPictures | undefined;
   /** A picture card's picture and boxes, or null for any other card. */
   occlusion: SessionOcclusion | null;
-  onReviewed: () => void;
+  /** The card is done with: `rated` if this rating was saved, not if it was stale. */
+  onReviewed: (rated: boolean) => void;
 }) {
   const [revealed, setRevealed] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -230,14 +271,14 @@ function Card({
     setSaveError(null);
 
     try {
-      await reviewCard(sessionId, card, rating);
-      onReviewed();
+      await submit(card, rating);
+      onReviewed(true);
       return; // Stay "saving" until this card is replaced.
     } catch (err) {
       const error = toCommandError(err);
       if (error.kind === "stale") {
         // Already reviewed, or the session ended: show what comes next.
-        onReviewed();
+        onReviewed(false);
         return;
       }
       setSaveError(error.message);
