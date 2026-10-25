@@ -170,6 +170,8 @@ pub fn run() {
             commands::get_source_notes,
             commands::locate_quotes,
             commands::get_quoted_page,
+            commands::search_sources,
+            commands::get_searched_page,
             commands::save_source_copy,
             commands::open_source_original
         ])

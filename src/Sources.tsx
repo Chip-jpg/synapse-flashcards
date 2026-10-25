@@ -4,6 +4,7 @@ import {
   getDeletedSources,
   getSource,
   getSourceNotes,
+  getSearchedPage,
   getSourcePages,
   getSources,
   importSource,
@@ -14,6 +15,7 @@ import {
   toCommandError,
   type FileKind,
   type NoteSummary,
+  type SnippetPiece,
   type Source,
   type SourceImport,
   type SourcePage,
@@ -35,6 +37,7 @@ import {
 import {
   isRecognised,
   readable,
+  readable as pageText,
   ReadingProgress,
   readingSummary,
   RecognisedLabel,
@@ -44,6 +47,12 @@ import {
 } from "./ScannedPages";
 import { BUILT_IN, pagesToRead, ReadWith, useReader, type Reader, type ReaderState } from "./ReadWith";
 import { KIND_NAMES } from "./SourcePages";
+import {
+  SourceResults,
+  SourceSearchField,
+  useSourceSearch,
+  type SourceSearchState,
+} from "./SourceSearch";
 import { formatDateTime, Message, useFocusOnMount } from "./ui";
 import { useUnsavedChanges } from "./unsaved";
 
@@ -151,7 +160,10 @@ type LibraryFocus =
 /** Where in the sources area the user is. */
 type Place =
   | { screen: "library"; focus: LibraryFocus; notice: string | null }
-  | { screen: "source"; sourceId: number; notice: string | null };
+  | { screen: "source"; sourceId: number; notice: string | null; found?: FoundAt };
+
+/** A page a search found words on, opened with those words marked. */
+type FoundAt = { page: number; query: string };
 
 /**
  * The Sources screen: the documents Synapse keeps, as they were imported.
@@ -178,6 +190,8 @@ export function SourcesArea({
       ? { screen: "source", sourceId: openSource.sourceId, notice: openSource.notice }
       : { screen: "library", focus: { to: "screen" }, notice: null },
   );
+  // Kept here, so a search is still there coming back from a source.
+  const search = useSourceSearch();
 
   if (place.screen === "source") {
     const sourceId = place.sourceId;
@@ -186,9 +200,12 @@ export function SourcesArea({
         key={sourceId}
         sourceId={sourceId}
         notice={place.notice}
-        onBack={() =>
-          setPlace({ screen: "library", focus: { to: "source", sourceId }, notice: null })
-        }
+        found={place.found ?? null}
+        onBack={() => {
+          // The source may have changed (renamed, read) while it was open.
+          if (search.query.trim() !== "") search.refresh();
+          setPlace({ screen: "library", focus: { to: "source", sourceId }, notice: null });
+        }}
         onDeleted={(notice) => setPlace({ screen: "library", focus: { to: "notice" }, notice })}
         onOpenNote={(noteId) => onOpenNote(noteId, sourceId)}
         onMakeNote={onMakeNote}
@@ -210,6 +227,15 @@ export function SourcesArea({
         })
       }
       onOpen={(sourceId) => setPlace({ screen: "source", sourceId, notice: null })}
+      search={search}
+      onOpenFound={(sourceId, page) =>
+        setPlace({
+          screen: "source",
+          sourceId,
+          notice: null,
+          found: page === null ? undefined : { page, query: search.query.trim() },
+        })
+      }
       onBack={onBack}
     />
   );
@@ -235,12 +261,16 @@ function SourceLibrary({
   notice: initialNotice,
   onKept,
   onOpen,
+  search,
+  onOpenFound,
   onBack,
 }: {
   focus: LibraryFocus;
   notice: string | null;
   onKept: (kept: SourceImport & { status: "imported" }) => void;
   onOpen: (sourceId: number) => void;
+  search: SourceSearchState;
+  onOpenFound: (sourceId: number, page: number | null) => void;
   onBack: () => void;
 }) {
   const [state, setState] = useState<LibraryState>({ status: "loading" });
@@ -302,6 +332,8 @@ function SourceLibrary({
       focus={view.focus}
       onKept={onKept}
       onOpen={onOpen}
+      search={search}
+      onOpenFound={onOpenFound}
       onBack={onBack}
       onRestored={(title) => reload(`${title} restored. It's back in your sources.`)}
       onStale={() =>
@@ -318,6 +350,8 @@ function SourceList({
   focus,
   onKept,
   onOpen,
+  search,
+  onOpenFound,
   onBack,
   onRestored,
   onStale,
@@ -328,12 +362,17 @@ function SourceList({
   focus: LibraryFocus;
   onKept: (kept: SourceImport & { status: "imported" }) => void;
   onOpen: (sourceId: number) => void;
+  search: SourceSearchState;
+  onOpenFound: (sourceId: number, page: number | null) => void;
   onBack: () => void;
   onRestored: (title: string) => void;
   onStale: () => void;
 }) {
+  const searching = search.query.trim() !== "";
+  const answered = searching && search.found?.query === search.query.trim();
+  const shown = answered ? (search.found?.found.sources.map((hit) => hit.source) ?? []) : sources;
   const focusSourceId =
-    focus.to === "source" && sources.some((source) => source.id === focus.sourceId)
+    focus.to === "source" && shown.some((source) => source.id === focus.sourceId)
       ? focus.sourceId
       : null;
   const focusNotice = focus.to === "notice" && notice !== null;
@@ -419,7 +458,19 @@ function SourceList({
         </p>
       )}
 
-      {sources.length === 0 ? (
+      {(sources.length > 0 || searching) && <SourceSearchField search={search} />}
+
+      {searching ? (
+        answered &&
+        search.found && (
+          <SourceResults
+            found={search.found.found}
+            describe={describe}
+            focusSourceId={focusSourceId}
+            onOpen={onOpenFound}
+          />
+        )
+      ) : sources.length === 0 ? (
         <p className="empty" role="status">
           {deleted.length === 0
             ? "No sources yet. Choose Add source, or import a file under Notes, to keep one."
@@ -439,7 +490,7 @@ function SourceList({
         </ul>
       )}
 
-      {deleted.length > 0 && (
+      {deleted.length > 0 && !searching && (
         <section className="cards section-quiet" aria-labelledby="deleted-sources-heading">
           <div className="section-heading">
             <span className="section-icon section-icon-quiet" aria-hidden="true">
@@ -619,6 +670,7 @@ type Mode = "view" | "rename" | "confirmDelete";
 function SourceScreen({
   sourceId,
   notice: initialNotice,
+  found,
   onBack,
   onDeleted,
   onOpenNote,
@@ -626,6 +678,8 @@ function SourceScreen({
 }: {
   sourceId: number;
   notice: string | null;
+  /** The page a search found words on, to open first with them marked. */
+  found: FoundAt | null;
   onBack: () => void;
   /** The source was deleted (or already was), so this screen can't show it. */
   onDeleted: (notice: string) => void;
@@ -766,6 +820,7 @@ function SourceScreen({
         <PageViewer
           source={source}
           pages={pages}
+          found={found}
           reading={reading !== null}
           pageRun={
             runHere(true) && run?.single != null
@@ -1184,6 +1239,7 @@ type PageRun = {
 function PageViewer({
   source,
   pages,
+  found,
   reading,
   pageRun,
   readWith,
@@ -1192,6 +1248,8 @@ function PageViewer({
 }: {
   source: Source;
   pages: SourcePage[];
+  /** Opened from a search: start at its page, with its words marked on every page. */
+  found: FoundAt | null;
   readWith: ReaderState;
   /** Whether a run is going, so another can't start. */
   reading: boolean;
@@ -1199,12 +1257,21 @@ function PageViewer({
   onRead: (page: number) => void;
   onStop: () => void;
 }) {
-  const [index, setIndex] = useState(0);
+  const [index, setIndex] = useState(() =>
+    Math.max(0, pages.findIndex((each) => each.number === found?.page)),
+  );
+  const [marking, setMarking] = useState(found !== null);
   const textRef = useRef<HTMLDivElement>(null);
   const slides = source.kind === "powerPoint";
   const thing = slides ? "Slide" : "Page";
   const page = pages[index];
   const paged = pages.length > 1;
+  const marks = useSearchedPage(
+    source.id,
+    page?.number ?? null,
+    marking && found ? found.query : null,
+    page ? pageText(page) : "",
+  );
 
   function go(next: number) {
     if (next < 0 || next >= pages.length) return;
@@ -1263,6 +1330,15 @@ function PageViewer({
         )}
       </div>
 
+      {marking && found && (
+        <div className="source-search-marks">
+          <p className="field-hint">{`Words from your search “${found.query}” are marked.`}</p>
+          <button type="button" className="button button-small" onClick={() => setMarking(false)}>
+            Hide marks
+          </button>
+        </div>
+      )}
+
       {thisRun?.progress ? (
         <ReadingProgress reading={thisRun.progress} single={page.number} onStop={onStop} />
       ) : (
@@ -1285,9 +1361,13 @@ function PageViewer({
         aria-labelledby="source-page-heading"
       >
         {!blank ? (
-          <p className="note-body source-page-text">{page.text}</p>
+          <p className="note-body source-page-text">
+            {marks ? <MarkedText pieces={marks} /> : page.text}
+          </p>
         ) : recognised && recognised.text.trim() !== "" ? (
-          <p className="note-body source-page-text recognised-text">{recognised.text}</p>
+          <p className="note-body source-page-text recognised-text">
+            {marks ? <MarkedText pieces={marks} /> : recognised.text}
+          </p>
         ) : recognised ? (
           <p className="empty">
             {`Synapse read this page's picture but found no text in it. Open the original to see it.`}
@@ -1317,6 +1397,57 @@ function PageViewer({
         </div>
       )}
     </section>
+  );
+}
+
+/**
+ * Page `number` of a source with the words of `query` marked, asked of Rust
+ * (which matches them as the search did). Null while there's nothing to mark,
+ * while it's being asked, or if asking failed: the page then shows unmarked.
+ * `text` is the page's text now, so marks are asked again once it's read.
+ */
+function useSearchedPage(
+  sourceId: number,
+  number: number | null,
+  query: string | null,
+  text: string,
+): SnippetPiece[] | null {
+  const [marked, setMarked] = useState<{ key: string; pieces: SnippetPiece[] } | null>(null);
+  const key = `${number}\u0000${query}\u0000${text}`;
+
+  useEffect(() => {
+    if (number === null || query === null) return;
+    let current = true;
+    getSearchedPage(sourceId, number, query).then(
+      (pieces) => {
+        if (current) setMarked({ key, pieces });
+      },
+      () => {}, // Unmarked text is still the page.
+    );
+    return () => {
+      current = false;
+    };
+  }, [sourceId, key]);
+
+  if (query === null || marked?.key !== key) return null;
+  // Pieces that no longer add up to the page are from before a change.
+  return marked.pieces.map((piece) => piece.text).join("") === text ? marked.pieces : null;
+}
+
+/** A page's text with the words found marked. Never read as HTML. */
+function MarkedText({ pieces }: { pieces: SnippetPiece[] }) {
+  return (
+    <>
+      {pieces.map((piece, index) =>
+        piece.hit ? (
+          <mark key={index} className="search-mark">
+            {piece.text}
+          </mark>
+        ) : (
+          piece.text
+        ),
+      )}
+    </>
   );
 }
 

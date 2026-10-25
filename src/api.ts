@@ -1640,6 +1640,51 @@ export function getQuotedPage(
 }
 
 /**
+ * Mirrors `PageHit` in `src-tauri/src/sources.rs`: a page with every word
+ * searched for on it. `recognised` is true when they're in text recognised on
+ * a scan. `snippet` is a short part of the page, the words found marked;
+ * render it as text, with `<mark>`, never as HTML.
+ */
+export type SourcePageHit = { number: number; recognised: boolean; snippet: SnippetPiece[] };
+
+/**
+ * Mirrors `SourceHit`: a source found. `titleHit` says every word is in its
+ * title or file name; `pages` are its first pages with every word (at most
+ * 5), and `pageHits` how many it has in all.
+ */
+export type SourceHit = {
+  source: Source;
+  titleHit: boolean;
+  pageHits: number;
+  pages: SourcePageHit[];
+};
+
+/** Mirrors `SourceSearch`: at most 50 sources; `more` says there were others. */
+export type SourceSearch = { sources: SourceHit[]; more: boolean };
+
+/**
+ * Searches the active sources: every word of `query` in the title or file
+ * name, or on one page (its text, or text recognised on a scan), each word as
+ * the start of a word, ignoring case and accents. Most recently changed
+ * first. Text with no words finds nothing. Reads only.
+ */
+export function searchSources(query: string): Promise<SourceSearch> {
+  return invoke<SourceSearch>("search_sources", { query });
+}
+
+/**
+ * One page of an active source as pieces of text, with the words of a
+ * search (`query`) marked as `searchSources` matches them.
+ */
+export function getSearchedPage(
+  sourceId: number,
+  number: number,
+  query: string,
+): Promise<SnippetPiece[]> {
+  return invoke<SnippetPiece[]>("get_searched_page", { sourceId, number, query });
+}
+
+/**
  * Saves a copy of a source's original file where the user chooses, through
  * the OS "save as" dialog. Closing it resolves with `{ status: "cancelled" }`.
  */

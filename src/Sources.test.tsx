@@ -2,7 +2,7 @@ import { act, render, screen, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-import type { Note, NoteSummary, Source, SourcePage } from "./api";
+import type { Note, NoteSummary, Source, SourcePage, SourceSearch } from "./api";
 import { CREATED, deferred, fakeBackend, refuse, source, type Handler } from "./test/backend";
 
 const LATER = "2026-10-02T09:00:00Z";
@@ -296,6 +296,124 @@ describe("the Sources screen", () => {
       refuse("failed", "Synapse couldn't open the original. Save a copy instead, and open that.");
     await user.click(screen.getByRole("button", { name: "Open original" }));
     expect((await screen.findByRole("alert")).textContent).toMatch(/^Synapse couldn't open/);
+  });
+});
+
+describe("searching sources", () => {
+  /** What `search_sources` answers: Lecture 3, found on page 3 (and 6 more). */
+  const FOUND: SourceSearch = {
+    sources: [
+      {
+        source: source(),
+        titleHit: false,
+        pageHits: 7,
+        pages: [
+          {
+            number: 3,
+            recognised: false,
+            snippet: [
+              { text: "…", hit: false },
+              { text: "Metaphase", hit: true },
+              { text: ": chromosomes line up.", hit: false },
+            ],
+          },
+          {
+            number: 2,
+            recognised: true,
+            snippet: [{ text: "Metaphase", hit: true }],
+          },
+        ],
+      },
+    ],
+    more: false,
+  };
+
+  it("lists the pages each source was found on, with the words marked", async () => {
+    const { user, argsOf } = openApp({
+      get_deleted_sources: () => [source({ id: 4, title: "Old slides", deletedAt: LATER })],
+      search_sources: (args) =>
+        (args as { query: string }).query === "meta" ? FOUND : { sources: [], more: false },
+    });
+    await openSources(user);
+    await user.type(screen.getByLabelText("Search sources"), "meta");
+
+    expect(await screen.findByText("1 source matches.")).toBeTruthy();
+    expect(argsOf("search_sources").slice(-1)).toEqual([{ query: "meta" }]);
+    const hit = screen.getByRole("article", { name: "Lecture 3" });
+    expect(within(hit).getByText(/Found on 7 pages/)).toBeTruthy();
+    const marks = hit.querySelectorAll("mark");
+    expect([...marks].map((mark) => mark.textContent)).toEqual(["Metaphase", "Metaphase"]);
+    expect(within(hit).getByText("Recognised text:")).toBeTruthy();
+    expect(within(hit).getByText("And 5 more pages: open the source to see them.")).toBeTruthy();
+    // Deleted sources aren't searched, so they're out of the way.
+    expect(screen.queryByRole("heading", { name: "Deleted sources" })).toBeNull();
+
+    await user.type(screen.getByLabelText("Search sources"), "zz");
+    expect(await screen.findByText("No sources match.")).toBeTruthy();
+    expect(screen.queryByRole("article", { name: "Lecture 3" })).toBeNull();
+
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("heading", { name: "Deleted sources" })).toBeTruthy();
+    expect(screen.getByRole("article", { name: "Lecture 3" })).toBeTruthy();
+  });
+
+  it("opens a found page with its words marked, and comes back to the search", async () => {
+    const { user, argsOf } = openApp({
+      search_sources: () => FOUND,
+      get_searched_page: (args) => {
+        const { number } = args as { number: number };
+        const text = PAGES[number - 1].text;
+        return number === 3
+          ? [
+              { text: "Metaphase", hit: true },
+              { text: ": chromosomes line up.", hit: false },
+            ]
+          : [{ text, hit: false }];
+      },
+    });
+    await openSources(user);
+    await user.type(screen.getByLabelText("Search sources"), "meta");
+    await user.click(await screen.findByRole("button", { name: "Open page 3 of Lecture 3" }));
+
+    expect(await screen.findByRole("heading", { name: "Page 3 of 3" })).toBeTruthy();
+    const mark = await screen.findByText("Metaphase", { selector: "mark" });
+    expect(mark.parentElement?.textContent).toBe("Metaphase: chromosomes line up.");
+    expect(argsOf("get_searched_page")).toEqual([{ sourceId: 3, number: 3, query: "meta" }]);
+    expect(screen.getByText("Words from your search “meta” are marked.")).toBeTruthy();
+
+    // The marks follow to other pages, and can be hidden.
+    await user.click(screen.getByRole("button", { name: "Previous page" }));
+    expect(await screen.findByRole("heading", { name: "Page 2 of 3" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Next page" }));
+    await screen.findByText("Metaphase", { selector: "mark" });
+    await user.click(screen.getByRole("button", { name: "Hide marks" }));
+    expect(screen.queryByText("Metaphase", { selector: "mark" })).toBeNull();
+    expect(screen.getByText("Metaphase: chromosomes line up.")).toBeTruthy();
+
+    // Back: the same search, asked again, and focus on the source's way in.
+    const asked = argsOf("search_sources").length;
+    await user.click(screen.getByRole("button", { name: "Back to sources" }));
+    await screen.findByRole("heading", { name: "Sources" });
+    expect((screen.getByLabelText("Search sources") as HTMLInputElement).value).toBe("meta");
+    expect(argsOf("search_sources").length).toBe(asked + 1);
+    const open = await screen.findByRole("button", { name: "Open source" });
+    expect(document.activeElement).toBe(open);
+
+    // Open source opens it at its start, unmarked.
+    await user.click(open);
+    expect(await screen.findByRole("heading", { name: "Page 1 of 3" })).toBeTruthy();
+    expect(screen.queryByText(/are marked\.$/)).toBeNull();
+  });
+
+  it("says when searching fails", async () => {
+    const { user } = openApp({
+      search_sources: () => refuse("failed", "Synapse couldn't search your sources."),
+    });
+    await openSources(user);
+    await user.type(screen.getByLabelText("Search sources"), "x");
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Synapse couldn't search your sources.",
+    );
   });
 });
 
