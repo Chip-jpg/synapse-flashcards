@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from "react";
 import {
   choosePicture,
   createFlashcard,
@@ -14,6 +14,7 @@ import {
   importSource,
   restoreNote,
   searchNotes,
+  storePicture,
   toCommandError,
   updateNote,
   NOTE_PICTURES_MAX,
@@ -56,7 +57,14 @@ import {
 import { formatDateTime, Message, useFocusOnMount } from "./ui";
 import { useUnsavedChanges } from "./unsaved";
 import { appendText, readBy, usePictureReading } from "./pictureText";
-import { PictureField, PictureGallery, samePictures, usePictureAdder } from "./pictures";
+import {
+  bytesOf,
+  PictureField,
+  PictureGallery,
+  pictureFiles,
+  samePictures,
+  usePictureAdder,
+} from "./pictures";
 import { hasTag, sameTags, TagChips, TagField, tagsIn } from "./tagInput";
 
 /** What takes focus when the library appears. */
@@ -394,7 +402,9 @@ function NoteList({
   const [importError, setImportError] = useState<string | null>(null);
   // Blocks a second file window immediately, before the re-render lands.
   const importingRef = useRef(false);
-  const [photoStep, setPhotoStep] = useState<"none" | "choosing" | "reading">("none");
+  const [photoStep, setPhotoStep] = useState<"none" | "choosing" | "keeping" | "reading">(
+    "none",
+  );
   const [photoError, setPhotoError] = useState<string | null>(null);
   const photoReading = usePictureReading();
   const search = useNoteSearch();
@@ -432,24 +442,25 @@ function NoteList({
   }
 
   /**
-   * Chooses a photo, keeps it and reads its text; the text opens as a new
-   * note with the photo attached. A photo that couldn't be read still opens,
-   * with the note left for the user to write.
+   * Keeps a photo (chosen, or pasted) and reads its text; the text opens as a
+   * new note with the photo attached. A photo that couldn't be read still
+   * opens, with the note left for the user to write. `keep` resolves with
+   * null when no photo was chosen.
    */
-  async function chooseNotePhoto() {
+  async function notePhoto(step: "choosing" | "keeping", keep: () => Promise<Asset | null>) {
     if (importingRef.current) return;
     importingRef.current = true;
-    setPhotoStep("choosing");
+    setPhotoStep(step);
     setPhotoError(null);
 
     try {
-      const chosen = await choosePicture();
-      if (chosen.status === "added") {
+      const kept = await keep();
+      if (kept) {
         setPhotoStep("reading");
-        const read = await photoReading.read(chosen.asset.id);
+        const read = await photoReading.read(kept.id);
         if (read === null) return; // Left the library meanwhile.
         onPhoto({
-          picture: chosen.asset,
+          picture: kept,
           recognition: read.status === "read" ? read.recognition : null,
           problem: read.status === "error" ? read.message : null,
         });
@@ -463,8 +474,39 @@ function NoteList({
     setPhotoStep("none");
   }
 
+  function chooseNotePhoto() {
+    void notePhoto("choosing", async () => {
+      const chosen = await choosePicture();
+      return chosen.status === "added" ? chosen.asset : null;
+    });
+  }
+
+  /**
+   * A picture pasted on the library, outside its search field, becomes a
+   * note from a photo, as *Note from a photo* would. Only the first picture
+   * is taken: a note from a photo starts from one.
+   */
+  function pasteNotePhoto(event: ClipboardEvent) {
+    const target = event.target;
+    if (
+      target instanceof HTMLElement &&
+      (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
+    )
+      return;
+    const [file] = pictureFiles(event.clipboardData);
+    if (!file) return;
+    event.preventDefault();
+    void notePhoto("keeping", async () => storePicture(await bytesOf(file)));
+  }
+
   return (
-    <section ref={screenRef} className="notes" tabIndex={-1} aria-labelledby="notes-heading">
+    <section
+      ref={screenRef}
+      className="notes"
+      tabIndex={-1}
+      aria-labelledby="notes-heading"
+      onPaste={pasteNotePhoto}
+    >
       <button type="button" className="button button-quiet back-button" onClick={onBack}>
         <ArrowLeftIcon />
         Back to Study Desk
@@ -513,7 +555,8 @@ function NoteList({
         Import a PDF, text, Markdown, Word, or PowerPoint file to make a note from its text. You
         check the text before it's saved. The file itself is kept under Sources, so cards and
         quizzes from the note can show the page they came from. A note from a photo, such as of
-        a page or a whiteboard, starts with the text Synapse recognises in it, for you to check.
+        a page or a whiteboard, starts with the text Synapse recognises in it, for you to check. You
+        can also paste a picture here.
       </p>
       <div className="picture-text-row">
         <p className="form-status" role="status">
@@ -521,9 +564,11 @@ function NoteList({
             ? "Choose a file. Synapse then reads its text…"
             : photoStep === "choosing"
               ? "Choose a photo. Synapse then reads its text…"
-              : photoStep === "reading"
-                ? "Reading the text in the photo…"
-                : ""}
+              : photoStep === "keeping"
+                ? "Keeping the pasted picture…"
+                : photoStep === "reading"
+                  ? "Reading the text in the photo…"
+                  : ""}
         </p>
         {photoStep === "reading" && (
           <button type="button" className="button button-small" onClick={photoReading.stop}>
@@ -1538,10 +1583,12 @@ function DeletedNoteView({
         )}
 
         <NoteReading body={note.body} />
+        {/* Reading a picture's text saves nothing, so a deleted note offers it too. */}
         <PictureGallery
           pictures={note.pictures}
           label="Picture in the note"
           listLabel="Pictures in the note"
+          readText
         />
       </article>
     </section>

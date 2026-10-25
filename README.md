@@ -339,11 +339,15 @@ reading again adds a newer one. The engine reads the Latin alphabet without acce
 comes out as "e") and reads handwriting poorly, so recognised text is always shown as such, for you
 to check.
 
-**Text in pictures.** Each picture in a note, and in the note and card forms, offers *Text in
+**Text in pictures.** Each picture in a note (a deleted one too, read under *Deleted notes*), in
+the note and card forms, and on a card in review once its answer is shown, offers *Text in
 picture*: Synapse reads it and shows what it found in a panel marked as recognised text, with *Copy*
 and, in a form, *Add to note* (or *Add to front* / *Add to back*), which adds it to the end of the
-text; nothing is saved until the form is. *Notes* → *Note from a photo* chooses a picture, reads
-it, and opens a new note with that text and the picture attached, to check and give a title. On a
+text; nothing is saved until the form is. In review, reading never holds up rating: rating the card
+(with a button or 1–4) moves on at once and stops the reading, as leaving does. *Notes* → *Note
+from a photo* chooses a picture, or takes one pasted on the Notes library (outside the search
+field), reads it, and opens a new note with that text and the picture attached, to check and give a
+title. On a
 picture card, *Find labels* reads the picture and proposes a box over each line of text (split
 where words are far apart, as labels side by side are) or each word, a little larger than the text and labelled with it, each its own card, to check, adjust or
 remove before saving; text already under a box with the same label is skipped, and the 200-box and
@@ -575,10 +579,12 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   nothing else). Kept files are limited to 64 MiB each (20 MiB for a picture) and 2 GiB and 60,000
   files in all, so a backup stays a plain zip.
 - **Pictures can't be dropped in, and pasting one depends on the system.** Tauri's window takes
-  dropped files itself, so the forms offer *Add picture* and pasting only. Pasting a picture was
-  tried only on Linux (WebKitGTK), where the page is handed no picture at all, so there only *Add
-  picture* works; on Windows (WebView2) it is expected to work but hasn't been tried. Pictures
-  aren't exported to CSV, and come in from Anki only on front/back and image occlusion notes.
+  dropped files itself, so the forms (and *Note from a photo*) offer choosing a picture and pasting
+  only. Pasting a picture was tried only on Linux (WebKitGTK), where the page is handed no picture
+  at all, so there only *Add picture* (or *Note from a photo*'s file window) works; on Windows
+  (WebView2) it is expected to work but hasn't been tried. Pictures aren't exported to CSV, and
+  come in from Anki only on front/back and image occlusion notes. *Text in picture* isn't offered
+  on a picture card's picture in review.
 - **Restoring is per deck.** *Deleted cards* restores one card, the ones ticked with *Restore
   selected* (or all that can come back, with *Select all*), or with *Restore all* every deleted card
   of that deck at once; there's no undo of a restore beyond deleting the cards again, and no way to move a card
