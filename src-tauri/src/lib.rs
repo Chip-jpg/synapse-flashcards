@@ -80,6 +80,7 @@ pub fn run() {
             commands::tag_flashcards,
             commands::set_note_tags,
             commands::rename_tag,
+            commands::merge_tags,
             commands::get_today,
             commands::get_statistics,
             commands::get_archived_decks,

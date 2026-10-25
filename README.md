@@ -49,7 +49,7 @@ migrations, validation, scheduling, and every business rule; React only calls ty
   shown formatted (headings, lists, emphasis, quotes, code, tables), or as its plain text if you
   prefer; it's stored and edited as plain text either way.
 - **Tags** — label cards and notes with one-word tags (`biology`, `bio::cells`), filter a deck, the
-  notes or *Search* by tag, tag many cards at once, rename tags on the *Tags* screen, and review
+  notes or *Search* by tag, tag many cards at once, rename or merge tags on the *Tags* screen, and review
   one tag's due cards from every deck together.
 - **Cards from a spreadsheet** — add front/back cards to a deck from a CSV or TSV file, after
   checking every row, and save a deck's cards as a CSV file.
@@ -276,7 +276,12 @@ one tag (`bio` also shows `bio::cells`), and with cards ticked *Tag selected* ad
 them or removes one, without touching their text or schedule. The notes library has the same
 filter, and *Search* has a tag chooser, or type `#bio`. The *Tags* screen lists every tag in use
 with how many cards and notes have it; *Rename* changes a tag everywhere (a name another tag
-already has is refused, so tags are never merged), and *Find* opens it in *Search*. On the Study
+already has is refused), *Merge into…* makes two tags one, and *Find* opens it in *Search*.
+Merging moves every active card and note from one tag to the one you choose, all at once; a card
+or note that already has both just loses the old one, so none gains a tag. Deleted cards and
+notes, and cards in archived decks, can't change, so they keep the old tag and come back with it
+if restored; the screen says how many. Tags below the merged one (`bio::cells` for `bio`) stay as
+they are. On the Study
 Desk, *Review by tag* reviews the due cards with a tag from every active deck together, each
 showing its deck; ratings are recorded exactly as in a deck's review. Deleting a card or note, or
 archiving its deck, keeps its tags for when it comes back.
@@ -611,8 +616,9 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   50 results. Words are split on anything that isn't a letter or digit, so text in scripts written
   without spaces (Chinese, Japanese) is only found from the start of a run. The deck screen's own
   *Search cards* and the library's *Search notes* are plain contains-text filters.
-- **Bulk actions are delete, move, restore and tagging.** There are no folders, and two tags can't
-  be merged: rename one and re-tag its cards instead.
+- **Bulk actions are delete, move, restore and tagging.** There are no folders. Tags can be merged
+  but not deleted, and a merge can't be undone or reach deleted cards and notes or archived decks,
+  which keep the old tag.
 - **Statistics are counts, not scores.** The Study Desk counts today's reviews and the different
   cards they were for; the *Statistics* screen adds the last 30 days, true retention, cards by
   state, and a 14-day due forecast. There are no streaks, XP, or mastery percentages. Review
