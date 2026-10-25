@@ -40,7 +40,7 @@ use crate::sources::{self, InvalidTitle, Source, SourceError, SourcePage};
 use crate::stats::{self, Statistics};
 use crate::study::{self, DeckSummary, SessionCard, StartedSession, StudyError, TodaySummary};
 use crate::suggest::{self, NotePart, Ollama, SuggestError, SuggestedCard, Suggesting};
-use crate::tags::{self, TagError, TagProblem, TagSummary};
+use crate::tags::{self, MergeError, MergedTags, TagError, TagProblem, TagSummary};
 use crate::vision::{self, ModelSourceReading, VisionError};
 
 /// Error sent to React: `{ "kind": "failed" | "stale" | "invalid", "message": "..." }`,
@@ -1241,6 +1241,40 @@ pub async fn rename_tag(
             TagError::Internal(detail) => {
                 eprintln!("[synapse] renaming a tag failed: {detail}");
                 CommandError::failed("Synapse couldn't rename the tag.")
+            }
+        })
+}
+
+/// Merges one tag into another: every active card (in a deck that isn't
+/// archived) and active note with `fromTagId` has `intoTagId` instead, in one
+/// transaction, skipping those that already have it. Deleted cards and notes,
+/// and cards in archived decks, keep the old tag (their tags are frozen).
+/// Arguments: `{ fromTagId, intoTagId }`. Returns
+/// `{ tags, cards, notes, keptCards, keptNotes }`. Rejects with kind
+/// "invalid" and field "tags" for the same tag twice; with kind "stale" if
+/// either tag doesn't exist or no active card or note has the old one.
+#[tauri::command]
+pub async fn merge_tags(
+    app: AppHandle,
+    database: State<'_, Database>,
+    from_tag_id: i64,
+    into_tag_id: i64,
+) -> Result<MergedTags, CommandError> {
+    let pool = pool(&app, &database).await?;
+    tags::merge_tags(&pool, from_tag_id, into_tag_id)
+        .await
+        .map_err(|err| match err {
+            MergeError::SameTag => CommandError {
+                field: Some(Field::Tags),
+                ..CommandError::invalid("Choose another tag to merge into.")
+            },
+            MergeError::NotFound => CommandError::stale("That tag is no longer there."),
+            MergeError::NothingToMerge => {
+                CommandError::stale("No card or note has that tag any more.")
+            }
+            MergeError::Internal(detail) => {
+                eprintln!("[synapse] merging tags failed: {detail}");
+                CommandError::failed("Synapse couldn't merge the tags.")
             }
         })
 }
