@@ -608,6 +608,14 @@ Released in v0.8.0 (written on branch `claude/sources-screen-9yz936`): phase 2 o
 - **Originals.** `open_source_original` copies the kept file to `<temp>/synapse-originals/<hash prefix>/<name>` and opens it with the opener plugin; `save_source_copy` writes a copy where the user chooses. Both check the file's hash first (`sources::original`); the kept file is never handed out.
 - **Not checked** in the real window, on Windows, or *Open original* on a real desktop.
 
+## 4.16b Searching sources
+
+Written on branch `claude/project-thread-m80x2a` (nightly round of 2026-10-25; not yet released). *Search sources* on the Sources screen (`SourceSearch.tsx`; `sources::search_sources`, `sources::searched_page`; commands `search_sources`, `get_searched_page`). Read-only; no index, no migration, backups unchanged.
+
+- **Matching.** Words split as *Search* splits them (`search::terms`, at most 10), folded to lowercase without accents (`search::folded`). A source matches when every word starts a word of its title and file name, or of one page's readable text (extracted, or recognised where blank). Active sources only, in library order, at most `SEARCH_MAX_SOURCES` (50) with `more`; up to `SEARCH_MAX_PAGES` (5) pages each with a snippet (about 60 characters before the first word, 160 after, whitespace collapsed), and `pageHits` for all.
+- **Opening a hit** opens the source at that page; `get_searched_page` marks every matching word on whichever page is shown until *Hide marks*. *Back to sources* asks the same search again.
+- **Cost.** Every page of every active source is read per search (like `notes::search_notes`). *Search* (FTS5) still doesn't cover sources or recognised text.
+
 ## 4.17 Text recognition (foundation)
 
 Released in v0.9.0 (written on branch `claude/project-thread-50ujao`): the shared foundation of the "Text recognition" major feature. Sections 4.18–4.20 are the screens built on it; the contract for the pieces built on it is `/mnt/project-files/planning/text-recognition-contract.md` (project files).
@@ -881,6 +889,7 @@ Current README identifies these main files:
 | `Occlusion.tsx` | Picture cards (image occlusion): the form to draw boxes (and *Find labels*), and the picture shown in review |
 | `pictureText.tsx` | Reading the text in a kept picture, and the panel that shows it as recognised text |
 | `deckChoices.ts` | The decks a card can be added to, for both card-from-note screens |
+| `SourceSearch.tsx` | *Search sources* on the Sources screen: the field, the sources found with their pages and snippets |
 | `ScannedPages.tsx` | Reading a PDF source's scanned pages: progress and Stop, the summary, and the label on recognised text |
 | `tagInput.tsx`, `Tags.tsx` | The tags field and chips shared by the card and note forms, and the Tags screen (rename, find) |
 | `ReadWith.tsx` | Choosing the reader (built in or a local vision model in Ollama), remembered per computer, and the agreement hint |

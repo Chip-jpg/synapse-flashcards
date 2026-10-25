@@ -103,6 +103,59 @@ pub fn terms(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// `word` lowercased and without accents, for matching the way the index
+/// does without it (`remove_diacritics`): combining accents are dropped and
+/// the accented Latin letters are read as their plain ones, so "Été" and
+/// "ete" compare equal. Used where text is searched outside the index.
+pub fn folded(word: &str) -> String {
+    word.chars()
+        .flat_map(char::to_lowercase)
+        .filter(|c| !('\u{300}'..='\u{36f}').contains(c))
+        .map(|c| match c {
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => 'a',
+            'ç' | 'ć' | 'ĉ' | 'ċ' | 'č' => 'c',
+            'ď' | 'đ' => 'd',
+            'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => 'e',
+            'ĝ' | 'ğ' | 'ġ' | 'ģ' => 'g',
+            'ĥ' | 'ħ' => 'h',
+            'ì' | 'í' | 'î' | 'ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' | 'ı' => 'i',
+            'ĵ' => 'j',
+            'ķ' => 'k',
+            'ĺ' | 'ļ' | 'ľ' | 'ŀ' | 'ł' => 'l',
+            'ñ' | 'ń' | 'ņ' | 'ň' => 'n',
+            'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => 'o',
+            'ŕ' | 'ŗ' | 'ř' => 'r',
+            'ś' | 'ŝ' | 'ş' | 'š' => 's',
+            'ţ' | 'ť' | 'ŧ' => 't',
+            'ù' | 'ú' | 'û' | 'ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => 'u',
+            'ŵ' => 'w',
+            'ý' | 'ÿ' | 'ŷ' => 'y',
+            'ź' | 'ż' | 'ž' => 'z',
+            other => other,
+        })
+        .collect()
+}
+
+/// Where each word of `text` is, in bytes, split as [`terms`] splits.
+pub fn word_spans(text: &str) -> Vec<std::ops::Range<usize>> {
+    let in_word = |c: char| c.is_alphanumeric() || ('\u{300}'..='\u{36f}').contains(&c);
+    let mut spans = Vec::new();
+    let mut start = None;
+    for (at, c) in text.char_indices().chain([(text.len(), ' ')]) {
+        match (in_word(c), start) {
+            (true, None) => start = Some(at),
+            (false, Some(from)) => {
+                if text[from..at].chars().any(char::is_alphanumeric) {
+                    spans.push(from..at);
+                }
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    spans
+}
+
 /// The FTS5 query for `terms`: each one quoted, as a prefix, all required.
 /// The terms hold only letters, digits and accents, so the quotes can't be
 /// broken out of.

@@ -3762,6 +3762,51 @@ pub async fn get_quoted_page(
         .ok_or_else(|| CommandError::invalid("That source has no such page."))
 }
 
+/// The Sources screen's search: the active sources with every word of
+/// `{ query }` in their title or file name, or on one page (its text, or the
+/// text recognised on a scan), each word as a prefix, ignoring case and
+/// accents. Returns `{ sources: [{ source, titleHit, pageHits, pages: [{
+/// number, recognised, snippet }] }], more }`; text with no words finds
+/// nothing. Reads only.
+#[tauri::command]
+pub async fn search_sources(
+    app: AppHandle,
+    database: State<'_, Database>,
+    query: String,
+) -> Result<sources::SourceSearch, CommandError> {
+    let pool = pool(&app, &database).await?;
+    sources::search_sources(&pool, &query).await.map_err(|err| {
+        source_error(
+            err,
+            "searching sources",
+            "Synapse couldn't search your sources.",
+        )
+    })
+}
+
+/// One page of an active source with the words of a search marked: `{
+/// sourceId, number, query }`. Returns `[{ text, hit }]`.
+#[tauri::command]
+pub async fn get_searched_page(
+    app: AppHandle,
+    database: State<'_, Database>,
+    source_id: i64,
+    number: u32,
+    query: String,
+) -> Result<Vec<search::Piece>, CommandError> {
+    let pool = pool(&app, &database).await?;
+    sources::searched_page(&pool, source_id, number, &query)
+        .await
+        .map_err(|err| {
+            source_error(
+                err,
+                "loading a source's page",
+                "Synapse couldn't open that page.",
+            )
+        })?
+        .ok_or_else(|| CommandError::invalid("That source has no such page."))
+}
+
 /// The original file of an active source, checked, for a copy of it.
 async fn source_original(
     app: &AppHandle,

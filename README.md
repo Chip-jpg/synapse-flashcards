@@ -62,8 +62,10 @@ migrations, validation, scheduling, and every business rule; React only calls ty
   Word (`.docx`), or PowerPoint (`.pptx`) file. You check and edit the text before it's saved, and
   the original is kept under *Sources*.
 - **Sources** — the documents you imported, kept as they were: read them page by page, open or save
-  the original, and see the notes written from each. Suggested cards and quiz questions from such a
-  note say which page they came from, and open it with the quote marked.
+  the original, and see the notes written from each. *Search sources* finds them by title, file
+  name, or the words on a page (recognised text on scans included), and opens a page with the words
+  marked. Suggested cards and quiz questions from such a note say which page they came from, and
+  open it with the quote marked.
 - **Pictures in notes and on cards** — up to 20 pictures under a note, and up to 4 on each side of a
   card, shown in review with the question or the answer.
 - **Cards from notes** — with a note on screen, write a card yourself and add it to one of your
@@ -375,6 +377,14 @@ source was deleted. Suggested cards and quiz questions from such a note show "Fr
 you can move to the pages around it. Cards still don't remember where they came from once saved:
 the page link is there while you check the drafts or take the quiz.
 
+*Search sources*, above the list, finds the sources with every word you type in their title or file
+name, or all on one page: each word must start a word there, ignoring capitals and accents ("mito"
+finds "Mitochondria", "citta" finds "città"). A scanned page is searched in the text recognised on
+it, and its snippet says so. Each source found lists up to five of its pages, with a short snippet
+and the words marked, and how many pages it was found on; at most 50 sources are listed. Choosing a
+page opens the source there with the words marked, on that page and the ones around it, until you
+choose *Hide marks*; *Back to sources* returns to the same search. Deleted sources aren't searched.
+
 **Import cards from a spreadsheet.** *Backup & restore* → *Cards in a spreadsheet* → choose a deck
 → *Choose a CSV file*. The front goes in the first column and the back in the second; other columns
 are ignored, except a third column whose header is *Tags*, read as the cards' tags separated by
@@ -590,7 +600,10 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   search reads every note.
   Importing a file makes a note from its text only: layout and images are left out of the note (the
   original is kept under *Sources*). Scanned pages are read by text recognition, which knows no
-  accents and reads handwriting poorly. A card doesn't remember the note it was written or suggested from — so
+  accents and reads handwriting poorly. *Search sources* matches the start of words only (no fuzzy
+  or meaning-based matching, words on two different pages don't match together) and has no index:
+  each search reads every page of every source, so it slows down with very many long documents.
+  *Search* in the sidebar doesn't look in sources, and recognised text isn't searched there. A card doesn't remember the note it was written or suggested from — so
   deleting a note leaves its cards exactly where they are. A deleted note can be read but not
   edited; restore it first.
 - **No sync, accounts, cloud, or collaboration.** By design.
@@ -661,6 +674,7 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   `DeckDetail.tsx`, `ReviewSession.tsx`, `Notes.tsx`, `Sources.tsx`, `Search.tsx`, `Statistics.tsx`,
   `ArchivedDecks.tsx`, `Backup.tsx`, and `Settings.tsx`;
   `SourcePages.tsx` shows a source's page with a quote marked, and the "From page 7 of …" links;
+  `SourceSearch.tsx` is the Sources screen's *Search sources* and its results;
   `Occlusion.tsx` draws a picture card's boxes, for the deck screen's form and for review;
   `CardHelp.tsx` is the review screen's *Get help with this card*,
   `SuggestCards.tsx` is the note screen's *Suggest cards*, `Quiz.tsx` its *Quiz me*, and
