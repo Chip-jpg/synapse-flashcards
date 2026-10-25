@@ -123,7 +123,7 @@ export function PictureGallery({
 }
 
 /** The picture files on a clipboard, if any. */
-function pictureFiles(data: DataTransfer | null): File[] {
+export function pictureFiles(data: DataTransfer | null): File[] {
   if (!data) return [];
   const files = Array.from(data.files ?? []);
   // Some webviews put a pasted picture only in `items`.
@@ -136,7 +136,8 @@ function pictureFiles(data: DataTransfer | null): File[] {
   return files.filter((file) => file.type.startsWith("image/"));
 }
 
-async function bytesOf(file: File): Promise<Uint8Array> {
+/** A file's bytes, as `storePicture` takes them. */
+export async function bytesOf(file: File): Promise<Uint8Array> {
   return new Uint8Array(await file.arrayBuffer());
 }
 
