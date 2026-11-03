@@ -104,7 +104,7 @@ The v0.10.0 release assets are uploaded, as GitHub lists them:
 - EXE: 16,507,810 bytes, SHA-256 `cffb134b4e6b394ae62438cd77d56859ee45ef19a5a16f7a831722057ad42969`.
 - MSI: 18,722,816 bytes, SHA-256 `14a43055a8479e1a65711cc1e10c6e1552390e66171b7cc40ff5b7c23961f5c3`.
 
-Each release's hashes can be checked against the ones its Release run logged (section 13). That is release metadata, not an installation test: the repository doesn't record whether a release has been installed and run on Windows.
+Each release's hashes can be checked against the ones its Release run logged (section 13). That is release metadata, not an installation test: Chip confirmed on 2026-11-03 that a recent release has been installed and run on Windows, but the repository itself doesn't record which release or the results.
 
 ### 3.2 Important distinction: repository, app, and personal data
 
