@@ -99,12 +99,12 @@ ______________________________________________________________________
 | AI generation | Cards suggested from a note by a local model in Ollama, since v0.4.0 (section 4.6) |
 | File import | PDF, TXT, MD, DOCX, PPTX as notes, since v0.5.0 (section 4.7); originals kept as sources since v0.8.0 (sections 4.13, 4.16) |
 
-The v0.5.0 release assets are uploaded:
+The v0.10.0 release assets are uploaded, as GitHub lists them:
 
-- EXE: 3,245,341 bytes, SHA-256 `e41bfaece7a7d463c052f825df8154813348a480cc1a847117bf7cf9b860048f`.
-- MSI: 4,505,600 bytes, SHA-256 `a1ad56d1172b8c6aa8b8dc44a9c3e9f1f46b603d7ec8160918a05d0a67b6a37d`.
+- EXE: 16,507,810 bytes, SHA-256 `cffb134b4e6b394ae62438cd77d56859ee45ef19a5a16f7a831722057ad42969`.
+- MSI: 18,722,816 bytes, SHA-256 `14a43055a8479e1a65711cc1e10c6e1552390e66171b7cc40ff5b7c23961f5c3`.
 
-The published files were downloaded and their hashes matched the ones the Windows build logged (and GitHub's own asset digests). That is verified release metadata, not a fresh installation test: none of v0.3.2, v0.4.0, or v0.5.0 has been installed on Windows yet.
+Each release's hashes can be checked against the ones its Release run logged (section 13). That is release metadata, not an installation test: the repository doesn't record whether a release has been installed and run on Windows.
 
 ### 3.2 Important distinction: repository, app, and personal data
 

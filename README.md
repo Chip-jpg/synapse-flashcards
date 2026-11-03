@@ -634,10 +634,11 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   a second set of decks; nothing is merged or deduplicated.
 - **Suggestions are a first step.** They come only from Ollama on this computer, from one note
   at a time, and from one part of up to 12,000 characters of a longer note, as front/back cards.
-  A file is suggested from once it's imported as a note. There's no cloud option, no choice of how
-  many cards, and no way to choose the parts yourself or to suggest from several at once. Synapse
-  doesn't remember which parts you've used. Suggested cards aren't linked to the note, and
-  suggestions aren't kept: once you leave without saving, they're gone.
+  A file is suggested from once it's imported as a note. The number of cards is chosen
+  automatically, by design. There's no cloud option, and no way to choose the parts yourself or
+  to suggest from several at once. Synapse doesn't remember which parts you've used. Suggested
+  cards aren't linked to the note, and suggestions aren't kept: once you leave without saving,
+  they're gone.
   How good they are depends on the model: small ones often copy the passage as the answer. The
   check that a card comes from your note compares words, so it's loosest for languages written
   without spaces, such as Chinese or Japanese.

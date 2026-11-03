@@ -4,8 +4,8 @@ The full project breakdown (product scope, architecture, data-model invariants, 
 release process, roadmap) lives in `PROJECT_BREAKDOWN.md` next to this file and is loaded below.
 Use it whenever project specs are needed.
 
-It is a snapshot as of v0.5.0 (released from `9952cc4`). When it disagrees with the code or README, the
-code and README win; point out the drift rather than trusting the snapshot.
+It is maintained through the current release (v0.10.0). When it disagrees with the code or README, the
+code and README win; point out the drift rather than trusting the breakdown.
 
 @PROJECT_BREAKDOWN.md
 
