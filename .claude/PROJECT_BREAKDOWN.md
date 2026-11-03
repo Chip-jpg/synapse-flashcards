@@ -1237,7 +1237,7 @@ The current README is explicit about these gaps.
 
 ### AI
 
-- Flashcard generation beyond v0.4.0's local suggestions: no cloud providers, no choice of card count, and no suggestions from notes over 12,000 characters.
+- Flashcard generation beyond v0.4.0's local suggestions: no cloud providers and no suggestions from notes over 12,000 characters. The number of cards is chosen automatically, by design (PR #42 declined a card-count choice).
 - Summaries.
 - Quizzes beyond multiple choice on one note (section 4.9).
 - Memory aids beyond help with a card after repeated Agains (section 4.8).
