@@ -22,7 +22,7 @@ use crate::db::{to_db_time, DbError};
 use crate::extract::{Document, FileKind};
 use crate::notes::{self, Note, NoteError, NoteSummary, NOTE_TITLE_MAX_CHARS};
 use crate::recognition::{self, Engine};
-use crate::search::Piece;
+use crate::search::{self, Piece};
 use crate::suggest;
 use crate::tags;
 
@@ -310,13 +310,21 @@ pub async fn source(pool: &SqlitePool, id: i64) -> Result<Source, SourceError> {
 pub async fn source_pages(pool: &SqlitePool, id: i64) -> Result<Vec<SourcePage>, SourceError> {
     let found = source(pool, id).await?;
     let mut conn = pool.acquire().await?;
-    let mut recognised = recognition::latest_pages(&mut conn, found.asset.id)
+    pages_of(&mut conn, &found).await
+}
+
+/// Every page of `found`, with what was recognised on each.
+async fn pages_of(
+    conn: &mut SqliteConnection,
+    found: &Source,
+) -> Result<Vec<SourcePage>, SourceError> {
+    let mut recognised = recognition::latest_pages(conn, found.asset.id)
         .await
         .map_err(SourceError::Internal)?;
     let rows: Vec<(i64, String)> = sqlx::query_as(
         "SELECT number, text FROM source_pages WHERE source_id = ?1 ORDER BY number",
     )
-    .bind(id)
+    .bind(found.id)
     .fetch_all(&mut *conn)
     .await?;
     rows.into_iter()
@@ -747,6 +755,268 @@ pub async fn quoted_page(
         });
     }
     Ok(Some(pieces))
+}
+
+/// At most this many sources are found; `more` says there were others.
+pub const SEARCH_MAX_SOURCES: usize = 50;
+
+/// At most this many pages of one source are shown with a snippet;
+/// `pageHits` counts them all.
+pub const SEARCH_MAX_PAGES: usize = 5;
+
+/// About how many characters of a page are shown before the first word
+/// found, and after it.
+const SNIPPET_BEFORE: usize = 60;
+const SNIPPET_AFTER: usize = 160;
+
+/// A page where every word searched for is: `{ number, recognised, snippet }`.
+/// `recognised` is true when the words are in the text recognised on the
+/// page (a scan), which may hold mistakes. `snippet` is a short part of the
+/// page around the first word found, with the words found marked.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageHit {
+    pub number: u32,
+    pub recognised: bool,
+    pub snippet: Vec<Piece>,
+}
+
+/// A source found: `{ source, titleHit, pageHits, pages }`. `titleHit` says
+/// every word is in its title or file name; `pages` are its first pages with
+/// every word on them, at most [`SEARCH_MAX_PAGES`], and `pageHits` how many
+/// such pages it has.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceHit {
+    pub source: Source,
+    pub title_hit: bool,
+    pub page_hits: u32,
+    pub pages: Vec<PageHit>,
+}
+
+/// What searching the sources found: `{ sources, more }`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SourceSearch {
+    pub sources: Vec<SourceHit>,
+    pub more: bool,
+}
+
+/// The words typed, as they're compared: split as *Search* splits them (at
+/// most `search::MAX_TERMS`), lowercased and without accents.
+fn searched_terms(query: &str) -> Vec<String> {
+    let mut terms: Vec<String> = search::terms(query)
+        .iter()
+        .map(|term| search::folded(term))
+        .collect();
+    terms.sort();
+    terms.dedup();
+    terms
+}
+
+/// The words of `text` that start with one of `terms`, as byte ranges, and
+/// whether every term starts one of them.
+fn found_words(text: &str, terms: &[String]) -> (Vec<std::ops::Range<usize>>, bool) {
+    let mut seen = vec![false; terms.len()];
+    let mut found = Vec::new();
+    for span in search::word_spans(text) {
+        let word = search::folded(&text[span.clone()]);
+        let mut hit = false;
+        for (at, term) in terms.iter().enumerate() {
+            if word.starts_with(term.as_str()) {
+                seen[at] = true;
+                hit = true;
+            }
+        }
+        if hit {
+            found.push(span);
+        }
+    }
+    let all = !terms.is_empty() && seen.iter().all(|&seen| seen);
+    (found, all)
+}
+
+/// `text` as pieces, the ranges `marks` (in order, not overlapping) marked.
+fn marked_pieces(text: &str, marks: &[std::ops::Range<usize>]) -> Vec<Piece> {
+    let mut pieces = Vec::new();
+    let mut at = 0;
+    for mark in marks {
+        if mark.start > at {
+            pieces.push(Piece {
+                text: text[at..mark.start].to_string(),
+                hit: false,
+            });
+        }
+        pieces.push(Piece {
+            text: text[mark.clone()].to_string(),
+            hit: true,
+        });
+        at = mark.end;
+    }
+    if at < text.len() || pieces.is_empty() {
+        pieces.push(Piece {
+            text: text[at..].to_string(),
+            hit: false,
+        });
+    }
+    pieces
+}
+
+/// The byte where a cut `chars` characters before `at` (or 0) falls, moved
+/// on to the start of a word so none is cut in half.
+fn cut_before(text: &str, at: usize, chars: usize) -> usize {
+    let Some((from, _)) = text[..at].char_indices().rev().nth(chars) else {
+        return 0;
+    };
+    match text[from..at].find(char::is_whitespace) {
+        Some(space) => from + space,
+        None => from,
+    }
+}
+
+/// The byte where a cut `chars` characters after `at` (or the end) falls,
+/// moved back to the end of a word.
+fn cut_after(text: &str, at: usize, chars: usize) -> usize {
+    let Some((to, _)) = text[at..].char_indices().nth(chars) else {
+        return text.len();
+    };
+    let to = at + to;
+    match text[at..to].rfind(char::is_whitespace) {
+        Some(space) => at + space,
+        None => to,
+    }
+}
+
+/// A short part of `text` around the first of `found`, with every word found
+/// in it marked, "…" where the page goes on, and runs of spaces and line
+/// breaks shown as one space.
+fn snippet(text: &str, found: &[std::ops::Range<usize>]) -> Vec<Piece> {
+    let Some(first) = found.first() else {
+        return Vec::new();
+    };
+    let start = cut_before(text, first.start, SNIPPET_BEFORE);
+    let end = cut_after(text, first.end, SNIPPET_AFTER).max(first.end);
+    let marks: Vec<std::ops::Range<usize>> = found
+        .iter()
+        .filter(|word| word.start >= start && word.end <= end)
+        .map(|word| word.start - start..word.end - start)
+        .collect();
+    let mut pieces = marked_pieces(&text[start..end], &marks);
+    for piece in &mut pieces {
+        let mut collapsed = String::with_capacity(piece.text.len());
+        let mut space = false;
+        for c in piece.text.chars() {
+            if c.is_whitespace() {
+                space = true;
+            } else {
+                if space {
+                    collapsed.push(' ');
+                }
+                space = false;
+                collapsed.push(c);
+            }
+        }
+        if space {
+            collapsed.push(' ');
+        }
+        piece.text = collapsed;
+    }
+    if let Some(head) = pieces.first_mut().filter(|piece| !piece.hit) {
+        head.text = head.text.trim_start().to_string();
+    }
+    if let Some(tail) = pieces.last_mut().filter(|piece| !piece.hit) {
+        tail.text = tail.text.trim_end().to_string();
+    }
+    let ellipsis = || Piece {
+        text: "…".to_string(),
+        hit: false,
+    };
+    if start > 0 {
+        pieces.insert(0, ellipsis());
+    }
+    if end < text.len() {
+        pieces.push(ellipsis());
+    }
+    pieces.retain(|piece| !piece.text.is_empty());
+    pieces
+}
+
+/// The active sources that have every word of `query` in their title or
+/// file name, or all on one page, each word matching the start of a word
+/// there, ignoring case and accents ("mito" finds "Mitochondria", "citta"
+/// finds "città"). A page is searched in its readable text
+/// ([`SourcePage::readable`]): what extraction read, or, on a page without
+/// text, what recognition read.
+///
+/// In the library's order (most recently changed first), at most
+/// [`SEARCH_MAX_SOURCES`]. There is no index: every active source's pages
+/// are read, so this is for the Sources screen, not for *Search*. Deleted
+/// sources are never searched. Text with no words finds nothing. Writes
+/// nothing.
+pub async fn search_sources(pool: &SqlitePool, query: &str) -> Result<SourceSearch, SourceError> {
+    let terms = searched_terms(query);
+    let mut result = SourceSearch {
+        sources: Vec::new(),
+        more: false,
+    };
+    if terms.is_empty() {
+        return Ok(result);
+    }
+    let listed = sources(pool).await?;
+    let mut conn = pool.acquire().await?;
+    for found in listed {
+        let named = format!("{}\n{}", found.title, found.file_name);
+        let (_, title_hit) = found_words(&named, &terms);
+        let mut page_hits = 0;
+        let mut pages = Vec::new();
+        for page in pages_of(&mut conn, &found).await? {
+            let text = page.readable();
+            let (words, all) = found_words(text, &terms);
+            if !all {
+                continue;
+            }
+            page_hits += 1;
+            if pages.len() < SEARCH_MAX_PAGES {
+                pages.push(PageHit {
+                    number: page.number,
+                    recognised: page.text.trim().is_empty(),
+                    snippet: snippet(text, &words),
+                });
+            }
+        }
+        if !title_hit && page_hits == 0 {
+            continue;
+        }
+        if result.sources.len() == SEARCH_MAX_SOURCES {
+            result.more = true;
+            break;
+        }
+        result.sources.push(SourceHit {
+            source: found,
+            title_hit,
+            page_hits,
+            pages,
+        });
+    }
+    Ok(result)
+}
+
+/// Page `number` of an active source as pieces, with every word that starts
+/// with a word of `query` marked (as [`search_sources`] matches them), so a
+/// page opened from a search shows what was found. None when the source has
+/// no such page.
+pub async fn searched_page(
+    pool: &SqlitePool,
+    id: i64,
+    number: u32,
+    query: &str,
+) -> Result<Option<Vec<Piece>>, SourceError> {
+    let pages = source_pages(pool, id).await?;
+    let Some(page) = pages.iter().find(|page| page.number == number) else {
+        return Ok(None);
+    };
+    let text = page.readable();
+    let (words, _) = found_words(text, &searched_terms(query));
+    Ok(Some(marked_pieces(text, &words)))
 }
 
 #[cfg(test)]
@@ -1402,6 +1672,211 @@ mod tests {
                 original(&pool, &store, source.id).await,
                 Err(SourceError::Internal(_))
             ));
+            let _ = std::fs::remove_dir_all(store.dir());
+        });
+    }
+
+    /// A source a search found, as `(title, titleHit, pageHits, [(page,
+    /// recognised, snippet with hits in [brackets])])`.
+    type Found = (String, bool, u32, Vec<(u32, bool, String)>);
+
+    async fn searched(pool: &SqlitePool, query: &str) -> Vec<Found> {
+        let found = search_sources(pool, query).await.unwrap();
+        assert!(!found.more);
+        found
+            .sources
+            .into_iter()
+            .map(|hit| {
+                let pages = hit
+                    .pages
+                    .iter()
+                    .map(|page| (page.number, page.recognised, bracketed(&page.snippet)))
+                    .collect();
+                (hit.source.title, hit.title_hit, hit.page_hits, pages)
+            })
+            .collect()
+    }
+
+    fn bracketed(pieces: &[Piece]) -> String {
+        pieces
+            .iter()
+            .map(|piece| {
+                if piece.hit {
+                    format!("[{}]", piece.text)
+                } else {
+                    piece.text.clone()
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn searching_finds_titles_file_names_and_pages_by_word_prefix() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let store = scratch_store("sources-search");
+            // "Biology one": "Cells are the unit of life. one", "", "Mitochondria make ATP."
+            let biology = create_source(&pool, &store, &pdf_document("one"), at(NOW))
+                .await
+                .unwrap();
+            let mut italian = text_document("La città è piena di CELLULE.\nE poi altro.");
+            italian.file_name = "appunti-città.md".to_string();
+            create_source(&pool, &store, &italian, at(LATER))
+                .await
+                .unwrap();
+            let none: Vec<Found> = Vec::new();
+
+            // A page: every word must start a word on it, ignoring case.
+            assert_eq!(
+                searched(&pool, "MITO atp").await,
+                vec![(
+                    "Biology one".into(),
+                    false,
+                    1,
+                    vec![(3, false, "[Mitochondria] make [ATP].".into())]
+                )]
+            );
+            // Words on different pages don't make a page match.
+            assert_eq!(searched(&pool, "mito unit").await, none);
+            // Only the start of a word matches.
+            assert_eq!(searched(&pool, "chondria").await, none);
+            // Accents are ignored both ways, and a prefix matches several sources.
+            assert_eq!(
+                searched(&pool, "citta cell").await,
+                vec![(
+                    "Notes".into(),
+                    false,
+                    1,
+                    vec![(
+                        1,
+                        false,
+                        "La [città] è piena di [CELLULE]. E poi altro.".into()
+                    )]
+                )]
+            );
+            let both = searched(&pool, "cell").await;
+            assert_eq!(
+                both.iter().map(|hit| hit.0.as_str()).collect::<Vec<_>>(),
+                vec!["Notes", "Biology one"],
+                "most recently changed first"
+            );
+            // The title, or the file name, alone.
+            assert_eq!(
+                searched(&pool, "biology").await,
+                vec![("Biology one".into(), true, 0, vec![])]
+            );
+            assert_eq!(
+                searched(&pool, "appunti").await,
+                vec![("Notes".into(), true, 0, vec![])]
+            );
+            // No words, or nothing typed but punctuation, finds nothing.
+            assert_eq!(searched(&pool, "  ").await, none);
+            assert_eq!(searched(&pool, "\"*:-").await, none);
+
+            // A deleted source isn't searched, and comes back when restored.
+            delete_source(&pool, biology.id, at(LATER)).await.unwrap();
+            assert_eq!(searched(&pool, "mito").await, none);
+            restore_source(&pool, biology.id).await.unwrap();
+            assert_eq!(searched(&pool, "mito").await.len(), 1);
+            let _ = std::fs::remove_dir_all(store.dir());
+        });
+    }
+
+    #[test]
+    fn searching_reads_text_recognised_on_a_scan_and_marks_its_page() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let store = scratch_store("sources-search-scan");
+            let source = create_source(&pool, &store, &pdf_document("one"), at(NOW))
+                .await
+                .unwrap();
+            // Page 2 has no text; recognition read it.
+            let mut conn = pool.acquire().await.unwrap();
+            recognition::insert(
+                &mut conn,
+                source.asset.id,
+                2,
+                Engine::Ocrs,
+                "m",
+                "Ribosomes build proteins.",
+                &[],
+                None,
+                at(NOW),
+            )
+            .await
+            .unwrap();
+            drop(conn);
+
+            assert_eq!(
+                searched(&pool, "ribo").await,
+                vec![(
+                    "Biology one".into(),
+                    false,
+                    1,
+                    vec![(2, true, "[Ribosomes] build proteins.".into())]
+                )]
+            );
+
+            // The page opened from the search, with every word found marked.
+            let page = searched_page(&pool, source.id, 2, "prot ribo")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(bracketed(&page), "[Ribosomes] build [proteins].");
+            let plain = searched_page(&pool, source.id, 1, "")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(bracketed(&plain), "Cells are the unit of life. one");
+            assert_eq!(searched_page(&pool, source.id, 9, "x").await.unwrap(), None);
+            let _ = std::fs::remove_dir_all(store.dir());
+        });
+    }
+
+    #[test]
+    fn a_snippet_is_cut_around_the_first_word_found() {
+        let text = format!(
+            "{} needle here{}",
+            "before ".repeat(30),
+            " after".repeat(60)
+        );
+        let (words, all) = found_words(&text, &searched_terms("needle"));
+        assert!(all);
+        let shown = bracketed(&snippet(&text, &words));
+        assert!(shown.starts_with("…before "), "{shown}");
+        assert!(shown.contains(" [needle] here "), "{shown}");
+        assert!(shown.ends_with(" after…"), "{shown}");
+        assert!(shown.chars().count() < SNIPPET_BEFORE + SNIPPET_AFTER + 20);
+        // Whitespace shows as one space; a short text is shown whole.
+        let short = "One\n\n  needle\tTwo";
+        let (words, _) = found_words(short, &searched_terms("needle"));
+        assert_eq!(bracketed(&snippet(short, &words)), "One [needle] Two");
+    }
+
+    #[test]
+    fn searching_stops_at_its_limits() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let store = scratch_store("sources-search-limits");
+            let mut many = text_document("only");
+            many.pages = (1..=8).map(|n| format!("Page {n} of atoms.")).collect();
+            for n in 0..=SEARCH_MAX_SOURCES {
+                many.bytes = format!("file {n}").into_bytes();
+                create_source(&pool, &store, &many, at(NOW)).await.unwrap();
+            }
+            let found = search_sources(&pool, "atom").await.unwrap();
+            assert!(found.more);
+            assert_eq!(found.sources.len(), SEARCH_MAX_SOURCES);
+            let first = &found.sources[0];
+            assert_eq!(first.page_hits, 8);
+            assert_eq!(
+                first
+                    .pages
+                    .iter()
+                    .map(|page| page.number)
+                    .collect::<Vec<_>>(),
+                vec![1, 2, 3, 4, 5]
+            );
             let _ = std::fs::remove_dir_all(store.dir());
         });
     }
