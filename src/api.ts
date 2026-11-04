@@ -1099,6 +1099,30 @@ export function renameTag(tagId: number, name: string): Promise<TagSummary[]> {
 }
 
 /**
+ * Mirrors `MergedTags` in `src-tauri/src/tags.rs`: the tags afterwards, how
+ * many active cards and notes moved to the tag merged into, and how many
+ * deleted cards and notes (or cards in archived decks) kept the old tag.
+ */
+export type MergedTags = {
+  tags: TagSummary[];
+  cards: number;
+  notes: number;
+  keptCards: number;
+  keptNotes: number;
+};
+
+/**
+ * Merges tag `fromTagId` into `intoTagId`: every active card and note with
+ * the first has the second instead (skipping those that already have it).
+ * Deleted things, and cards in archived decks, keep the old tag. The same tag
+ * twice rejects with field "tags"; a tag that is gone, or that no active card
+ * or note has any more, rejects as "stale".
+ */
+export function mergeTags(fromTagId: number, intoTagId: number): Promise<MergedTags> {
+  return invoke<MergedTags>("merge_tags", { fromTagId, intoTagId });
+}
+
+/**
  * Soft-deletes a note: it leaves the library but its text is kept, so it can
  * be restored. No card changes, because no card is linked to a note. Rejects
  * with kind "stale" if it was already deleted, having written nothing.

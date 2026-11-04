@@ -411,7 +411,7 @@ describe("the Tags screen", () => {
     await user.click(screen.getByRole("button", { name: "Rename tag" }));
 
     expect(
-      await screen.findByText("That tag is no longer there. Here are your tags as they are now."),
+      await screen.findByText("That tag has changed or is no longer used. Here are your tags as they are now."),
     ).toBeTruthy();
     expect(screen.getAllByRole("article")).toHaveLength(2);
   });
@@ -426,6 +426,92 @@ describe("the Tags screen", () => {
       true,
     );
     expect(screen.getByRole("heading", { name: "Tags", level: 2 })).toBeTruthy();
+  });
+
+  it("merges a tag into another, and says what kept the old tag", async () => {
+    const { user, argsOf } = await openTags({
+      merge_tags: () => ({
+        tags: [{ ...TAGS[2], cards: 4, notes: 1 }, TAGS[1]],
+        cards: 3,
+        notes: 1,
+        keptCards: 2,
+        keptNotes: 1,
+      }),
+    });
+    await user.click(screen.getAllByRole("button", { name: "Merge into…" })[0]);
+    const select = screen.getByLabelText("Merge bio::cells into") as HTMLSelectElement;
+    expect(document.activeElement).toBe(select);
+    // Only the other tags are offered.
+    expect(Array.from(select.options).map((option) => option.text)).toEqual([
+      "Choose a tag",
+      "chem",
+      "exam",
+    ]);
+    await user.selectOptions(select, "3");
+    expect(
+      screen.getByText(/^3 cards and 1 note will have exam instead of bio::cells\./),
+    ).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Merge tags" }));
+
+    const notice = await screen.findByText(
+      "bio::cells is merged into exam: 3 cards and 1 note now have exam instead. " +
+        "2 cards that are deleted or in archived decks and 1 deleted note keep bio::cells, " +
+        "since they can't be changed: if you restore them, they come back with bio::cells.",
+    );
+    expect(document.activeElement).toBe(notice);
+    expect(argsOf("merge_tags")).toEqual([{ fromTagId: 1, intoTagId: 3 }]);
+    expect(screen.getAllByRole("article")).toHaveLength(2);
+  });
+
+  it("asks for a tag before merging, and Cancel puts focus back on Merge into", async () => {
+    const { user, argsOf } = await openTags();
+    await user.click(screen.getAllByRole("button", { name: "Merge into…" })[1]);
+    await user.click(screen.getByRole("button", { name: "Merge tags" }));
+    expect(await screen.findByText("Choose the tag to merge into.")).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByLabelText("Merge chem into"));
+    expect(argsOf("merge_tags")).toEqual([]);
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(document.activeElement).toBe(
+      screen.getAllByRole("button", { name: "Merge into…" })[1],
+    );
+  });
+
+  it("reloads and explains when a merge is stale", async () => {
+    let gone = false;
+    const { user } = await openTags({
+      get_tags: () => (gone ? TAGS.slice(1) : TAGS),
+      merge_tags: () => {
+        gone = true;
+        return refuse("stale", "No card or note has that tag any more.");
+      },
+    });
+    await user.click(screen.getAllByRole("button", { name: "Merge into…" })[0]);
+    await user.selectOptions(screen.getByLabelText("Merge bio::cells into"), "2");
+    await user.click(screen.getByRole("button", { name: "Merge tags" }));
+
+    expect(
+      await screen.findByText(
+        "That tag has changed or is no longer used. Here are your tags as they are now.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getAllByRole("article")).toHaveLength(2);
+  });
+
+  it("counts a chosen merge as unsaved", async () => {
+    const { user, sidebar } = await openTags();
+    await user.click(screen.getAllByRole("button", { name: "Merge into…" })[0]);
+    await user.selectOptions(screen.getByLabelText("Merge bio::cells into"), "2");
+    await user.click(sidebar.getByRole("button", { name: "Notes" }));
+    expect((screen.getByRole("alertdialog", { hidden: true }) as HTMLDialogElement).open).toBe(
+      true,
+    );
+  });
+
+  it("offers no merge when there is only one tag", async () => {
+    await openTags({ get_tags: () => [TAGS[0]] });
+    expect(screen.queryByRole("button", { name: "Merge into…" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Rename" })).toBeTruthy();
   });
 
   it("finds a tag in Search", async () => {
