@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { clearMocks, mockConvertFileSrc } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,6 +11,7 @@ import type {
 } from "./api";
 import { DeckDetail } from "./DeckDetail";
 import { NotesArea } from "./Notes";
+import { ReviewSession } from "./ReviewSession";
 import { CREATED, fakeBackend, refuse, type Handler } from "./test/backend";
 
 const PHOTO: Asset = {
@@ -361,6 +362,58 @@ describe("a note from a photo", () => {
     expect(backend.calls).not.toContain("recognise_picture");
     expect(screen.getByRole("heading", { name: "Notes" })).toBeTruthy();
   });
+
+  it("takes a picture pasted on the library, as one chosen", async () => {
+    const { backend, user } = openLibrary({ store_picture: () => PHOTO });
+
+    const library = (
+      await screen.findByRole("heading", { name: "Notes" })
+    ).closest("section")!;
+    // Pasted text is left alone.
+    fireEvent.paste(library, {
+      clipboardData: { files: [], items: [], types: ["text/plain"] },
+    });
+    expect(backend.calls).not.toContain("store_picture");
+
+    const file = new File([new Uint8Array([0xff, 0xd8, 0xff])], "image.jpg", {
+      type: "image/jpeg",
+    });
+    fireEvent.paste(screen.getByRole("button", { name: "Note from a photo" }), {
+      clipboardData: { files: [file], types: ["Files"] },
+    });
+
+    expect(await screen.findByText(/text Synapse recognised in the photo/)).toBeTruthy();
+    expect(backend.argsOf("store_picture")).toHaveLength(1);
+    expect(backend.calls).not.toContain("choose_picture");
+    expect(backend.argsOf("recognise_picture")).toEqual([{ assetId: PHOTO.id }]);
+    expect((screen.getByLabelText("Note") as HTMLTextAreaElement).value).toBe(
+      "Mitochondria make ATP.",
+    );
+
+    await user.type(screen.getByLabelText("Title"), "Energy");
+    await user.click(screen.getByRole("button", { name: "Save note" }));
+    expect(backend.argsOf("create_note")).toEqual([
+      { title: "Energy", body: "Mitochondria make ATP.", pictures: [PHOTO.id] },
+    ]);
+  });
+
+  it("says why a pasted picture couldn't be kept, and stays on the library", async () => {
+    const { backend } = openLibrary({
+      store_picture: () => refuse("invalid", "That isn't a picture Synapse can keep."),
+    });
+
+    const library = (
+      await screen.findByRole("heading", { name: "Notes" })
+    ).closest("section")!;
+    const file = new File([new Uint8Array([1, 2, 3])], "image.png", { type: "image/png" });
+    fireEvent.paste(library, { clipboardData: { files: [file], types: ["Files"] } });
+
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "That isn't a picture Synapse can keep.",
+    );
+    expect(backend.calls).not.toContain("recognise_picture");
+    expect(screen.getByRole("heading", { name: "Notes" })).toBeTruthy();
+  });
 });
 
 describe("finding labels for picture cards", () => {
@@ -526,5 +579,111 @@ describe("finding labels for picture cards", () => {
     ).toBeTruthy();
     expect(screen.getByText("No boxes yet.")).toBeTruthy();
     expect(backend.argsOf("stop_recognition")).toHaveLength(1);
+  });
+});
+
+describe("text in a picture of a deleted note", () => {
+  it("can be read and copied without restoring the note", async () => {
+    const deleted = { ...note([PHOTO]), title: "Cells", deletedAt: CREATED };
+    const backend = fakeBackend({
+      get_deleted_notes: () => [
+        { id: 5, title: "Cells", createdAt: CREATED, updatedAt: CREATED, deletedAt: CREATED },
+      ],
+      get_deleted_note: () => deleted,
+    });
+    render(<NotesArea onBack={vi.fn()} onOpenDeck={vi.fn()} onOpenSource={vi.fn()} />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Read note" }));
+
+    await user.click(
+      await screen.findByRole("button", { name: "Text in picture in the note" }),
+    );
+    const panel = await screen.findByRole("region", {
+      name: "Text in picture in the note",
+    });
+    expect(within(panel).getByText("Mitochondria make ATP.")).toBeTruthy();
+    expect(within(panel).queryByRole("button", { name: /^Add to/ })).toBeNull();
+
+    await user.click(within(panel).getByRole("button", { name: "Copy" }));
+    expect(await navigator.clipboard.readText()).toBe("Mitochondria make ATP.");
+    expect(backend.calls).not.toContain("restore_note");
+    expect(screen.getByRole("button", { name: "Restore note" })).toBeTruthy();
+  });
+});
+
+describe("text in a picture in review", () => {
+  const CARDS = [
+    { id: 10, front: "Name the organelle", back: "Mitochondrion", reps: 0 },
+    { id: 11, front: "Name the bone", back: "Femur", reps: 0 },
+  ];
+
+  function startReview(handlers: Record<string, Handler> = {}) {
+    let reviewed = 0;
+    const backend = fakeBackend({
+      get_session_card: () =>
+        reviewed < CARDS.length
+          ? {
+              status: "due",
+              card: CARDS[reviewed],
+              progress: { reviewed, remaining: CARDS.length - reviewed },
+              againStreak: 0,
+              offerHelp: false,
+              pictures: { front: [PHOTO], back: [SECOND] },
+            }
+          : { status: "completed", cardsReviewed: reviewed },
+      review_card: () => {
+        reviewed += 1;
+        return null;
+      },
+      ...handlers,
+    });
+    render(<ReviewSession sessionId={7} deckName="Cells" onExit={vi.fn()} />);
+    return { backend, user: userEvent.setup() };
+  }
+
+  it("is offered only once the answer is shown, with Copy and nothing to add it to", async () => {
+    const { backend, user } = startReview();
+
+    await screen.findByText(CARDS[0].front);
+    expect(screen.queryByRole("button", { name: /^Text in picture/ })).toBeNull();
+
+    await user.keyboard("[Space]");
+    await screen.findByText(CARDS[0].back);
+    expect(
+      screen.getByRole("button", { name: "Text in picture with the question" }),
+    ).toBeTruthy();
+    await user.click(
+      screen.getByRole("button", { name: "Text in picture with the answer" }),
+    );
+    const panel = await screen.findByRole("region", {
+      name: "Text in picture with the answer",
+    });
+    expect(within(panel).getByText("Mitochondria make ATP.")).toBeTruthy();
+    expect(within(panel).queryByRole("button", { name: /^Add to/ })).toBeNull();
+    expect(backend.argsOf("recognise_picture")).toEqual([{ assetId: SECOND.id }]);
+
+    await user.click(within(panel).getByRole("button", { name: "Copy" }));
+    expect(await navigator.clipboard.readText()).toBe("Mitochondria make ATP.");
+    expect(backend.calls).not.toContain("review_card");
+  });
+
+  it("never holds up rating: a rating goes at once, and stops the reading", async () => {
+    const { backend, user } = startReview(waitingForStop());
+
+    await screen.findByText(CARDS[0].front);
+    await user.keyboard("[Space]");
+    await user.click(
+      await screen.findByRole("button", { name: "Text in picture with the question" }),
+    );
+    expect(
+      await screen.findByText("Reading the text in picture with the question…"),
+    ).toBeTruthy();
+
+    // The number keys still rate while a reading runs.
+    await user.keyboard("3");
+    await screen.findByText(CARDS[1].front);
+    expect(backend.argsOf("review_card")).toHaveLength(1);
+    expect(backend.argsOf("stop_recognition")).toHaveLength(1);
+    expect(screen.queryByRole("region", { name: /^Text in picture/ })).toBeNull();
   });
 });

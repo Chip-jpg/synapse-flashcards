@@ -354,6 +354,7 @@ function Card({
                 pictures={pictures?.front}
                 label="Picture with the question"
                 listLabel="Pictures with the question"
+                readText={revealed}
               />
             </>
           )}
@@ -380,6 +381,7 @@ function Card({
                   pictures={pictures?.back}
                   label="Picture with the answer"
                   listLabel="Pictures with the answer"
+                  readText
                 />
               </>
             )}
