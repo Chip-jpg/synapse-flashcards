@@ -1832,3 +1832,86 @@ export function recogniseSourcePagesWithModel(
     onProgress: channel,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Exam planner (`src-tauri/src/exams.rs`)
+
+/** Mirrors `Exam`: a date given to a deck or a tag (exactly one of `deckId` / `tagId`). */
+export type Exam = {
+  id: number;
+  title: string;
+  /** `YYYY-MM-DD` on this computer's calendar. */
+  examDate: string;
+  deckId: number | null;
+  tagId: number | null;
+  /** The deck's or tag's name. */
+  scopeName: string;
+  /** The exam's deck is archived, so its plan has no cards. */
+  scopeArchived: boolean;
+  createdAt: string;
+};
+
+/** Mirrors `ExamPlan`. `readiness` is a percentage from 0 to 100. */
+export type ExamPlan = {
+  examId: number;
+  title: string;
+  examDate: string;
+  /** A past exam is "finished", not an error. */
+  status: "upcoming" | "today" | "finished";
+  daysLeft: number;
+  cards: number;
+  newCards: number;
+  dueBeforeExam: number;
+  belowTarget: number;
+  dailyGoal: number;
+  readiness: number;
+};
+
+/** Mirrors `StudyCalendar`: oldest day first, today last. */
+export type StudyCalendar = {
+  days: { date: string; reviews: number }[];
+  currentStreak: number;
+  longestStreak: number;
+};
+
+/** Every active exam, the soonest date first. */
+export function listExams(): Promise<Exam[]> {
+  return invoke<Exam[]>("list_exams");
+}
+
+/**
+ * Adds an exam for a deck or a tag (give exactly one). A past date is
+ * allowed. Rejects with field "title", "examDate" or "examScope" if refused.
+ */
+export function createExam(
+  title: string,
+  examDate: string,
+  scope: { deckId: number } | { tagId: number },
+): Promise<Exam> {
+  return invoke<Exam>("create_exam", {
+    title,
+    examDate,
+    deckId: "deckId" in scope ? scope.deckId : null,
+    tagId: "tagId" in scope ? scope.tagId : null,
+  });
+}
+
+/** Changes an exam's title and date (its deck or tag stays). */
+export function updateExam(examId: number, title: string, examDate: string): Promise<Exam> {
+  return invoke<Exam>("update_exam", { examId, title, examDate });
+}
+
+/** Deletes an exam (soft). Rejects as stale if it is already gone. */
+export function deleteExam(examId: number): Promise<void> {
+  return invoke<void>("delete_exam", { examId });
+}
+
+/** The plan and readiness for one exam. */
+export function getExamPlan(examId: number): Promise<ExamPlan> {
+  return invoke<ExamPlan>("get_exam_plan", { examId });
+}
+
+/** Reviews per day for the last 365 local days, with current and longest streak. */
+export function getStudyCalendar(): Promise<StudyCalendar> {
+  return invoke<StudyCalendar>("get_study_calendar");
+}

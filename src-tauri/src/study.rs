@@ -888,7 +888,7 @@ pub fn day_bounds<Tz: TimeZone>(now: DateTime<Utc>, zone: &Tz) -> (DateTime<Utc>
 /// When `day` begins in `zone`: midnight, or, where a clock change skips
 /// midnight, the first minute that exists that day. If midnight happens twice
 /// (the clocks went back to it), the day begins at the first.
-fn start_of_day<Tz: TimeZone>(day: NaiveDate, zone: &Tz) -> DateTime<Utc> {
+pub(crate) fn start_of_day<Tz: TimeZone>(day: NaiveDate, zone: &Tz) -> DateTime<Utc> {
     let midnight = day.and_time(NaiveTime::MIN);
     (0..24 * 60)
         .find_map(|minute| {

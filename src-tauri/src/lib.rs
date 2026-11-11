@@ -6,6 +6,7 @@ mod cards_csv;
 mod cloze;
 mod commands;
 mod db;
+mod exams;
 mod export;
 // Public for its test of the PDF helper process (`tests/pdf_helper.rs`).
 pub mod extract;
@@ -171,7 +172,14 @@ pub fn run() {
             commands::locate_quotes,
             commands::get_quoted_page,
             commands::save_source_copy,
-            commands::open_source_original
+            commands::open_source_original,
+            // Exam planner
+            commands::list_exams,
+            commands::create_exam,
+            commands::update_exam,
+            commands::delete_exam,
+            commands::get_exam_plan,
+            commands::get_study_calendar
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
