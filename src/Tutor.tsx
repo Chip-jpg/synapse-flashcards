@@ -4,6 +4,7 @@ import {
   createNote,
   getModels,
   gradeAnswer,
+  socraticFollowup,
   stopTutor,
   summarizeNote,
   toCommandError,
@@ -1015,6 +1016,14 @@ function Practice({
               onAdded={(deck, count) => setAdded({ deck, count })}
             />
           )}
+          <FollowUp
+            note={note}
+            part={part}
+            model={model}
+            question={question}
+            answer={answer.trim()}
+            onStale={onStale}
+          />
           <div className="form-actions">
             {position < total && (
               <button type="button" className="button button-primary" onClick={onNext}>
@@ -1031,6 +1040,100 @@ function Practice({
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * Optional Socratic follow-up after a graded answer: one guiding question
+ * from the model, with the passage of the note it is about. Only asked when
+ * the student presses the button; nothing is saved.
+ */
+function FollowUp({
+  note,
+  part,
+  model,
+  question,
+  answer,
+  onStale,
+}: {
+  note: Note;
+  part: { start: number; end: number } | null;
+  model: string;
+  question: OpenQuestion;
+  answer: string;
+  onStale: (failure: CommandError) => void;
+}) {
+  const [phase, setPhase] = useState<"idle" | "asking" | "done">("idle");
+  const [found, setFound] = useState<{ question: string; quote: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const askingRef = useRef(false);
+  const shownRef = useRef(true);
+
+  useEffect(() => {
+    shownRef.current = true;
+    return () => {
+      shownRef.current = false;
+      if (askingRef.current) stopTutor().catch(() => {});
+    };
+  }, []);
+
+  async function ask() {
+    if (askingRef.current) return;
+    askingRef.current = true;
+    setError(null);
+    setPhase("asking");
+    try {
+      const outcome = await socraticFollowup(note.id, model, question, answer, part ?? undefined);
+      askingRef.current = false;
+      if (!shownRef.current) return;
+      if (outcome.status === "stopped") {
+        setPhase("idle");
+      } else {
+        setFound({ question: outcome.question, quote: outcome.quote });
+        setPhase("done");
+      }
+    } catch (err) {
+      askingRef.current = false;
+      if (!shownRef.current) return;
+      const failure = toCommandError(err);
+      if (failure.kind === "stale") {
+        onStale(failure);
+        return;
+      }
+      setError(failure.message);
+      setPhase("idle");
+    }
+  }
+
+  return (
+    <section aria-label="Follow-up question">
+      {phase === "asking" && (
+        <Writing
+          model={model}
+          activity="Thinking of a follow-up question"
+          onStop={() => stopTutor().catch(() => {})}
+        />
+      )}
+      {error && (
+        <p className="message-error" role="alert">
+          {error}
+        </p>
+      )}
+      {phase === "done" && found && (
+        <>
+          <h4 className="side-label">A question to think about</h4>
+          <p className="quiz-missed-question">{found.question}</p>
+          <p className="field-hint">{`From your note: “${found.quote}”`}</p>
+        </>
+      )}
+      {(phase === "idle" || phase === "done") && (
+        <div className="form-actions">
+          <button type="button" className="button" onClick={ask}>
+            {phase === "done" ? "Ask me another follow-up" : "Ask me a follow-up"}
+          </button>
+        </div>
+      )}
+    </section>
   );
 }
 

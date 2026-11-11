@@ -149,6 +149,7 @@ pub fn run() {
             commands::stop_tutor,
             commands::tutor_questions,
             commands::grade_answer,
+            commands::socratic_followup,
             commands::read_anki_package,
             commands::import_anki_package,
             commands::cancel_anki_import,

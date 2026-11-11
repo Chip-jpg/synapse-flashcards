@@ -2,7 +2,13 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-import type { GradeOutcome, Note, QuestionsOutcome, SummaryOutcome } from "./api";
+import type {
+  FollowupOutcome,
+  GradeOutcome,
+  Note,
+  QuestionsOutcome,
+  SummaryOutcome,
+} from "./api";
 import { NotesArea } from "./Notes";
 import { summaryBody, summaryTitle } from "./Tutor";
 import { deferred, fakeBackend, refuse, type Handler } from "./test/backend";
@@ -396,5 +402,67 @@ describe("explaining it and unsaved changes", () => {
     await screen.findByText("Added 1 card to Biology.");
     await user.click(sidebar().getByRole("button", { name: "Study Desk" }));
     expect(question().open).toBe(false);
+  });
+});
+
+describe("the Socratic follow-up", () => {
+  it("is offered only after a graded answer, and asks nothing until pressed", async () => {
+    const { user, calls } = await openExplain();
+    expect(screen.queryByRole("button", { name: "Ask me a follow-up" })).toBeNull();
+    await answerAndCheck(user, "Because the cell copies itself.");
+    await screen.findByText("Partly right: 55 out of 100.");
+    expect(screen.getByRole("button", { name: "Ask me a follow-up" })).toBeTruthy();
+    expect(calls).not.toContain("socratic_followup");
+  });
+
+  it("shows one guiding question with its quote, sending the question and answer", async () => {
+    const { user, argsOf } = await openExplain();
+    await answerAndCheck(user, "Because the cell copies itself.");
+    await screen.findByText("Partly right: 55 out of 100.");
+    await user.click(screen.getByRole("button", { name: "Ask me a follow-up" }));
+
+    expect(await screen.findByText("Why are the two daughter cells identical?")).toBeTruthy();
+    expect(
+      screen.getAllByText("From your note: “It produces two genetically identical daughter cells.”")
+        .length
+    ).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Ask me another follow-up" })).toBeTruthy();
+    expect(argsOf("socratic_followup")).toEqual([
+      {
+        noteId: 5,
+        model: "llama3.2:3b",
+        question: "Why are the daughter cells identical?",
+        answer: "Because the cell copies itself.",
+      },
+    ]);
+  });
+
+  it("can be stopped, which tells Ollama, and can be asked again", async () => {
+    const asking = deferred<FollowupOutcome>();
+    const { user, calls } = await openExplain({
+      socratic_followup: () => asking.promise,
+      stop_tutor: () => {
+        asking.resolve({ status: "stopped" });
+        return null;
+      },
+    });
+    await answerAndCheck(user, "My words.");
+    await screen.findByText("Partly right: 55 out of 100.");
+    await user.click(screen.getByRole("button", { name: "Ask me a follow-up" }));
+    await screen.findByText(/^Thinking of a follow-up question/);
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    expect(await screen.findByRole("button", { name: "Ask me a follow-up" })).toBeTruthy();
+    expect(calls).toContain("stop_tutor");
+  });
+
+  it("shows why it failed and leaves the grade in place", async () => {
+    const { user } = await openExplain({
+      socratic_followup: () => refuse("failed", "The model's answer wasn't usable."),
+    });
+    await answerAndCheck(user, "My words.");
+    await screen.findByText("Partly right: 55 out of 100.");
+    await user.click(screen.getByRole("button", { name: "Ask me a follow-up" }));
+    expect(await screen.findByText("The model's answer wasn't usable.")).toBeTruthy();
+    expect(screen.getByText("Partly right: 55 out of 100.")).toBeTruthy();
   });
 });

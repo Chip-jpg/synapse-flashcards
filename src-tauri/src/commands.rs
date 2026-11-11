@@ -2305,6 +2305,87 @@ pub async fn grade_answer(
     }
 }
 
+// --- Tutor: Socratic follow-up (one guiding question after a graded answer) ---
+
+/// What asking for a follow-up did: `{ "status": "written", "question",
+/// "quote" }` or `{ "status": "stopped" }`.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum FollowupOutcome {
+    Written {
+        /// One short guiding question that doesn't give the answer.
+        question: String,
+        /// The passage of the note it is about, checked to be in the note.
+        quote: String,
+    },
+    /// `stop_tutor` was called first.
+    Stopped,
+}
+
+/// Asks a local model in Ollama for ONE short guiding question after the
+/// student's answer to one of `tutor_questions`' questions, grounded in the
+/// note by a quote that must be in it word for word. Nothing is saved.
+///
+/// Arguments: `{ noteId, model, part?, question, answer }`. A blank answer, or
+/// one over 4,000 characters, rejects with kind "invalid" before anything is
+/// sent. Returns [`FollowupOutcome`]; other rejections are as for
+/// `tutor_questions`. Stoppable with `stop_tutor`.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn socratic_followup(
+    app: AppHandle,
+    database: State<'_, Database>,
+    tutoring: State<'_, Tutoring>,
+    note_id: i64,
+    model: String,
+    part: Option<NotePart>,
+    question: String,
+    answer: String,
+) -> Result<FollowupOutcome, CommandError> {
+    if note_id < 1 {
+        return Err(CommandError::invalid(NOTE_NOT_FOUND));
+    }
+    match tutor::check_answer(&answer) {
+        Ok(_) => {}
+        Err(tutor::AnswerProblem::Blank) => {
+            return Err(CommandError::invalid("Write your answer first."));
+        }
+        Err(tutor::AnswerProblem::TooLong) => {
+            return Err(CommandError::invalid(
+                "Answers can be at most 4,000 characters.",
+            ));
+        }
+    }
+    let request = tutoring.0.begin();
+    let work = async {
+        let (title, body) = tutor_note_text(&app, &database, note_id, part).await?;
+        let ollama = Ollama::local().map_err(explain_error)?;
+        let asked = tutor::FollowupRequest {
+            title: &title,
+            body: &body,
+            question: &question,
+            answer: &answer,
+        };
+        tutor::socratic_followup(&ollama, &model, &asked)
+            .await
+            .map_err(|err| match err {
+                tutor::GradeError::Answer(_) => CommandError::invalid("Write your answer first."),
+                tutor::GradeError::Model(err) => explain_error(err),
+            })
+    };
+    match request.run(work).await {
+        None => Ok(FollowupOutcome::Stopped),
+        Some(result) => result.map(|found| FollowupOutcome::Written {
+            question: found.question,
+            quote: found.quote,
+        }),
+    }
+}
+
 /// What choosing a file to import as a note did: `{ "status": "read", "fileName",
 /// "kind", "title", "body", "pages", "pagesWithoutText" }` or
 /// `{ "status": "cancelled" }`. Only the file's name is returned, never its

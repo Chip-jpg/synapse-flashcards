@@ -76,6 +76,9 @@ migrations, validation, scheduling, and every business rule; React only calls ty
   multiple-choice questions about a note, and answer them one at a time (keys 1–4 work). After each
   answer you see the passage of the note it comes from; at the end, your score, and any question you
   missed can be added to a deck as a card. Nothing else is saved.
+- **AI tutor (optional)** — local note summaries, open questions graded against the note ("Explain
+  it"), and an optional Socratic follow-up question. Same rules: Ollama on your computer only,
+  every point backed by a verbatim quote from your note, nothing saved unless you choose.
 - **Help with hard cards (optional)** — after you answer Again on a card three times in a row,
   Synapse offers help with it once its answer is shown: a model in Ollama, on your computer, writes
   a mnemonic, a simpler explanation, an analogy, or the question asked another way, from the
@@ -545,6 +548,25 @@ question on the front and the right answer on the back, saved all together like 
 The quiz itself isn't kept anywhere. Leaving asks first only while you have missed questions that
 haven't been added as cards, since those can't be got back; a quiz with nothing missed can simply be
 written again.
+
+**Use the AI tutor on a note.** With Ollama set up as above, open a note → *Summarise* (or the
+tutor's tabs). Every mode follows the rules of suggestions: Ollama on this computer
+(`127.0.0.1`) only, local models only, nothing sent until you press the button, *Stop* at any time,
+and a note over 12,000 characters used one part at a time. Whatever the model writes must quote the
+passage of your note it comes from; anything whose quote isn't in the note word for word is left
+out, and you're told how many. If your note (or answer) is in Italian, the model is told to answer
+in Italian. Nothing is saved unless you choose to, so the database and backups don't change.
+
+- *Summary*: up to ten bullet points and ten key terms, each with its passage. *Save as a note*
+  keeps it as an ordinary note called "Summary: …".
+- *Explain it*: *Ask me questions* gives up to five open questions. Answer one in your own words
+  (up to 4,000 characters) and *Check my answer*: the model scores it from 0 to 100 against the note
+  only, and lists what you got right, what you missed (with the passage) and what the note
+  contradicts. Missed points can be added to a deck as cards. The "right / partly / wrong" label is
+  worked out from the score by Synapse, not taken from the model.
+- *Ask me a follow-up* (optional, after a graded answer): one short guiding question that points
+  you toward an idea you missed without giving the answer, with the passage of the note it is about.
+  Only asked when you press the button, and dropped if its passage isn't in your note.
 
 **Get help with a card you keep forgetting.** A card's *Again streak* is how many of its latest
 reviews, in the order they were recorded, were all rated Again; a Hard, Good or Easy ends it.

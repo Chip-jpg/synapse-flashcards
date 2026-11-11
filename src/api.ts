@@ -1936,6 +1936,34 @@ export function gradeAnswer(
   });
 }
 
+/** Mirrors `FollowupOutcome` in `src-tauri/src/commands.rs`. Nothing has been saved. */
+export type FollowupOutcome =
+  | { status: "written"; question: string; quote: string }
+  | { status: "stopped" };
+
+/**
+ * Asks `model` for ONE short guiding question after `answer` to `question`,
+ * grounded in a quote from the note. A blank or oversized answer rejects with
+ * kind "invalid". Resolves with `{ status: "stopped" }` if `stopTutor` is
+ * called first.
+ */
+export function socraticFollowup(
+  noteId: number,
+  model: string,
+  question: OpenQuestion,
+  answer: string,
+  part?: { start: number; end: number }
+): Promise<FollowupOutcome> {
+  const where = part && { part: { start: part.start, end: part.end } };
+  return invoke<FollowupOutcome>("socratic_followup", {
+    noteId,
+    model,
+    question: question.question,
+    answer,
+    ...where,
+  });
+}
+
 /** Stops the tutor request being written, if any, which frees up the model. */
 export function stopTutor(): Promise<void> {
   return invoke<void>("stop_tutor");

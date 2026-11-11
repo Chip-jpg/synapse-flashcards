@@ -307,6 +307,11 @@ export function fakeBackend(overrides: Record<string, Handler> = {}) {
       wrong: ["Mitosis is not the division of the whole organism."],
       dropped: 0,
     }),
+    socratic_followup: () => ({
+      status: "written",
+      question: "Why are the two daughter cells identical?",
+      quote: "It produces two genetically identical daughter cells.",
+    }),
     stop_tutor: () => null,
     get_scheduling: () => ({
       version: 0,
