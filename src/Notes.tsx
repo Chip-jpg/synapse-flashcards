@@ -46,6 +46,7 @@ import {
   UploadIcon,
 } from "./icons";
 import { Quiz } from "./Quiz";
+import { Tutor } from "./Tutor";
 import { SuggestCards } from "./SuggestCards";
 import { SUGGESTION_NOTE_MAX_CHARS } from "./noteParts";
 import {
@@ -1014,7 +1015,7 @@ type NoteState =
   | { status: "ready"; note: Note };
 
 /** What takes focus when the note view appears. */
-type NoteFocus = "screen" | "notice" | "edit" | "card" | "suggest" | "quiz";
+type NoteFocus = "screen" | "notice" | "edit" | "card" | "suggest" | "quiz" | "tutor";
 
 /**
  * How the note view appears next. `key` changes every time, so the view
@@ -1062,7 +1063,7 @@ function NoteScreen({
   const [state, setState] = useState<NoteState>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
   // The note itself, or a form in its place.
-  const [mode, setMode] = useState<"view" | "edit" | "card" | "suggest" | "quiz">("view");
+  const [mode, setMode] = useState<"view" | "edit" | "card" | "suggest" | "quiz" | "tutor">("view");
   const [view, setView] = useState<NoteViewState>({
     key: 0,
     notice: justCreated ? "Note saved." : null,
@@ -1184,6 +1185,18 @@ function NoteScreen({
     );
   }
 
+  if (mode === "tutor") {
+    return (
+      <Tutor
+        note={state.note}
+        onCancel={() => showView(null, "tutor")}
+        onSaved={(saved) =>
+          showView(`Summary saved as a new note: ${saved.title}. It's in your notes library.`, "notice")
+        }
+      />
+    );
+  }
+
   return (
     <NoteView
       key={view.key}
@@ -1195,6 +1208,7 @@ function NoteScreen({
       onCreateCard={() => setMode("card")}
       onSuggest={() => setMode("suggest")}
       onQuiz={() => setMode("quiz")}
+      onTutor={() => setMode("tutor")}
       onDeleted={onDeleted}
       onOpenDeck={onOpenDeck}
       onOpenSource={onOpenSource}
@@ -1213,6 +1227,7 @@ function NoteView({
   onCreateCard,
   onSuggest,
   onQuiz,
+  onTutor,
   onDeleted,
   onOpenDeck,
   onOpenSource,
@@ -1227,6 +1242,7 @@ function NoteView({
   onCreateCard: () => void;
   onSuggest: () => void;
   onQuiz: () => void;
+  onTutor: () => void;
   onDeleted: () => void;
   onOpenDeck: (deckId: number) => void;
   onOpenSource: (sourceId: number) => void;
@@ -1239,6 +1255,7 @@ function NoteView({
   const cardRef = useFocusOnMount<HTMLButtonElement>(focus === "card");
   const suggestRef = useFocusOnMount<HTMLButtonElement>(focus === "suggest");
   const quizRef = useFocusOnMount<HTMLButtonElement>(focus === "quiz");
+  const tutorRef = useFocusOnMount<HTMLButtonElement>(focus === "tutor");
   const edited = note.updatedAt !== note.createdAt;
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -1405,6 +1422,16 @@ function NoteView({
             >
               <SparkleIcon />
               Quiz me
+            </button>
+            <button
+              ref={tutorRef}
+              type="button"
+              className="button button-tonal"
+              aria-describedby="note-heading"
+              onClick={onTutor}
+            >
+              <SparkleIcon />
+              Summarise
             </button>
             <button
               ref={deleteRef}

@@ -1832,3 +1832,45 @@ export function recogniseSourcePagesWithModel(
     onProgress: channel,
   });
 }
+
+/** Mirrors `Bullet` in `src-tauri/src/tutor.rs`: a summary point and its quote from the note. */
+export type SummaryBullet = { text: string; quote: string };
+
+/** Mirrors `KeyTerm` in `src-tauri/src/tutor.rs`: a key term and its quote from the note. */
+export type SummaryKeyTerm = { term: string; quote: string };
+
+/**
+ * Mirrors `SummaryOutcome` in `src-tauri/src/commands.rs`. Nothing has been
+ * saved. `dropped` counts points whose quote isn't in the note; `leftOut`
+ * those unusable (blank, repeated, over the limits).
+ */
+export type SummaryOutcome =
+  | {
+      status: "written";
+      bullets: SummaryBullet[];
+      keyTerms: SummaryKeyTerm[];
+      dropped: number;
+      leftOut: number;
+    }
+  | { status: "stopped" };
+
+/**
+ * Asks `model`, in Ollama on this computer, to summarise a note, or `part` of
+ * one too long to use whole (see `noteParts.ts`). Nothing is saved. Resolves
+ * with `{ status: "stopped" }` if `stopTutor` is called first; rejects with
+ * kind "stale" if the model has left Ollama, or the note was deleted or no
+ * longer has that part.
+ */
+export function summarizeNote(
+  noteId: number,
+  model: string,
+  part?: { start: number; end: number }
+): Promise<SummaryOutcome> {
+  const where = part && { part: { start: part.start, end: part.end } };
+  return invoke<SummaryOutcome>("summarize_note", { noteId, model, ...where });
+}
+
+/** Stops the tutor request being written, if any, which frees up the model. */
+export function stopTutor(): Promise<void> {
+  return invoke<void>("stop_tutor");
+}

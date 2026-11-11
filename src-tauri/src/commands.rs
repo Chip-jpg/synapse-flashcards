@@ -41,6 +41,7 @@ use crate::stats::{self, Statistics};
 use crate::study::{self, DeckSummary, SessionCard, StartedSession, StudyError, TodaySummary};
 use crate::suggest::{self, NotePart, Ollama, SuggestError, SuggestedCard, Suggesting};
 use crate::tags::{self, TagError, TagProblem, TagSummary};
+use crate::tutor::{self, Bullet, KeyTerm, Tutoring};
 use crate::vision::{self, ModelSourceReading, VisionError};
 
 /// Error sent to React: `{ "kind": "failed" | "stale" | "invalid", "message": "..." }`,
@@ -1973,6 +1974,123 @@ pub async fn quiz_note(
 #[tauri::command]
 pub fn stop_quiz(quizzing: State<'_, Quizzing>) {
     quizzing.0.stop();
+}
+
+/// Turns a failed tutor request into a user-safe error, logging internal
+/// detail. Neither the note nor the model's answer is ever logged.
+fn tutor_error(err: SuggestError) -> CommandError {
+    match err {
+        SuggestError::NoteTooLong => CommandError::invalid(
+            "This is too long to summarise: up to 12,000 characters of a note can be used at a \
+             time.",
+        ),
+        SuggestError::NoteOverflowed => CommandError::failed(
+            "This note was too long for the model to read all at once, so no summary was \
+             written. Try a shorter note.",
+        ),
+        SuggestError::Unusable(detail) => {
+            eprintln!("[synapse] the model's summary was unusable: {detail}");
+            CommandError::failed(
+                "The model's answer didn't include a usable summary. Try again, or choose \
+                 another model.",
+            )
+        }
+        SuggestError::Ungrounded => CommandError::failed(
+            "None of the points the model wrote could be traced back to your note, so none are \
+             shown. Try again, or choose a larger model.",
+        ),
+        SuggestError::Internal(detail) => {
+            eprintln!("[synapse] setting up a request to Ollama failed: {detail}");
+            CommandError::failed("Synapse couldn't ask Ollama for a summary.")
+        }
+        other => suggest_error(other),
+    }
+}
+
+/// What asking for a summary did: `{ "status": "written", "bullets": [{ text,
+/// quote }], "keyTerms": [{ term, quote }], "dropped": 1, "leftOut": 0 }` or
+/// `{ "status": "stopped" }`.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum SummaryOutcome {
+    Written {
+        /// The summary, to read on screen: nothing has been saved.
+        bullets: Vec<Bullet>,
+        key_terms: Vec<KeyTerm>,
+        /// Items dropped because their quote isn't in the note.
+        dropped: usize,
+        /// Items left out as unusable (blank, repeated, over the limits).
+        left_out: usize,
+    },
+    /// `stop_tutor` was called first.
+    Stopped,
+}
+
+/// Asks a local model in Ollama for a summary of a note: bullet points and key
+/// terms, each kept only if its quote is in the note word for word. Only
+/// Ollama on this computer is asked, and nothing is saved; the user may save
+/// the summary as a note with `create_note`. Asking again, or `stop_tutor`,
+/// stops this one. The other local-model features are separate.
+///
+/// Arguments: `{ noteId, model, part? }`, as for `quiz_note`. Returns
+/// [`SummaryOutcome`]; rejects with kind "stale" if the note was deleted, no
+/// longer has that part, or the model is no longer in Ollama.
+#[tauri::command]
+pub async fn summarize_note(
+    app: AppHandle,
+    database: State<'_, Database>,
+    tutoring: State<'_, Tutoring>,
+    note_id: i64,
+    model: String,
+    part: Option<NotePart>,
+) -> Result<SummaryOutcome, CommandError> {
+    if note_id < 1 {
+        return Err(CommandError::invalid(NOTE_NOT_FOUND));
+    }
+    // Tracked from the start, so a stop while the note loads counts too.
+    let request = tutoring.0.begin();
+    let work = async {
+        let pool = pool(&app, &database).await?;
+        let note = notes::note(&pool, note_id).await.map_err(|err| {
+            note_error(
+                err,
+                "loading a note to summarise",
+                "Synapse couldn't load this note.",
+            )
+        })?;
+        let body = match part {
+            None => note.body.as_str(),
+            Some(part) => suggest::part_of(&note.body, part).ok_or_else(|| {
+                CommandError::stale(
+                    "That part of the note has changed. Go back to the note and try again.",
+                )
+            })?,
+        };
+        let ollama = Ollama::local().map_err(tutor_error)?;
+        tutor::summarize(&ollama, &model, &note.title, body)
+            .await
+            .map_err(tutor_error)
+    };
+    match request.run(work).await {
+        None => Ok(SummaryOutcome::Stopped),
+        Some(result) => result.map(|written| SummaryOutcome::Written {
+            bullets: written.bullets,
+            key_terms: written.key_terms,
+            dropped: written.dropped,
+            left_out: written.left_out,
+        }),
+    }
+}
+
+/// Stops the summary being written, if any; its `summarize_note` call then
+/// returns `{ status: "stopped" }`. Takes no arguments; returns `null`.
+#[tauri::command]
+pub fn stop_tutor(tutoring: State<'_, Tutoring>) {
+    tutoring.0.stop();
 }
 
 /// What choosing a file to import as a note did: `{ "status": "read", "fileName",

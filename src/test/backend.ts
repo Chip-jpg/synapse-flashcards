@@ -264,6 +264,19 @@ export function fakeBackend(overrides: Record<string, Handler> = {}) {
       unsupported: 0,
     }),
     stop_quiz: () => null,
+    summarize_note: () => ({
+      status: "written",
+      bullets: [
+        {
+          text: "Mitosis makes two identical cells.",
+          quote: "It produces two genetically identical daughter cells.",
+        },
+      ],
+      keyTerms: [{ term: "Mitosis", quote: "Mitosis is the division of one cell's nucleus" }],
+      dropped: 0,
+      leftOut: 0,
+    }),
+    stop_tutor: () => null,
     get_scheduling: () => ({
       version: 0,
       personal: false,
