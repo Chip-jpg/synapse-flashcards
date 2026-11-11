@@ -151,7 +151,15 @@ fn checked_title(title: &str) -> Result<String, ExamError> {
 /// A `YYYY-MM-DD` calendar date (exactly that shape), as a date.
 fn checked_date(text: &str) -> Result<NaiveDate, ExamError> {
     let text = text.trim();
-    if text.len() != 10 {
+    let shaped = text.len() == 10
+        && text.bytes().enumerate().all(|(i, b)| {
+            if i == 4 || i == 7 {
+                b == b'-'
+            } else {
+                b.is_ascii_digit()
+            }
+        });
+    if !shaped {
         return Err(ExamError::Invalid(ExamProblem::DateInvalid));
     }
     NaiveDate::parse_from_str(text, "%Y-%m-%d")
@@ -981,6 +989,10 @@ mod tests {
                 .await
                 .is_err());
             assert!(insert("ok", "2026-1-1", Some(sample), None).await.is_err());
+            assert!(insert("ok", "2026-02-30", Some(sample), None)
+                .await
+                .is_err());
+            assert!(insert("ok", "2028-02-29", Some(sample), None).await.is_ok());
             assert!(insert("ok", "2026-12-01", None, None).await.is_err());
             assert!(insert("ok", "2026-12-01", Some(sample), Some(1))
                 .await

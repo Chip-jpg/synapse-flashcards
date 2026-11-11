@@ -23,9 +23,11 @@ CREATE TABLE exams (
     -- 1 to 100 characters (`exams::TITLE_MAX_CHARS`), not blank.
     title      TEXT NOT NULL
                CHECK (length(title) BETWEEN 1 AND 100 AND length(trim(title)) >= 1),
+    -- `date()` is NULL for an impossible date, and a CHECK that is NULL
+    -- passes, so compare with IS (NULL IS 'x' is false), not =.
     exam_date  TEXT NOT NULL
                CHECK (exam_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
-                      AND date(exam_date) = exam_date),
+                      AND date(exam_date) IS exam_date),
     deck_id    INTEGER REFERENCES decks (id),
     tag_id     INTEGER REFERENCES tags (id),
     created_at TEXT NOT NULL,
