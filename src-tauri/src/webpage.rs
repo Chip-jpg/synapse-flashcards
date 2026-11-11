@@ -78,7 +78,9 @@ pub(crate) fn declared_charset(bytes: &[u8]) -> Option<String> {
 
 /// A saved page's text as a note body, its title and its picture count.
 pub fn read(html: &str) -> Page {
-    let tokens = tokenize(html);
+    // CRLF and lone CR become LF, so a stray `\r` never reaches the text.
+    let html = html.replace("\r\n", "\n").replace('\r', "\n");
+    let tokens = tokenize(&html);
     let title = title_of(&tokens);
     let mut rendered = None;
     if let Some((from, to)) = region(&tokens) {
@@ -882,6 +884,15 @@ mod tests {
         // The picture is left out and counted.
         assert!(!body.contains("diagram.png"), "{body:?}");
         assert_eq!(page.images_left_out, 1);
+    }
+
+    #[test]
+    fn crlf_and_lone_cr_line_endings_leave_no_carriage_returns() {
+        let html = "<html><head><title>T\r\nitle</title></head><body>\r\n<p>One\r\ntwo\rthree</p>\r\n<pre>a\r\n  b\rc</pre>\r\n</body></html>";
+        let page = read(html);
+        assert!(!page.body.contains('\r'), "{:?}", page.body);
+        assert!(!page.title.unwrap_or_default().contains('\r'));
+        assert!(page.body.contains("```\na\n  b\nc\n```"), "{:?}", page.body);
     }
 
     #[test]
