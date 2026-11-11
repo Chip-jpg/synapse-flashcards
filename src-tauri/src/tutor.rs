@@ -305,7 +305,7 @@ Rules:
 \"question\" and \"reference\" in correct, natural Italian. Only the JSON keys stay in English; \
 \"quote\" is always copied from the note in its own language.
 - Use only what the note says. Never add facts from your own knowledge, even true ones.
-- Write at most 5\"questions\". Each must need an explanation in the student's own words, not a \
+- Write at most 5 \"questions\". Each must need an explanation in the student's own words, not a \
 single word or a yes/no.
 - For every question write a \"reference\": the short correct answer, using the note's words.
 - For every question copy into \"quote\" the exact words in the note the answer comes from: one \
