@@ -123,7 +123,7 @@ impl From<AssetError> for SourceError {
 pub fn media_type(kind: FileKind) -> MediaType {
     match kind {
         FileKind::Pdf => MediaType::Pdf,
-        FileKind::Text | FileKind::Markdown => MediaType::Text,
+        FileKind::Text | FileKind::Markdown | FileKind::Srt | FileKind::Vtt => MediaType::Text,
         FileKind::Word => MediaType::Word,
         FileKind::PowerPoint => MediaType::PowerPoint,
     }
@@ -132,7 +132,9 @@ pub fn media_type(kind: FileKind) -> MediaType {
 fn kind_name(kind: FileKind) -> &'static str {
     match kind {
         FileKind::Pdf => "pdf",
-        FileKind::Text => "text",
+        // Subtitle files are kept as text sources: the `kind` column's CHECK
+        // (migration 0016) has no value for them.
+        FileKind::Text | FileKind::Srt | FileKind::Vtt => "text",
         FileKind::Markdown => "markdown",
         FileKind::Word => "word",
         FileKind::PowerPoint => "powerPoint",
@@ -557,6 +559,8 @@ pub fn copy_file_name(source: &Source) -> String {
     let extension = match source.kind {
         FileKind::Pdf => "pdf",
         FileKind::Text => "txt",
+        FileKind::Srt => "srt",
+        FileKind::Vtt => "vtt",
         FileKind::Markdown => "md",
         FileKind::Word => "docx",
         FileKind::PowerPoint => "pptx",
@@ -565,7 +569,10 @@ pub fn copy_file_name(source: &Source) -> String {
         .extension()
         .is_some_and(|found| {
             let found = found.to_string_lossy().to_lowercase();
-            found == extension || (source.kind == FileKind::Markdown && found == "markdown")
+            found == extension
+                || (source.kind == FileKind::Markdown && found == "markdown")
+                // A kept subtitle file reads back as text.
+                || (source.kind == FileKind::Text && (found == "srt" || found == "vtt"))
         });
     if !has_extension {
         name.push('.');

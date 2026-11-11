@@ -172,3 +172,31 @@ describe("importing a file as a note", () => {
     expect(argsOf("create_note")).toEqual([]);
   });
 });
+
+describe("importing a lesson transcript", () => {
+  const TRANSCRIPT: ImportedFile = {
+    status: "read",
+    fileName: "lesson.srt",
+    kind: "text",
+    title: "lesson",
+    body: "[0:01] Hello there.\n\n[0:35] New paragraph.",
+    pages: null,
+    pagesWithoutText: [],
+  };
+
+  it("opens the transcript with its timestamps to check, and saves them as written", async () => {
+    const { user, argsOf } = openNotes({ import_source: () => keptSource(TRANSCRIPT) });
+    await user.click(await screen.findByRole("button", { name: "Import file" }));
+
+    expect(await screen.findByRole("heading", { name: "New note from lesson.srt" })).toBeTruthy();
+    expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("lesson");
+    expect((screen.getByLabelText("Note") as HTMLTextAreaElement).value).toBe(TRANSCRIPT.body);
+
+    await user.click(screen.getByRole("button", { name: "Save note" }));
+
+    expect(await screen.findByText("Note saved.")).toBeTruthy();
+    expect(argsOf("create_note_from_source")).toEqual([
+      { sourceId: 3, title: "lesson", body: TRANSCRIPT.body, pictures: [] },
+    ]);
+  });
+});

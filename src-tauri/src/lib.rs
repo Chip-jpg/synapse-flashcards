@@ -26,6 +26,7 @@ mod stats;
 mod study;
 mod suggest;
 mod tags;
+mod transcript;
 mod vision;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

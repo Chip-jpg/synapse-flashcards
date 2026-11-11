@@ -62,11 +62,18 @@ pub enum FileKind {
     Markdown,
     Word,
     PowerPoint,
+    /// Subtitle files of a lesson transcript. The frontend sees them as
+    /// `text`, and they are kept as text sources (no migration needed).
+    #[serde(rename = "text")]
+    Srt,
+    #[serde(rename = "text")]
+    Vtt,
 }
 
 impl FileKind {
     /// The extensions offered in the file window, without the dot.
-    pub const EXTENSIONS: [&'static str; 6] = ["pdf", "txt", "md", "markdown", "docx", "pptx"];
+    pub const EXTENSIONS: [&'static str; 8] =
+        ["pdf", "txt", "md", "markdown", "docx", "pptx", "srt", "vtt"];
 
     /// The kind of file `path` is, by its extension (any letter case).
     pub fn of(path: &Path) -> Option<FileKind> {
@@ -77,6 +84,8 @@ impl FileKind {
             "md" | "markdown" => FileKind::Markdown,
             "docx" => FileKind::Word,
             "pptx" => FileKind::PowerPoint,
+            "srt" => FileKind::Srt,
+            "vtt" => FileKind::Vtt,
             _ => return None,
         })
     }
@@ -165,10 +174,22 @@ pub fn read_document(path: &Path, helper: &Path) -> Result<Document, ExtractErro
         .unwrap_or_default();
 
     let (own_title, body, pages, pages_without_text, page_texts) = match kind {
-        FileKind::Text => (None, decode_text(&bytes), None, Vec::new(), None),
+        FileKind::Text => {
+            // A lesson transcript with `[mm:ss]` lines gets normalised
+            // timestamps; any other text is kept as it is.
+            let text = decode_text(&bytes);
+            let body = crate::transcript::from_timestamped_text(&text).unwrap_or(text);
+            (None, body, None, Vec::new(), None)
+        }
         FileKind::Markdown => {
             let text = decode_text(&bytes).replace("\r\n", "\n");
-            (markdown_title(&text), text, None, Vec::new(), None)
+            let body =
+                crate::transcript::from_timestamped_text(&text).unwrap_or_else(|| text.clone());
+            (markdown_title(&text), body, None, Vec::new(), None)
+        }
+        FileKind::Srt | FileKind::Vtt => {
+            let body = crate::transcript::from_cue_file(&decode_text(&bytes));
+            (None, body, None, Vec::new(), None)
         }
         FileKind::Word => {
             let (title, body) = word_text(&bytes)?;
@@ -854,6 +875,8 @@ mod tests {
             ("notes.markdown", Some(FileKind::Markdown)),
             ("essay.DocX", Some(FileKind::Word)),
             ("talk.pptx", Some(FileKind::PowerPoint)),
+            ("lesson.SRT", Some(FileKind::Srt)),
+            ("lesson.vtt", Some(FileKind::Vtt)),
             ("old.doc", None),
             ("old.ppt", None),
             ("picture.png", None),

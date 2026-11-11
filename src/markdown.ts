@@ -19,7 +19,8 @@ export type Inline =
   | { type: "code"; text: string }
   | { type: "em" | "strong" | "del"; children: Inline[] }
   | { type: "link"; url: string; children: Inline[] }
-  | { type: "image"; url: string; alt: string };
+  | { type: "image"; url: string; alt: string }
+  | { type: "timestamp"; seconds: number; label: string };
 
 export type Align = "left" | "center" | "right" | null;
 
@@ -102,13 +103,50 @@ function startsBlock(line: string, inParagraph: boolean): boolean {
   return !inParagraph || (!item.empty && (!item.ordered || item.start === 1));
 }
 
+/**
+ * A time marker (`[m:ss]` or `[h:mm:ss]`, as imported lesson transcripts
+ * write them) at the start of a line, followed by a space or the line's end,
+ * so `[1]`, `[1:30](link)` and `[12:75]` stay as they are.
+ */
+const TIMESTAMP = /^\[(?:(\d{1,3}):([0-5]\d):([0-5]\d)|([0-5]?\d):([0-5]\d))\](?=\s|$)/;
+
+/** A paragraph's lines as inline nodes, a marker that starts a line being a timestamp. */
+function parseParagraph(lines: string[]): Inline[] {
+  const content: Inline[] = [];
+  let segment: string[] = [];
+  const endSegment = () => {
+    if (segment.length === 0) return;
+    const marker = TIMESTAMP.exec(segment[0]);
+    if (marker) {
+      const seconds =
+        marker[1] !== undefined
+          ? Number(marker[1]) * 3600 + Number(marker[2]) * 60 + Number(marker[3])
+          : Number(marker[4]) * 60 + Number(marker[5]);
+      content.push({ type: "timestamp", seconds, label: marker[0].slice(1, -1) });
+      segment[0] = segment[0].slice(marker[0].length);
+    }
+    content.push(...parseInline(segment.join("\n")));
+    segment = [];
+  };
+  for (const line of lines) {
+    // Each line that starts with a marker begins its own run of inline text.
+    if (segment.length > 0 && TIMESTAMP.test(line)) {
+      endSegment();
+      content.push({ type: "text", text: "\n" });
+    }
+    segment.push(line);
+  }
+  endSegment();
+  return content;
+}
+
 function parseBlocks(lines: string[], depth: number): Block[] {
   const blocks: Block[] = [];
   let paragraph: string[] = [];
 
   function endParagraph() {
     if (paragraph.length > 0) {
-      blocks.push({ type: "paragraph", content: parseInline(paragraph.join("\n")) });
+      blocks.push({ type: "paragraph", content: parseParagraph(paragraph) });
       paragraph = [];
     }
   }
@@ -545,6 +583,8 @@ export function plainText(nodes: Inline[]): string {
           return node.text;
         case "image":
           return node.alt;
+        case "timestamp":
+          return `[${node.label}]`;
         default:
           return plainText(node.children);
       }
