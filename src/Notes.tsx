@@ -1964,6 +1964,11 @@ function ImportSummary({ imported, length }: { imported: SourceNoteDraft; length
           } had no text Synapse could read. They may be scanned images, so check whether anything is missing.`}
         </p>
       )}
+      {(imported.imagesLeftOut ?? 0) > 0 && (
+        <p className="import-warning">
+          {`${counted(imported.imagesLeftOut ?? 0, "picture")} on the page ${imported.imagesLeftOut === 1 ? "was" : "were"} left out: Synapse reads a saved page's text only, and loads nothing from the web.`}
+        </p>
+      )}
       {length > NOTE_BODY_MAX_CHARS && (
         <p className="import-warning">
           {`This text is ${length.toLocaleString("en-US")} characters long, but a note can hold 100,000. Shorten it before you save it, for example by keeping one chapter.`}

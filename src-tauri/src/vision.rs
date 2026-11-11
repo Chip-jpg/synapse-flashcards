@@ -591,6 +591,7 @@ mod tests {
                 body: "Typed text".to_string(),
                 pages: Some(3),
                 pages_without_text: vec![2, 3],
+                images_left_out: 0,
             },
             pages,
         }

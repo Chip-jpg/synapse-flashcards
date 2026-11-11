@@ -1915,7 +1915,7 @@ const HIDDEN_TAGS: [&str; 3] = ["script", "style", "svg"];
 /// A tag at the start of `text` (which starts with `<`): its length in bytes,
 /// its name in lowercase, and whether it closes (`</p>`). `None` when `<`
 /// doesn't start a tag, so it is text.
-fn parse_tag(text: &str) -> Option<(usize, String, bool)> {
+pub(crate) fn parse_tag(text: &str) -> Option<(usize, String, bool)> {
     let inner = &text[1..];
     let closing = inner.starts_with('/');
     let name_start = usize::from(closing);
@@ -1941,7 +1941,7 @@ fn parse_tag(text: &str) -> Option<(usize, String, bool)> {
 /// The character an entity at the start of `text` (which starts with `&`)
 /// stands for, and the entity's length. `None` when it isn't one, so `&` is
 /// text.
-fn parse_entity(text: &str) -> Option<(char, usize)> {
+pub(crate) fn parse_entity(text: &str) -> Option<(char, usize)> {
     let end = text[1..]
         .char_indices()
         .take(32)

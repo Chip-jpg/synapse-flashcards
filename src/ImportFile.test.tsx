@@ -200,3 +200,42 @@ describe("importing a lesson transcript", () => {
     ]);
   });
 });
+
+describe("importing a saved web page", () => {
+  const PAGE: ImportedFile = {
+    status: "read",
+    fileName: "Mitosis.html",
+    kind: "text",
+    title: "Mitosis explained",
+    body: "# Mitosis explained\n\nCells divide in phases. See [the textbook](https://example.org/book).",
+    pages: null,
+    pagesWithoutText: [],
+    imagesLeftOut: 3,
+  };
+
+  it("opens the page's text as Markdown, says pictures were left out, and saves it", async () => {
+    const { user, argsOf } = openNotes({ import_source: () => keptSource(PAGE) });
+    await user.click(await screen.findByRole("button", { name: "Import file" }));
+
+    expect(await screen.findByRole("heading", { name: "New note from Mitosis.html" })).toBeTruthy();
+    expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("Mitosis explained");
+    expect((screen.getByLabelText("Note") as HTMLTextAreaElement).value).toBe(PAGE.body);
+    expect(screen.getByText(/^3 pictures on the page were left out/)).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Save note" }));
+
+    expect(await screen.findByText("Note saved.")).toBeTruthy();
+    expect(argsOf("create_note_from_source")).toEqual([
+      { sourceId: 3, title: "Mitosis explained", body: PAGE.body, pictures: [] },
+    ]);
+  });
+
+  it("says nothing about pictures when the page had none", async () => {
+    const { user } = openNotes({
+      import_source: () => keptSource({ ...PAGE, imagesLeftOut: undefined }),
+    });
+    await user.click(await screen.findByRole("button", { name: "Import file" }));
+    await screen.findByRole("heading", { name: "New note from Mitosis.html" });
+    expect(screen.queryByText(/left out/)).toBeNull();
+  });
+});

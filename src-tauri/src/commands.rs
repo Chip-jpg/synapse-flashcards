@@ -5076,6 +5076,7 @@ mod tests {
                     body: "Slide 1\nMitosis".to_string(),
                     pages: Some(12),
                     pages_without_text: vec![4, 7],
+                    images_left_out: 0,
                 },
             })
             .unwrap(),

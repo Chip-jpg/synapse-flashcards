@@ -728,6 +728,8 @@ export type FileImport =
       body: string;
       pages: number | null;
       pagesWithoutText: number[];
+      /** A saved web page's pictures, left out of the text (absent: none). */
+      imagesLeftOut?: number;
     }
   | { status: "cancelled" };
 
@@ -1518,6 +1520,7 @@ export type SourceImport =
         body: string;
         pages: number | null;
         pagesWithoutText: number[];
+        imagesLeftOut?: number;
       };
     }
   | { status: "cancelled" };
