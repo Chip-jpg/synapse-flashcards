@@ -2093,6 +2093,218 @@ pub fn stop_tutor(tutoring: State<'_, Tutoring>) {
     tutoring.0.stop();
 }
 
+// --- Tutor: "Explain it" (open questions graded against the note) ---
+
+/// Turns a failed open-question or grading request into a user-safe error,
+/// logging internal detail. Neither the note nor any answer is ever logged.
+fn explain_error(err: SuggestError) -> CommandError {
+    match err {
+        SuggestError::NoteTooLong => CommandError::invalid(
+            "This is too long to use: up to 12,000 characters of a note can be used at a time.",
+        ),
+        SuggestError::NoteOverflowed => CommandError::failed(
+            "This note was too long for the model to read all at once. Try a shorter note.",
+        ),
+        SuggestError::Unusable(detail) => {
+            eprintln!("[synapse] the model's tutor answer was unusable: {detail}");
+            CommandError::failed(
+                "The model's answer wasn't usable. Try again, or choose another model.",
+            )
+        }
+        SuggestError::Ungrounded => CommandError::failed(
+            "None of what the model wrote could be traced back to your note, so none of it is \
+             shown. Try again, or choose a larger model.",
+        ),
+        SuggestError::Internal(detail) => {
+            eprintln!("[synapse] setting up a request to Ollama failed: {detail}");
+            CommandError::failed("Synapse couldn't ask Ollama.")
+        }
+        other => suggest_error(other),
+    }
+}
+
+/// The title and the text to use (the whole body, or one `part` of it) of an
+/// active note, for the tutor.
+async fn tutor_note_text(
+    app: &AppHandle,
+    database: &Database,
+    note_id: i64,
+    part: Option<NotePart>,
+) -> Result<(String, String), CommandError> {
+    let pool = pool(app, database).await?;
+    let note = notes::note(&pool, note_id).await.map_err(|err| {
+        note_error(
+            err,
+            "loading a note for the tutor",
+            "Synapse couldn't load this note.",
+        )
+    })?;
+    let body = match part {
+        None => note.body.as_str(),
+        Some(part) => suggest::part_of(&note.body, part).ok_or_else(|| {
+            CommandError::stale(
+                "That part of the note has changed. Go back to the note and try again.",
+            )
+        })?,
+    };
+    let body = body.to_string();
+    Ok((note.title, body))
+}
+
+/// What asking for open questions did: `{ "status": "written", "questions": [{
+/// question, reference, quote }], "dropped": 1, "leftOut": 0 }` or
+/// `{ "status": "stopped" }`.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum QuestionsOutcome {
+    Written {
+        questions: Vec<tutor::OpenQuestion>,
+        /// Questions dropped because their quote isn't in the note or their
+        /// answer isn't drawn from it.
+        dropped: usize,
+        /// Questions left out as unusable.
+        left_out: usize,
+    },
+    /// `stop_tutor` was called first.
+    Stopped,
+}
+
+/// Asks a local model in Ollama for up to 5 open questions about a note, each
+/// with the answer the note supports and its quote, kept only if the quote is
+/// in the note word for word and the answer drawn from it. Nothing is saved.
+///
+/// Arguments: `{ noteId, model, part? }`, as for `summarize_note`. Returns
+/// [`QuestionsOutcome`]; rejects with kind "stale" if the note was deleted, no
+/// longer has that part, or the model is no longer in Ollama. Stoppable with
+/// `stop_tutor`.
+#[tauri::command]
+pub async fn tutor_questions(
+    app: AppHandle,
+    database: State<'_, Database>,
+    tutoring: State<'_, Tutoring>,
+    note_id: i64,
+    model: String,
+    part: Option<NotePart>,
+) -> Result<QuestionsOutcome, CommandError> {
+    if note_id < 1 {
+        return Err(CommandError::invalid(NOTE_NOT_FOUND));
+    }
+    let request = tutoring.0.begin();
+    let work = async {
+        let (title, body) = tutor_note_text(&app, &database, note_id, part).await?;
+        let ollama = Ollama::local().map_err(explain_error)?;
+        tutor::open_questions(&ollama, &model, &title, &body)
+            .await
+            .map_err(explain_error)
+    };
+    match request.run(work).await {
+        None => Ok(QuestionsOutcome::Stopped),
+        Some(result) => result.map(|written| QuestionsOutcome::Written {
+            questions: written.questions,
+            dropped: written.dropped,
+            left_out: written.left_out,
+        }),
+    }
+}
+
+/// What grading an answer did: `{ "status": "written", "score": 70, "verdict":
+/// "partly", "correct": [..], "missed": [{ point, quote }], "wrong": [..],
+/// "dropped": 0 }` or `{ "status": "stopped" }`.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum GradeOutcome {
+    Written {
+        /// 0 to 100.
+        score: u8,
+        /// "right", "partly" or "wrong", worked out from the score.
+        verdict: tutor::Verdict,
+        correct: Vec<String>,
+        /// Points of the note the answer left out, each with its quote.
+        missed: Vec<tutor::MissedPoint>,
+        wrong: Vec<String>,
+        /// Missed points dropped because their quote isn't in the note.
+        dropped: usize,
+    },
+    /// `stop_tutor` was called first.
+    Stopped,
+}
+
+/// Asks a local model in Ollama to grade a student's own answer to one of
+/// `tutor_questions`' questions, judged only against the note. Missed points
+/// are kept only if their quote is in the note word for word. Nothing is saved.
+///
+/// Arguments: `{ noteId, model, part?, question, reference, quote, answer }`.
+/// A blank answer, or one over 4,000 characters, rejects with kind "invalid"
+/// before anything is sent. Returns [`GradeOutcome`]; other rejections are as
+/// for `tutor_questions`. Stoppable with `stop_tutor`.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn grade_answer(
+    app: AppHandle,
+    database: State<'_, Database>,
+    tutoring: State<'_, Tutoring>,
+    note_id: i64,
+    model: String,
+    part: Option<NotePart>,
+    question: String,
+    reference: String,
+    quote: String,
+    answer: String,
+) -> Result<GradeOutcome, CommandError> {
+    if note_id < 1 {
+        return Err(CommandError::invalid(NOTE_NOT_FOUND));
+    }
+    match tutor::check_answer(&answer) {
+        Ok(_) => {}
+        Err(tutor::AnswerProblem::Blank) => {
+            return Err(CommandError::invalid("Write your answer first."));
+        }
+        Err(tutor::AnswerProblem::TooLong) => {
+            return Err(CommandError::invalid(
+                "Answers can be at most 4,000 characters.",
+            ));
+        }
+    }
+    let request = tutoring.0.begin();
+    let work = async {
+        let (title, body) = tutor_note_text(&app, &database, note_id, part).await?;
+        let ollama = Ollama::local().map_err(explain_error)?;
+        let graded = tutor::GradeRequest {
+            title: &title,
+            body: &body,
+            question: &question,
+            reference: &reference,
+            quote: &quote,
+            answer: &answer,
+        };
+        tutor::grade(&ollama, &model, &graded)
+            .await
+            .map_err(|err| match err {
+                tutor::GradeError::Answer(_) => CommandError::invalid("Write your answer first."),
+                tutor::GradeError::Model(err) => explain_error(err),
+            })
+    };
+    match request.run(work).await {
+        None => Ok(GradeOutcome::Stopped),
+        Some(result) => result.map(|graded| GradeOutcome::Written {
+            score: graded.score,
+            verdict: graded.verdict,
+            correct: graded.correct,
+            missed: graded.missed,
+            wrong: graded.wrong,
+            dropped: graded.dropped,
+        }),
+    }
+}
+
 /// What choosing a file to import as a note did: `{ "status": "read", "fileName",
 /// "kind", "title", "body", "pages", "pagesWithoutText" }` or
 /// `{ "status": "cancelled" }`. Only the file's name is returned, never its

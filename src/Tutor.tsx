@@ -1,15 +1,24 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
+  createFlashcards,
   createNote,
   getModels,
+  gradeAnswer,
   stopTutor,
   summarizeNote,
   toCommandError,
+  tutorQuestions,
+  type CommandError,
+  type Deck,
+  type MissedPoint,
   type Note,
+  type OpenQuestion,
   type SummaryBullet,
   type SummaryKeyTerm,
+  type Verdict,
 } from "./api";
-import { SelectField } from "./forms";
+import { loadDeckChoices, type DeckChoices } from "./deckChoices";
+import { SelectField, TextField, useFormSave } from "./forms";
 import { SparkleIcon } from "./icons";
 import { noteParts, SUGGESTION_NOTE_MAX_CHARS } from "./noteParts";
 import { partLabel, preferredModel, rememberModel } from "./SuggestCards";
@@ -25,7 +34,10 @@ const SUMMARY_PREFIX = "Summary: ";
  * and the local models; later modes (explaining it, Socratic follow-up) are
  * added here and shown as tabs.
  */
-const MODES = [{ id: "summary", label: "Summarise" }] as const;
+const MODES = [
+  { id: "summary", label: "Summarise" },
+  { id: "explain", label: "Explain it" },
+] as const;
 type TutorMode = (typeof MODES)[number]["id"];
 
 type Setup =
@@ -144,6 +156,14 @@ export function Tutor({
           onNoModels={() => setSetup({ status: "ready", models: [] })}
         />
       )}
+      {mode === "explain" && (
+        <Explainer
+          note={note}
+          models={setup.models}
+          onCancel={onCancel}
+          onNoModels={() => setSetup({ status: "ready", models: [] })}
+        />
+      )}
     </section>
   );
 }
@@ -161,7 +181,9 @@ type Stage =
       saveError: string | null;
     };
 
-function choose(messages: Partial<Extract<Stage, { step: "choose" }>> = {}): Stage {
+type ChooseStage = Extract<Stage, { step: "choose" }>;
+
+function choose(messages: Partial<ChooseStage> = {}): ChooseStage {
   return { step: "choose", notice: null, modelError: null, error: null, ...messages };
 }
 
@@ -309,6 +331,7 @@ function Summariser({
       {stage.step === "choose" && (
         <ChooseModel
           key={round}
+          copy={SUMMARY_COPY}
           note={note}
           parts={
             split
@@ -338,7 +361,7 @@ function Summariser({
         <Writing
           key={round}
           model={stage.model}
-          part={part ? `part ${partIndex + 1} of your note` : null}
+          activity={`Writing a summary${part ? ` of part ${partIndex + 1} of your note` : ""}`}
           onStop={() => stopTutor().catch(() => {})}
         />
       )}
@@ -362,7 +385,29 @@ type PartChoice = {
   onChoose: (index: number) => void;
 };
 
+/** The words of the choose step, which differ by mode. */
+type ChooseCopy = { intro: string; partRule: string; modelHint: string; submit: string };
+
+const SUMMARY_COPY: ChooseCopy = {
+  intro:
+    "A model in Ollama, on this computer, reads the note and writes up to 10 bullet points and 10 key terms, in the note's language, each with the passage of your note it comes from. Points whose passage isn't in your note are left out. The note doesn't leave this computer, and nothing is saved unless you save the summary as a new note.",
+  partRule: "A summary covers one part at a time; come back for the others.",
+  modelHint:
+    "One of the models in Ollama on this computer. Larger models usually write better summaries, but take longer.",
+  submit: "Summarise",
+};
+
+const EXPLAIN_COPY: ChooseCopy = {
+  intro:
+    "A model in Ollama, on this computer, asks up to 5 questions about the note. You answer each in your own words, and the model checks your answer against the note only, showing what you got right, what you missed (with the passage of your note) and what was wrong. Questions whose passage isn't in your note are left out. The note and your answers don't leave this computer, and nothing is saved unless you add missed points as cards.",
+  partRule: "Questions cover one part at a time; come back for the others.",
+  modelHint:
+    "One of the models in Ollama on this computer. Larger models usually ask and grade better, but take longer.",
+  submit: "Ask me questions",
+};
+
 function ChooseModel({
+  copy,
   note,
   parts,
   part,
@@ -373,6 +418,7 @@ function ChooseModel({
   onStart,
   onCancel,
 }: {
+  copy: ChooseCopy;
   note: Note;
   parts: PartChoice | null;
   part: { index: number; count: number; text: string } | null;
@@ -394,10 +440,7 @@ function ChooseModel({
         <p className="note-body">{part ? part.text : note.body}</p>
       </section>
       <p id="tutor-hint" className="field-hint">
-        A model in Ollama, on this computer, reads the note and writes up to 10 bullet points and 10
-        key terms, in the note's language, each with the passage of your note it comes from. Points
-        whose passage isn't in your note are left out. The note doesn't leave this computer, and
-        nothing is saved unless you save the summary as a new note.
+        {copy.intro}
       </p>
       <form
         className="suggest-step"
@@ -414,7 +457,7 @@ function ChooseModel({
           <SelectField
             id="tutor-part"
             label="Part of the note"
-            hint={`This note is ${parts.noteLength.toLocaleString("en-US")} characters long, more than the ${SUGGESTION_NOTE_MAX_CHARS.toLocaleString("en-US")} a model reads at once, so it's split into ${parts.labels.length} parts where paragraphs end. A summary covers one part at a time; come back for the others.`}
+            hint={`This note is ${parts.noteLength.toLocaleString("en-US")} characters long, more than the ${SUGGESTION_NOTE_MAX_CHARS.toLocaleString("en-US")} a model reads at once, so it's split into ${parts.labels.length} parts where paragraphs end. ${copy.partRule}`}
             value={String(parts.index)}
             options={parts.labels.map((label, index) => ({ value: String(index), label }))}
             placeholder="Choose a part"
@@ -427,7 +470,7 @@ function ChooseModel({
         <SelectField
           id="tutor-model"
           label="Model"
-          hint="One of the models in Ollama on this computer. Larger models usually write better summaries, but take longer."
+          hint={copy.modelHint}
           describedBy="tutor-hint"
           value={model}
           options={models.map((name) => ({ value: name, label: name }))}
@@ -439,7 +482,7 @@ function ChooseModel({
         <div className="form-actions">
           <button type="submit" className="button button-primary">
             <SparkleIcon />
-            Summarise
+            {copy.submit}
           </button>
           <button type="button" className="button" onClick={onCancel}>
             Cancel
@@ -458,11 +501,12 @@ function ChooseModel({
 /** While the model works. Focus goes to the status, so a held Enter can't stop it. */
 function Writing({
   model,
-  part,
+  activity,
   onStop,
 }: {
   model: string;
-  part: string | null;
+  /** What the model is doing, such as "Writing a summary". */
+  activity: string;
   onStop: () => void;
 }) {
   const statusRef = useFocusOnMount<HTMLParagraphElement>(true);
@@ -473,7 +517,7 @@ function Writing({
       <p ref={statusRef} className="confirm-question" role="status" tabIndex={-1}>
         {stopping
           ? "Stopping…"
-          : `Writing a summary${part ? ` of ${part}` : ""} with ${model}… This can take a minute or more, depending on the model and this computer.`}
+          : `${activity} with ${model}… This can take a minute or more, depending on the model and this computer.`}
       </p>
       <div className="deck-actions">
         <button
@@ -580,5 +624,626 @@ function Shown({
         </button>
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Explain it: open questions answered in the student's own words, graded
+// against the note.
+// ---------------------------------------------------------------------------
+
+/** The most characters an answer may have (`ANSWER_MAX_CHARS` in `tutor.rs`). */
+export const ANSWER_MAX_CHARS = 4_000;
+
+type ExplainStage =
+  | ChooseStage
+  | { step: "writing"; model: string }
+  | {
+      step: "practice";
+      model: string;
+      questions: OpenQuestion[];
+      index: number;
+      dropped: number;
+      leftOut: number;
+    };
+
+/** "1 card", "3 cards". */
+function cardCount(count: number): string {
+  return count === 1 ? "1 card" : `${count} cards`;
+}
+
+const VERDICT_LABELS: Record<Verdict, string> = {
+  right: "Right",
+  partly: "Partly right",
+  wrong: "Not right",
+};
+
+/** What was left out of the questions, said above the first one. */
+function questionsLeftOut(dropped: number, leftOut: number): string {
+  const droppedText =
+    dropped === 0
+      ? ""
+      : dropped === 1
+        ? " 1 question was left out because its passage couldn't be found in your note."
+        : ` ${dropped} questions were left out because their passages couldn't be found in your note.`;
+  const leftOutText =
+    leftOut === 0
+      ? ""
+      : leftOut === 1
+        ? " 1 more was left out because it was empty, too long or a repeat."
+        : ` ${leftOut} more were left out because they were empty, too long or repeats.`;
+  return `${droppedText}${leftOutText}`;
+}
+
+/**
+ * "Explain it": choose a model (and a part, for a long note), get questions,
+ * answer each in your own words, and see it graded against the note. Missed
+ * points can be added as cards. Nothing else is stored.
+ */
+function Explainer({
+  note,
+  models: initialModels,
+  onCancel,
+  onNoModels,
+}: {
+  note: Note;
+  models: string[];
+  onCancel: () => void;
+  onNoModels: () => void;
+}) {
+  const parts = useMemo(() => noteParts(note.body), [note.body]);
+  const split = parts.length > 1;
+  const [partIndex, setPartIndex] = useState(0);
+  const part = split ? parts[partIndex] : null;
+  const [models, setModels] = useState(initialModels);
+  const [model, setModel] = useState(() => preferredModel(initialModels));
+  const [stage, setStage] = useState<ExplainStage>(() => choose());
+  // Bumped with every stage, so each one remounts and takes focus.
+  const [round, setRound] = useState(0);
+  const writingRef = useRef(false);
+  const shownRef = useRef(true);
+
+  useEffect(() => {
+    shownRef.current = true;
+    return () => {
+      shownRef.current = false;
+      // Leaving while the questions are written: stop it, so the model isn't kept busy.
+      if (writingRef.current) stopTutor().catch(() => {});
+    };
+  }, []);
+
+  function show(next: ExplainStage) {
+    setStage(next);
+    setRound((n) => n + 1);
+  }
+
+  async function refreshModels(): Promise<string[] | null> {
+    try {
+      const fresh = await getModels();
+      if (!shownRef.current) return fresh;
+      if (fresh.length === 0) {
+        onNoModels();
+        return fresh;
+      }
+      setModels(fresh);
+      setModel((current) => (fresh.includes(current) ? current : ""));
+      return fresh;
+    } catch {
+      return null;
+    }
+  }
+
+  /** The model or the note's part went stale: back to the choice, saying why. */
+  async function backToChoice(failure: CommandError, usedModel: string) {
+    const fresh = failure.kind === "stale" ? await refreshModels() : null;
+    if (!shownRef.current) return;
+    show(
+      fresh !== null && !fresh.includes(usedModel)
+        ? choose({ modelError: failure.message })
+        : choose({ error: failure.message })
+    );
+  }
+
+  async function start(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (writingRef.current) return;
+    if (model === "") {
+      show(choose({ modelError: "Choose a model to ask the questions with." }));
+      return;
+    }
+    writingRef.current = true;
+    show({ step: "writing", model });
+
+    try {
+      const outcome = await tutorQuestions(note.id, model, part ?? undefined);
+      writingRef.current = false;
+      if (!shownRef.current) return;
+      if (outcome.status === "stopped") {
+        show(choose({ notice: "Stopped. No questions were written." }));
+      } else {
+        rememberModel(model);
+        show({
+          step: "practice",
+          model,
+          questions: outcome.questions,
+          index: 0,
+          dropped: outcome.dropped,
+          leftOut: outcome.leftOut,
+        });
+      }
+    } catch (err) {
+      writingRef.current = false;
+      await backToChoice(toCommandError(err), model);
+    }
+  }
+
+  return (
+    <>
+      {stage.step === "choose" && (
+        <ChooseModel
+          key={round}
+          copy={EXPLAIN_COPY}
+          note={note}
+          parts={
+            split
+              ? {
+                  labels: parts.map((each, index) => partLabel(each, index, parts.length)),
+                  index: partIndex,
+                  noteLength: Array.from(note.body).length,
+                  onChoose: setPartIndex,
+                }
+              : null
+          }
+          part={part ? { index: partIndex, count: parts.length, text: part.text } : null}
+          models={models}
+          model={model}
+          stage={stage}
+          onModel={(value) => {
+            setModel(value);
+            setStage((current) =>
+              current.step === "choose" ? { ...current, modelError: null } : current
+            );
+          }}
+          onStart={start}
+          onCancel={onCancel}
+        />
+      )}
+      {stage.step === "writing" && (
+        <Writing
+          key={round}
+          model={stage.model}
+          activity={`Writing questions${part ? ` about part ${partIndex + 1} of your note` : ""}`}
+          onStop={() => stopTutor().catch(() => {})}
+        />
+      )}
+      {stage.step === "practice" && (
+        <Practice
+          key={`${round}-${stage.index}`}
+          note={note}
+          part={part}
+          model={stage.model}
+          question={stage.questions[stage.index]}
+          position={stage.index + 1}
+          total={stage.questions.length}
+          leftOut={stage.index === 0 ? questionsLeftOut(stage.dropped, stage.leftOut) : ""}
+          onNext={() =>
+            setStage((current) =>
+              current.step === "practice" && current.index + 1 < current.questions.length
+                ? { ...current, index: current.index + 1, dropped: 0, leftOut: 0 }
+                : current
+            )
+          }
+          onAgain={() => show(choose())}
+          onDone={onCancel}
+          onStale={(failure) => backToChoice(failure, stage.model)}
+        />
+      )}
+    </>
+  );
+}
+
+type Graded = {
+  score: number;
+  verdict: Verdict;
+  correct: string[];
+  missed: MissedPoint[];
+  wrong: string[];
+  dropped: number;
+};
+
+/**
+ * One question: the answer box, then the grade. A typed answer not yet graded,
+ * or graded misses not yet added as cards, count as unsaved changes.
+ */
+function Practice({
+  note,
+  part,
+  model,
+  question,
+  position,
+  total,
+  leftOut,
+  onNext,
+  onAgain,
+  onDone,
+  onStale,
+}: {
+  note: Note;
+  part: { start: number; end: number } | null;
+  model: string;
+  question: OpenQuestion;
+  position: number;
+  total: number;
+  leftOut: string;
+  onNext: () => void;
+  onAgain: () => void;
+  onDone: () => void;
+  onStale: (failure: CommandError) => void;
+}) {
+  const [answer, setAnswer] = useState("");
+  const [phase, setPhase] = useState<"answering" | "grading" | "graded">("answering");
+  const [graded, setGraded] = useState<Graded | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [added, setAdded] = useState<{ deck: string; count: number } | null>(null);
+  const gradingRef = useRef(false);
+  const shownRef = useRef(true);
+  const resultRef = useFocusOnMount<HTMLParagraphElement>(phase === "graded");
+
+  useUnsavedChanges(
+    (phase !== "graded" && answer.trim() !== "") ||
+      (graded !== null && graded.missed.length > 0 && added === null)
+  );
+
+  useEffect(() => {
+    shownRef.current = true;
+    return () => {
+      shownRef.current = false;
+      // Leaving while the answer is graded: stop it, so the model isn't kept busy.
+      if (gradingRef.current) stopTutor().catch(() => {});
+    };
+  }, []);
+
+  async function check(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (gradingRef.current) return;
+    setNotice(null);
+    if (answer.trim() === "") {
+      setError("Write your answer first.");
+      return;
+    }
+    if (Array.from(answer.trim()).length > ANSWER_MAX_CHARS) {
+      setError(`Answers can be at most ${ANSWER_MAX_CHARS.toLocaleString("en-US")} characters.`);
+      return;
+    }
+    setError(null);
+    gradingRef.current = true;
+    setPhase("grading");
+    try {
+      const outcome = await gradeAnswer(note.id, model, question, answer, part ?? undefined);
+      gradingRef.current = false;
+      if (!shownRef.current) return;
+      if (outcome.status === "stopped") {
+        setNotice("Stopped. Your answer wasn't graded.");
+        setPhase("answering");
+      } else {
+        setGraded(outcome);
+        setPhase("graded");
+      }
+    } catch (err) {
+      gradingRef.current = false;
+      if (!shownRef.current) return;
+      const failure = toCommandError(err);
+      if (failure.kind === "stale") {
+        onStale(failure);
+        return;
+      }
+      setError(failure.message);
+      setPhase("answering");
+    }
+  }
+
+  return (
+    <div className="suggest-step">
+      {leftOut !== "" && <p className="field-hint">{leftOut.trim()}</p>}
+      <h3 className="side-label">{`Question ${position} of ${total}`}</h3>
+      <p className="quiz-missed-question">{question.question}</p>
+
+      {phase === "answering" && (
+        <form aria-label="Answer the question" noValidate onSubmit={check}>
+          {notice && (
+            <p className="notice" role="status">
+              {notice}
+            </p>
+          )}
+          <TextField
+            id="tutor-answer"
+            label="Your answer"
+            hint={`In your own words. The model grades it against your note only. Up to ${ANSWER_MAX_CHARS.toLocaleString("en-US")} characters.`}
+            value={answer}
+            onChange={(value) => {
+              setAnswer(value);
+              setError(null);
+            }}
+            error={error ?? undefined}
+            required
+            multiline
+            rows={6}
+            autoFocus
+          />
+          <div className="form-actions">
+            <button type="submit" className="button button-primary">
+              Check my answer
+            </button>
+            <button type="button" className="button" onClick={onDone}>
+              Back to note
+            </button>
+          </div>
+        </form>
+      )}
+
+      {phase !== "answering" && (
+        <section aria-label="Your answer">
+          <h4 className="side-label">Your answer</h4>
+          <p className="note-body">{answer.trim()}</p>
+        </section>
+      )}
+
+      {phase === "grading" && (
+        <Writing
+          model={model}
+          activity="Checking your answer"
+          onStop={() => stopTutor().catch(() => {})}
+        />
+      )}
+
+      {phase === "graded" && graded && (
+        <>
+          <p ref={resultRef} className="notice" role="status" tabIndex={-1}>
+            {`${VERDICT_LABELS[graded.verdict]}: ${graded.score} out of 100.`}
+          </p>
+          <GradeDetails graded={graded} question={question} />
+          {added && (
+            <p className="notice" role="status">
+              {`Added ${cardCount(added.count)} to ${added.deck}.`}
+            </p>
+          )}
+          {graded.missed.length > 0 && added === null && (
+            <AddMisses
+              question={question.question}
+              missed={graded.missed}
+              onAdded={(deck, count) => setAdded({ deck, count })}
+            />
+          )}
+          <div className="form-actions">
+            {position < total && (
+              <button type="button" className="button button-primary" onClick={onNext}>
+                Next question
+              </button>
+            )}
+            <button type="button" className="button" onClick={onAgain}>
+              New questions
+            </button>
+            <button type="button" className="button" onClick={onDone}>
+              Back to note
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function GradeDetails({ graded, question }: { graded: Graded; question: OpenQuestion }) {
+  const nothing =
+    graded.correct.length === 0 && graded.missed.length === 0 && graded.wrong.length === 0;
+  return (
+    <>
+      {nothing && <p className="field-hint">The model gave no details.</p>}
+      {graded.correct.length > 0 && (
+        <>
+          <h4 className="side-label">What you got right</h4>
+          <ul className="summary-list">
+            {graded.correct.map((each, index) => (
+              <li key={index}>{each}</li>
+            ))}
+          </ul>
+        </>
+      )}
+      {graded.missed.length > 0 && (
+        <>
+          <h4 className="side-label">What you missed</h4>
+          <ul className="summary-list">
+            {graded.missed.map((each, index) => (
+              <li key={index}>
+                <p>{each.point}</p>
+                <p className="field-hint">{`From your note: “${each.quote}”`}</p>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {graded.dropped > 0 && (
+        <p className="field-hint">
+          {graded.dropped === 1
+            ? "1 missed point was left out because its passage couldn't be found in your note."
+            : `${graded.dropped} missed points were left out because their passages couldn't be found in your note.`}
+        </p>
+      )}
+      {graded.wrong.length > 0 && (
+        <>
+          <h4 className="side-label">What was wrong</h4>
+          <ul className="summary-list">
+            {graded.wrong.map((each, index) => (
+              <li key={index}>{each}</li>
+            ))}
+          </ul>
+        </>
+      )}
+      <h4 className="side-label">The answer from your note</h4>
+      <p>{question.reference}</p>
+      <p className="field-hint">{`From your note: “${question.quote}”`}</p>
+    </>
+  );
+}
+
+/**
+ * Missed points as cards (the question on the front, the missed point on the
+ * back) for a chosen deck, all at once through `createFlashcards`.
+ */
+function AddMisses({
+  question,
+  missed,
+  onAdded,
+}: {
+  question: string;
+  missed: MissedPoint[];
+  onAdded: (deckName: string, count: number) => void;
+}) {
+  const [choices, setChoices] = useState<DeckChoices>({ status: "loading" });
+  // Every missed point is ticked to start with.
+  const [ticked, setTicked] = useState<Set<number>>(() => new Set(missed.map((_, index) => index)));
+  const [deckId, setDeckId] = useState("");
+
+  function loadChoices() {
+    loadDeckChoices().then((next) => {
+      setChoices(next);
+      if (next.status === "ready") {
+        setDeckId((current) =>
+          next.decks.some((deck) => String(deck.id) === current) ? current : ""
+        );
+      }
+    });
+  }
+
+  useEffect(loadChoices, []);
+
+  const chosen = missed.filter((_, index) => ticked.has(index));
+
+  const { saving, submit, fieldError, formError, edited } = useFormSave(
+    async () => {
+      if (chosen.length === 0) {
+        const none: CommandError = {
+          kind: "invalid",
+          message: "Tick at least one missed point to add as a card.",
+        };
+        throw none;
+      }
+      if (deckId === "") {
+        const unchosen: CommandError = {
+          kind: "invalid",
+          message: "Choose a deck for these cards.",
+          field: "deck",
+        };
+        throw unchosen;
+      }
+      const sent = chosen;
+      try {
+        const deck = await createFlashcards(
+          Number(deckId),
+          sent.map((each) => ({ front: question, back: each.point }))
+        );
+        return { deck, count: sent.length };
+      } catch (err) {
+        const error = toCommandError(err);
+        if (error.index !== undefined) {
+          // About one card's text: there's no field to fix, so say which.
+          const position = missed.indexOf(sent[error.index]) + 1;
+          const refused: CommandError = {
+            kind: error.kind,
+            message: `Missed point ${position}: ${error.message}`,
+          };
+          throw refused;
+        }
+        if (error.field || error.kind === "failed") throw err;
+        // A refusal about no card is about the deck: archived or gone since
+        // the list loaded. Nothing was saved.
+        loadChoices();
+        const refused: CommandError = { ...error, field: "deck" };
+        throw refused;
+      }
+    },
+    ({ deck, count }) => onAdded(deck.name, count),
+    (field) => (field === "deck" ? "tutor-deck" : undefined)
+  );
+
+  function toggle(index: number, on: boolean) {
+    if (saving) return;
+    setTicked((current) => {
+      const next = new Set(current);
+      if (on) next.add(index);
+      else next.delete(index);
+      return next;
+    });
+  }
+
+  return (
+    <form className="suggest-step" aria-label="Missed points" noValidate onSubmit={submit}>
+      <h4 className="draft-label">Add missed points as cards</h4>
+      <ul className="card-list">
+        {missed.map((each, index) => (
+          <li key={index}>
+            <label className="check-field">
+              <input
+                type="checkbox"
+                checked={ticked.has(index)}
+                aria-disabled={saving}
+                onChange={(event) => toggle(index, event.target.checked)}
+              />
+              <span>{each.point}</span>
+            </label>
+          </li>
+        ))}
+      </ul>
+
+      {choices.status === "loading" && (
+        <p className="loading" role="status">
+          Loading your decks…
+        </p>
+      )}
+      {choices.status === "error" && (
+        <p className="message-error" role="alert">
+          {choices.message}
+        </p>
+      )}
+      {choices.status === "ready" && choices.decks.length === 0 && (
+        <p className="field-hint">
+          You don't have a deck to add cards to yet. Create one on the Study Desk first; the Sample
+          deck can't take new cards.
+        </p>
+      )}
+      {choices.status === "ready" && choices.decks.length > 0 && (
+        <>
+          <SelectField
+            id="tutor-deck"
+            label="Deck"
+            hint="Each card has the question on the front and the missed point on the back, and is due for review straight away."
+            value={deckId}
+            options={choices.decks.map((deck: Deck) => ({ value: String(deck.id), label: deck.name }))}
+            placeholder="Choose a deck"
+            error={fieldError("deck")}
+            required
+            onChange={(value) => {
+              setDeckId(value);
+              edited("deck");
+            }}
+          />
+          <div className="form-actions">
+            {/* `aria-disabled` rather than `disabled`, so keyboard focus stays put. */}
+            <button type="submit" className="button button-primary" aria-disabled={saving}>
+              {`Add ${cardCount(chosen.length)}`}
+            </button>
+          </div>
+          <p className="form-status" role="status">
+            {saving ? "Saving…" : ""}
+          </p>
+        </>
+      )}
+      {formError && (
+        <p className="message-error" role="alert">
+          {formError}
+        </p>
+      )}
+    </form>
   );
 }
