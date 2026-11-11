@@ -2123,6 +2123,16 @@ fn explain_error(err: SuggestError) -> CommandError {
     }
 }
 
+/// The user-facing refusal for an answer the tutor won't take.
+fn answer_problem_error(problem: tutor::AnswerProblem) -> CommandError {
+    match problem {
+        tutor::AnswerProblem::Blank => CommandError::invalid("Write your answer first."),
+        tutor::AnswerProblem::TooLong => {
+            CommandError::invalid("Answers can be at most 4,000 characters.")
+        }
+    }
+}
+
 /// The title and the text to use (the whole body, or one `part` of it) of an
 /// active note, for the tutor.
 async fn tutor_note_text(
@@ -2262,17 +2272,7 @@ pub async fn grade_answer(
     if note_id < 1 {
         return Err(CommandError::invalid(NOTE_NOT_FOUND));
     }
-    match tutor::check_answer(&answer) {
-        Ok(_) => {}
-        Err(tutor::AnswerProblem::Blank) => {
-            return Err(CommandError::invalid("Write your answer first."));
-        }
-        Err(tutor::AnswerProblem::TooLong) => {
-            return Err(CommandError::invalid(
-                "Answers can be at most 4,000 characters.",
-            ));
-        }
-    }
+    tutor::check_answer(&answer).map_err(answer_problem_error)?;
     let request = tutoring.0.begin();
     let work = async {
         let (title, body) = tutor_note_text(&app, &database, note_id, part).await?;
@@ -2288,7 +2288,7 @@ pub async fn grade_answer(
         tutor::grade(&ollama, &model, &graded)
             .await
             .map_err(|err| match err {
-                tutor::GradeError::Answer(_) => CommandError::invalid("Write your answer first."),
+                tutor::GradeError::Answer(problem) => answer_problem_error(problem),
                 tutor::GradeError::Model(err) => explain_error(err),
             })
     };
@@ -2349,17 +2349,7 @@ pub async fn socratic_followup(
     if note_id < 1 {
         return Err(CommandError::invalid(NOTE_NOT_FOUND));
     }
-    match tutor::check_answer(&answer) {
-        Ok(_) => {}
-        Err(tutor::AnswerProblem::Blank) => {
-            return Err(CommandError::invalid("Write your answer first."));
-        }
-        Err(tutor::AnswerProblem::TooLong) => {
-            return Err(CommandError::invalid(
-                "Answers can be at most 4,000 characters.",
-            ));
-        }
-    }
+    tutor::check_answer(&answer).map_err(answer_problem_error)?;
     let request = tutoring.0.begin();
     let work = async {
         let (title, body) = tutor_note_text(&app, &database, note_id, part).await?;
@@ -2373,7 +2363,7 @@ pub async fn socratic_followup(
         tutor::socratic_followup(&ollama, &model, &asked)
             .await
             .map_err(|err| match err {
-                tutor::GradeError::Answer(_) => CommandError::invalid("Write your answer first."),
+                tutor::GradeError::Answer(problem) => answer_problem_error(problem),
                 tutor::GradeError::Model(err) => explain_error(err),
             })
     };
