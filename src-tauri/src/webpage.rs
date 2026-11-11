@@ -840,7 +840,7 @@ mod tests {
     const UNTITLED: &[u8] = include_bytes!("../testdata/html/untitled.html");
 
     fn page(bytes: &[u8]) -> Page {
-        read(&String::from_utf8(bytes.to_vec()).unwrap())
+        read(std::str::from_utf8(bytes).unwrap())
     }
 
     #[test]
