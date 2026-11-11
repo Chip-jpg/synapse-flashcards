@@ -51,6 +51,11 @@ migrations, validation, scheduling, and every business rule; React only calls ty
 - **Tags** — label cards and notes with one-word tags (`biology`, `bio::cells`), filter a deck, the
   notes or *Search* by tag, tag many cards at once, rename tags on the *Tags* screen, and review
   one tag's due cards from every deck together.
+- **Exam planner** — give a deck or a tag an exam date under *Exams* and see the days left, a daily
+  review goal, how many cards are new, due before the exam or below target, and an estimated
+  readiness; *Study now* starts the review, and the Study Desk shows your next exam. *Statistics*
+  adds your current and longest study streak and a 365-day calendar. The plan is an estimate from
+  your schedules and FSRS parameters, not a grade.
 - **Cards from a spreadsheet** — add front/back cards to a deck from a CSV or TSV file, after
   checking every row, and save a deck's cards as a CSV file.
 - **Picture cards (image occlusion)** — draw boxes over a picture (a diagram, a map, a labelled

@@ -316,7 +316,9 @@ export type Field =
   | "backPictures"
   | "header"
   | "boxes"
-  | "tags";
+  | "tags"
+  | "examDate"
+  | "examScope";
 
 /** Mirrors `CommandError` in `src-tauri/src/commands.rs`. */
 export type CommandError = {
