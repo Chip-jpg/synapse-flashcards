@@ -28,6 +28,7 @@ mod study;
 mod suggest;
 mod tags;
 mod transcript;
+mod tutor;
 mod vision;
 mod webpage;
 
@@ -48,6 +49,8 @@ pub fn run() {
         .manage(aid::Helping::default())
         // The quiz Ollama is writing, so it can be stopped.
         .manage(quiz::Quizzing::default())
+        // The tutor request (summary) Ollama is writing, so it can be stopped.
+        .manage(tutor::Tutoring::default())
         // The text being read from a picture or scanned pages, so it can be stopped.
         .manage(recognition::Recognising::default())
         // Fitting FSRS parameters, so it can be stopped, and its result.
@@ -145,6 +148,11 @@ pub fn run() {
             commands::stop_card_help,
             commands::quiz_note,
             commands::stop_quiz,
+            commands::summarize_note,
+            commands::stop_tutor,
+            commands::tutor_questions,
+            commands::grade_answer,
+            commands::socratic_followup,
             commands::read_anki_package,
             commands::import_anki_package,
             commands::cancel_anki_import,

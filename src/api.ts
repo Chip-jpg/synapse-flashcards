@@ -1920,3 +1920,139 @@ export function getExamPlan(examId: number): Promise<ExamPlan> {
 export function getStudyCalendar(): Promise<StudyCalendar> {
   return invoke<StudyCalendar>("get_study_calendar");
 }
+
+/** Mirrors `Bullet` in `src-tauri/src/tutor.rs`: a summary point and its quote from the note. */
+export type SummaryBullet = { text: string; quote: string };
+
+/** Mirrors `KeyTerm` in `src-tauri/src/tutor.rs`: a key term and its quote from the note. */
+export type SummaryKeyTerm = { term: string; quote: string };
+
+/**
+ * Mirrors `SummaryOutcome` in `src-tauri/src/commands.rs`. Nothing has been
+ * saved. `dropped` counts points whose quote isn't in the note; `leftOut`
+ * those unusable (blank, repeated, over the limits).
+ */
+export type SummaryOutcome =
+  | {
+      status: "written";
+      bullets: SummaryBullet[];
+      keyTerms: SummaryKeyTerm[];
+      dropped: number;
+      leftOut: number;
+    }
+  | { status: "stopped" };
+
+/**
+ * Asks `model`, in Ollama on this computer, to summarise a note, or `part` of
+ * one too long to use whole (see `noteParts.ts`). Nothing is saved. Resolves
+ * with `{ status: "stopped" }` if `stopTutor` is called first; rejects with
+ * kind "stale" if the model has left Ollama, or the note was deleted or no
+ * longer has that part.
+ */
+export function summarizeNote(
+  noteId: number,
+  model: string,
+  part?: { start: number; end: number }
+): Promise<SummaryOutcome> {
+  const where = part && { part: { start: part.start, end: part.end } };
+  return invoke<SummaryOutcome>("summarize_note", { noteId, model, ...where });
+}
+
+/** Mirrors `OpenQuestion` in `src-tauri/src/tutor.rs`. */
+export type OpenQuestion = { question: string; reference: string; quote: string };
+
+/** Mirrors `QuestionsOutcome` in `src-tauri/src/commands.rs`. Nothing has been saved. */
+export type QuestionsOutcome =
+  | { status: "written"; questions: OpenQuestion[]; dropped: number; leftOut: number }
+  | { status: "stopped" };
+
+/**
+ * Asks `model`, in Ollama on this computer, for open questions about a note
+ * (or `part` of one), each with the answer the note supports and its quote.
+ * Resolves with `{ status: "stopped" }` if `stopTutor` is called first.
+ */
+export function tutorQuestions(
+  noteId: number,
+  model: string,
+  part?: { start: number; end: number }
+): Promise<QuestionsOutcome> {
+  const where = part && { part: { start: part.start, end: part.end } };
+  return invoke<QuestionsOutcome>("tutor_questions", { noteId, model, ...where });
+}
+
+/** Mirrors `MissedPoint` in `src-tauri/src/tutor.rs`. */
+export type MissedPoint = { point: string; quote: string };
+
+/** Mirrors `Verdict` in `src-tauri/src/tutor.rs`. */
+export type Verdict = "right" | "partly" | "wrong";
+
+/** Mirrors `GradeOutcome` in `src-tauri/src/commands.rs`. `score` is 0–100. */
+export type GradeOutcome =
+  | {
+      status: "written";
+      score: number;
+      verdict: Verdict;
+      correct: string[];
+      missed: MissedPoint[];
+      wrong: string[];
+      dropped: number;
+    }
+  | { status: "stopped" };
+
+/**
+ * Asks `model` to grade `answer` (the student's own words, 1–4,000
+ * characters) to one of `tutorQuestions`' questions, against the note. A
+ * blank or oversized answer rejects with kind "invalid". Resolves with
+ * `{ status: "stopped" }` if `stopTutor` is called first.
+ */
+export function gradeAnswer(
+  noteId: number,
+  model: string,
+  question: OpenQuestion,
+  answer: string,
+  part?: { start: number; end: number }
+): Promise<GradeOutcome> {
+  const where = part && { part: { start: part.start, end: part.end } };
+  return invoke<GradeOutcome>("grade_answer", {
+    noteId,
+    model,
+    question: question.question,
+    reference: question.reference,
+    quote: question.quote,
+    answer,
+    ...where,
+  });
+}
+
+/** Mirrors `FollowupOutcome` in `src-tauri/src/commands.rs`. Nothing has been saved. */
+export type FollowupOutcome =
+  | { status: "written"; question: string; quote: string }
+  | { status: "stopped" };
+
+/**
+ * Asks `model` for ONE short guiding question after `answer` to `question`,
+ * grounded in a quote from the note. A blank or oversized answer rejects with
+ * kind "invalid". Resolves with `{ status: "stopped" }` if `stopTutor` is
+ * called first.
+ */
+export function socraticFollowup(
+  noteId: number,
+  model: string,
+  question: OpenQuestion,
+  answer: string,
+  part?: { start: number; end: number }
+): Promise<FollowupOutcome> {
+  const where = part && { part: { start: part.start, end: part.end } };
+  return invoke<FollowupOutcome>("socratic_followup", {
+    noteId,
+    model,
+    question: question.question,
+    answer,
+    ...where,
+  });
+}
+
+/** Stops the tutor request being written, if any, which frees up the model. */
+export function stopTutor(): Promise<void> {
+  return invoke<void>("stop_tutor");
+}
