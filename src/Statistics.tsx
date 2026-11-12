@@ -2,10 +2,12 @@ import { useEffect, useId, useState } from "react";
 import {
   getDecks,
   getStatistics,
+  getStudyCalendar,
   toCommandError,
   type DayCount,
   type Deck,
   type Statistics,
+  type StudyCalendar,
 } from "./api";
 import { Message, useFocusOnMount } from "./ui";
 
@@ -30,6 +32,8 @@ export function StatisticsScreen() {
   const [query, setQuery] = useState<Query>({ deckId: null, attempt: 0 });
   const [state, setState] = useState<StatsState>({ status: "loading" });
   const [notice, setNotice] = useState<string | null>(null);
+  // The calendar covers every deck and is a side note: without it the rest shows.
+  const [calendar, setCalendar] = useState<StudyCalendar | null>(null);
   const screenRef = useFocusOnMount<HTMLElement>(true);
   const filterId = useId();
 
@@ -38,6 +42,18 @@ export function StatisticsScreen() {
     getDecks()
       .then((list) => {
         if (current) setDecks(list);
+      })
+      .catch(() => {});
+    return () => {
+      current = false;
+    };
+  }, [query.attempt]);
+
+  useEffect(() => {
+    let current = true;
+    getStudyCalendar()
+      .then((value) => {
+        if (current) setCalendar(value);
       })
       .catch(() => {});
     return () => {
@@ -134,6 +150,7 @@ export function StatisticsScreen() {
         </Message>
       )}
       {state.status === "ready" && <StatsPanels stats={state.stats} />}
+      {calendar && calendar.days.length > 0 && <CalendarPanel calendar={calendar} />}
     </section>
   );
 }
@@ -211,6 +228,74 @@ function StatsPanels({ stats }: { stats: Statistics }) {
         <BarChart days={stats.forecast} unit="card" tone="sage" startsToday />
       </section>
     </div>
+  );
+}
+
+/** Heat level 0 (no reviews) to 4, relative to the busiest day. */
+function level(count: number, max: number): number {
+  return count === 0 ? 0 : Math.max(1, Math.ceil((count / max) * 4));
+}
+
+/**
+ * The last 365 days as a calendar heatmap with the current and longest
+ * streak. A streak is consecutive local days with at least one review; the
+ * current one is still alive if today has no review yet but yesterday did.
+ * Each square says its date and count in its title and accessible label.
+ */
+function CalendarPanel({ calendar }: { calendar: StudyCalendar }) {
+  const { days, currentStreak, longestStreak } = calendar;
+  const max = Math.max(1, ...days.map((d) => d.reviews));
+  const total = days.reduce((n, d) => n + d.reviews, 0);
+  const [year, month, date] = days[0].date.split("-").map(Number);
+  // Weeks are columns starting on Sunday, so the first day sits on its weekday.
+  const lead = new Date(year, month - 1, date).getDay();
+
+  return (
+    <section className="panel stats-calendar" aria-labelledby="stats-calendar">
+      <h3 id="stats-calendar" className="section-title">
+        Study calendar
+      </h3>
+      <dl className="stats-streaks">
+        <div className="stats-state">
+          <dt>Current streak</dt>
+          <dd>{plural(currentStreak, "day")}</dd>
+        </div>
+        <div className="stats-state">
+          <dt>Longest streak</dt>
+          <dd>{plural(longestStreak, "day")}</dd>
+        </div>
+      </dl>
+      <p className="field-hint">
+        {total === 0
+          ? "No reviews in the last 365 days."
+          : `${plural(total, "review")} in the last 365 days. Darker squares are busier days.`}
+      </p>
+      <ol className="heatmap" aria-label="Reviews per day, last 365 days">
+        {Array.from({ length: lead }, (_, i) => (
+          <li key={`lead-${i}`} className="heat-cell heat-blank" aria-hidden="true" />
+        ))}
+        {days.map((d) => {
+          const label = `${plural(d.reviews, "review")} on ${d.date}`;
+          return (
+            <li key={d.date} className="heat-cell-item">
+              <span
+                role="img"
+                aria-label={label}
+                title={label}
+                className={`heat-cell heat-${level(d.reviews, max)}`}
+              />
+            </li>
+          );
+        })}
+      </ol>
+      <p className="chart-axis heat-legend" aria-hidden="true">
+        <span>Less</span>
+        {[0, 1, 2, 3, 4].map((n) => (
+          <span key={n} className={`heat-cell heat-${n}`} />
+        ))}
+        <span>More</span>
+      </p>
+    </section>
   );
 }
 

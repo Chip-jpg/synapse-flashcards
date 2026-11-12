@@ -4,6 +4,7 @@ import { ArchivedDecks } from "./ArchivedDecks";
 import { Backup } from "./Backup";
 import { Dashboard } from "./Dashboard";
 import { DeckDetail } from "./DeckDetail";
+import { ExamPlanner } from "./ExamPlanner";
 import { NotesArea } from "./Notes";
 import { ReviewSession, type ReviewedTag } from "./ReviewSession";
 import { NEW_SEARCH, SearchScreen, type SearchCriteria } from "./Search";
@@ -35,6 +36,7 @@ type View =
     }
   | { screen: "sources"; sourceId?: number; notice?: string | null }
   | { screen: "tags" }
+  | { screen: "exams" }
   | { screen: "stats" }
   | { screen: "archived" }
   | { screen: "backup" }
@@ -47,6 +49,7 @@ const PLACE_VIEWS: Record<Place, View> = {
   desk: DECKS,
   search: { screen: "search", criteria: NEW_SEARCH, returnTo: null },
   tags: { screen: "tags" },
+  exams: { screen: "exams" },
   notes: { screen: "notes" },
   sources: { screen: "sources" },
   stats: { screen: "stats" },
@@ -81,6 +84,8 @@ function locate(view: View): { place: Place; atPlace: boolean; trail: string[] }
       return view.sourceId === undefined
         ? { place: "sources", atPlace: true, trail: ["Synapse", "Sources"] }
         : { place: "sources", atPlace: false, trail: ["Sources", "Source"] };
+    case "exams":
+      return { place: "exams", atPlace: true, trail: ["Synapse", "Exams"] };
     case "stats":
       return { place: "stats", atPlace: true, trail: ["Synapse", "Statistics"] };
     case "archived":
@@ -165,6 +170,7 @@ function App() {
             onOpen={(deckId) => show({ screen: "deck", deckId, justCreated: false })}
             onCreated={(deck) => show({ screen: "deck", deckId: deck.id, justCreated: true })}
             onOpenNotes={() => show({ screen: "notes" })}
+            onOpenExams={() => goTo("exams")}
           />
         )}
         {view.screen === "deck" && (
@@ -268,6 +274,13 @@ function App() {
             onFind={(tag) =>
               show({ screen: "search", criteria: { ...NEW_SEARCH, tag }, returnTo: null })
             }
+          />
+        )}
+        {view.screen === "exams" && (
+          <ExamPlanner
+            key={`${restores}:${visits}`}
+            onStart={startReview}
+            onStartTag={(tag) => show({ screen: "tagReview", tag })}
           />
         )}
         {view.screen === "stats" && <StatisticsScreen key={`${restores}:${visits}`} />}

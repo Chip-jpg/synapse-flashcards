@@ -21,6 +21,7 @@ use crate::authoring::{self, ArchivedDeck, AuthoringError, CardText, DeckDetail,
 use crate::cards_csv::{self, CardsImported, CsvCard, CsvError, Delimiter, Duplicate, RowProblem};
 use crate::cloze::{self, ClozeChanges, RestoreBlock};
 use crate::db::Database;
+use crate::exams;
 use crate::export::{self, ExportError};
 use crate::extract::{self, ExtractError, ExtractedText, FileKind};
 use crate::import::{self, ImportError, ImportState, RestoreError};
@@ -83,6 +84,10 @@ enum Field {
     Boxes,
     /// A card's or note's tags, or a tag's new name.
     Tags,
+    /// An exam's date.
+    ExamDate,
+    /// The deck or tag an exam covers.
+    ExamScope,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -4218,6 +4223,161 @@ pub async fn recognise_source_pages_with_model(
         }),
         Err(err) => Err(vision_error(err, CONTEXT, true)),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Exam planner (exams.rs)
+
+const EXAM_NOT_FOUND: &str = "That exam is no longer there.";
+
+impl CommandError {
+    /// A refused exam. The limits must match `exams.rs`.
+    fn invalid_exam(problem: exams::ExamProblem) -> Self {
+        use exams::ExamProblem;
+        let (field, message) = match problem {
+            ExamProblem::TitleBlank => (Field::Title, "Give the exam a title."),
+            ExamProblem::TitleTooLong => (Field::Title, "Titles can be at most 100 characters."),
+            ExamProblem::DateInvalid => (Field::ExamDate, "Choose a valid exam date."),
+            ExamProblem::ScopeNeeded => (
+                Field::ExamScope,
+                "Choose either a deck or a tag for the exam.",
+            ),
+            ExamProblem::ScopeGone => (
+                Field::ExamScope,
+                "That deck or tag isn't available. Choose another.",
+            ),
+        };
+        CommandError {
+            kind: ErrorKind::Invalid,
+            message,
+            field: Some(field),
+            index: None,
+        }
+    }
+}
+
+fn exam_error(err: exams::ExamError, what: &str, failure: &'static str) -> CommandError {
+    match err {
+        exams::ExamError::Invalid(problem) => CommandError::invalid_exam(problem),
+        exams::ExamError::NotFound => CommandError::stale(EXAM_NOT_FOUND),
+        exams::ExamError::Internal(detail) => {
+            eprintln!("[synapse] {what} failed: {detail}");
+            CommandError::failed(failure)
+        }
+    }
+}
+
+/// Every active exam, the soonest date first.
+///
+/// Returns `[{ id, title, examDate, deckId, tagId, scopeName, scopeArchived,
+/// createdAt }]`; `examDate` is `YYYY-MM-DD` on this computer's calendar and
+/// exactly one of `deckId` / `tagId` is set.
+#[tauri::command]
+pub async fn list_exams(
+    app: AppHandle,
+    database: State<'_, Database>,
+) -> Result<Vec<exams::Exam>, CommandError> {
+    let pool = pool(&app, &database).await?;
+    exams::list_exams(&pool)
+        .await
+        .map_err(|err| exam_error(err, "loading exams", "Synapse couldn't load your exams."))
+}
+
+/// Adds an exam for a deck or a tag (exactly one of `deckId`, `tagId`).
+/// A past date is allowed. Arguments: `{ title, examDate, deckId?, tagId? }`.
+/// Returns the exam (same shape as `list_exams`). Rejects with kind "invalid"
+/// and field "title", "examDate" or "examScope" if refused.
+#[tauri::command]
+pub async fn create_exam(
+    app: AppHandle,
+    database: State<'_, Database>,
+    title: String,
+    exam_date: String,
+    deck_id: Option<i64>,
+    tag_id: Option<i64>,
+) -> Result<exams::Exam, CommandError> {
+    let pool = pool(&app, &database).await?;
+    let scope = exams::Scope::from_ids(deck_id, tag_id)
+        .map_err(|err| exam_error(err, "adding an exam", "Synapse couldn't save the exam."))?;
+    exams::create_exam(&pool, &title, &exam_date, scope, Utc::now())
+        .await
+        .map_err(|err| exam_error(err, "adding an exam", "Synapse couldn't save the exam."))
+}
+
+/// Changes an exam's title and date (its deck or tag stays). Arguments:
+/// `{ examId, title, examDate }`. Returns the exam; "stale" if it is gone.
+#[tauri::command]
+pub async fn update_exam(
+    app: AppHandle,
+    database: State<'_, Database>,
+    exam_id: i64,
+    title: String,
+    exam_date: String,
+) -> Result<exams::Exam, CommandError> {
+    if exam_id < 1 {
+        return Err(CommandError::invalid(EXAM_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    exams::update_exam(&pool, exam_id, &title, &exam_date)
+        .await
+        .map_err(|err| exam_error(err, "changing an exam", "Synapse couldn't save the exam."))
+}
+
+/// Deletes an exam (soft: the row stays, it just isn't listed). Arguments:
+/// `{ examId }`. Returns nothing; "stale" if it is already gone.
+#[tauri::command]
+pub async fn delete_exam(
+    app: AppHandle,
+    database: State<'_, Database>,
+    exam_id: i64,
+) -> Result<(), CommandError> {
+    if exam_id < 1 {
+        return Err(CommandError::invalid(EXAM_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    exams::delete_exam(&pool, exam_id, Utc::now())
+        .await
+        .map_err(|err| exam_error(err, "deleting an exam", "Synapse couldn't delete the exam."))
+}
+
+/// The plan for one exam, on this computer's calendar. Reads only.
+/// Arguments: `{ examId }`. Returns `{ examId, title, examDate, status
+/// ("upcoming" | "today" | "finished"), daysLeft, cards, newCards,
+/// dueBeforeExam, belowTarget, dailyGoal, readiness }`; `readiness` is a
+/// percentage from 0 to 100. A past exam is "finished", not an error.
+#[tauri::command]
+pub async fn get_exam_plan(
+    app: AppHandle,
+    database: State<'_, Database>,
+    exam_id: i64,
+) -> Result<exams::ExamPlan, CommandError> {
+    if exam_id < 1 {
+        return Err(CommandError::invalid(EXAM_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    exams::plan_for(&pool, exam_id, Utc::now(), &chrono::Local)
+        .await
+        .map_err(|err| exam_error(err, "planning an exam", "Synapse couldn't plan the exam."))
+}
+
+/// Reviews per day for the last 365 local days, and the study streaks.
+/// Reads only. Returns `{ days: [{ date, reviews }], currentStreak,
+/// longestStreak }`, oldest day first and today last.
+#[tauri::command]
+pub async fn get_study_calendar(
+    app: AppHandle,
+    database: State<'_, Database>,
+) -> Result<exams::StudyCalendar, CommandError> {
+    let pool = pool(&app, &database).await?;
+    exams::study_calendar(&pool, Utc::now(), &chrono::Local)
+        .await
+        .map_err(|err| {
+            exam_error(
+                err,
+                "loading the study calendar",
+                "Synapse couldn't load your study calendar.",
+            )
+        })
 }
 
 #[cfg(test)]

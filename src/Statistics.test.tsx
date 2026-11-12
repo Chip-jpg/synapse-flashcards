@@ -175,3 +175,58 @@ describe("the Statistics screen", () => {
     expect(await screen.findByText(/Nothing to measure yet/)).toBeTruthy();
   });
 });
+
+describe("the study calendar", () => {
+  function calendar(reviews: Record<string, number> = {}) {
+    const all = days("2025-11-12", 365).map((d) => ({
+      date: d.day,
+      reviews: reviews[d.day] ?? 0,
+    }));
+    return { days: all, currentStreak: 3, longestStreak: 12 };
+  }
+
+  it("shows both streaks", async () => {
+    fakeBackend({ get_statistics: () => stats(), get_study_calendar: () => calendar() });
+    render(<StatisticsScreen />);
+
+    expect(await screen.findByText("3 days")).toBeTruthy();
+    expect(screen.getByText("12 days")).toBeTruthy();
+    expect(screen.getByText("Current streak")).toBeTruthy();
+    expect(screen.getByText("Longest streak")).toBeTruthy();
+  });
+
+  it("draws a labelled square for each of the 365 days, darker for busier ones", async () => {
+    fakeBackend({
+      get_statistics: () => stats(),
+      get_study_calendar: () =>
+        calendar({ "2026-11-03": 12, "2026-11-04": 1, "2026-11-05": 6 }),
+    });
+    render(<StatisticsScreen />);
+
+    const busy = await screen.findByRole("img", { name: "12 reviews on 2026-11-03" });
+    expect(busy.getAttribute("title")).toBe("12 reviews on 2026-11-03");
+    expect(busy.className).toContain("heat-4");
+    expect(screen.getByRole("img", { name: "1 review on 2026-11-04" }).className).toContain(
+      "heat-1",
+    );
+    expect(screen.getByRole("img", { name: "6 reviews on 2026-11-05" }).className).toContain(
+      "heat-2",
+    );
+    expect(screen.getByRole("img", { name: "0 reviews on 2026-11-06" }).className).toContain(
+      "heat-0",
+    );
+    expect(screen.getAllByRole("img", { name: /reviews? on \d{4}-\d\d-\d\d/ })).toHaveLength(365);
+  });
+
+  it("leaves the calendar out, and still shows the rest, if it can't be read", async () => {
+    fakeBackend({
+      get_statistics: () => stats(),
+      get_study_calendar: () => refuse("failed", "No calendar."),
+    });
+    render(<StatisticsScreen />);
+
+    expect(await screen.findByText(/Nothing to measure yet/)).toBeTruthy();
+    expect(screen.queryByText("Study calendar")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+});

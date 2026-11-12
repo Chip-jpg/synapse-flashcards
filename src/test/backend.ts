@@ -284,6 +284,9 @@ export function fakeBackend(overrides: Record<string, Handler> = {}) {
       decks: [{ id: deck.id, name: deck.name, percent: null }],
       archivedOwn: 0,
     }),
+    // No exams, and an empty calendar, unless a test says so.
+    list_exams: () => [],
+    get_study_calendar: () => ({ days: [], currentStreak: 0, longestStreak: 0 }),
     // No tags are in use unless a test says so.
     get_tags: () => [],
     // No note comes from a kept source unless a test says so.
