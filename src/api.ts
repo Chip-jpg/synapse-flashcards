@@ -316,7 +316,9 @@ export type Field =
   | "backPictures"
   | "header"
   | "boxes"
-  | "tags";
+  | "tags"
+  | "examDate"
+  | "examScope";
 
 /** Mirrors `CommandError` in `src-tauri/src/commands.rs`. */
 export type CommandError = {
@@ -728,6 +730,8 @@ export type FileImport =
       body: string;
       pages: number | null;
       pagesWithoutText: number[];
+      /** A saved web page's pictures, left out of the text (absent: none). */
+      imagesLeftOut?: number;
     }
   | { status: "cancelled" };
 
@@ -1518,6 +1522,7 @@ export type SourceImport =
         body: string;
         pages: number | null;
         pagesWithoutText: number[];
+        imagesLeftOut?: number;
       };
     }
   | { status: "cancelled" };
@@ -1831,4 +1836,223 @@ export function recogniseSourcePagesWithModel(
     model,
     onProgress: channel,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Exam planner (`src-tauri/src/exams.rs`)
+
+/** Mirrors `Exam`: a date given to a deck or a tag (exactly one of `deckId` / `tagId`). */
+export type Exam = {
+  id: number;
+  title: string;
+  /** `YYYY-MM-DD` on this computer's calendar. */
+  examDate: string;
+  deckId: number | null;
+  tagId: number | null;
+  /** The deck's or tag's name. */
+  scopeName: string;
+  /** The exam's deck is archived, so its plan has no cards. */
+  scopeArchived: boolean;
+  createdAt: string;
+};
+
+/** Mirrors `ExamPlan`. `readiness` is a percentage from 0 to 100. */
+export type ExamPlan = {
+  examId: number;
+  title: string;
+  examDate: string;
+  /** A past exam is "finished", not an error. */
+  status: "upcoming" | "today" | "finished";
+  daysLeft: number;
+  cards: number;
+  newCards: number;
+  dueBeforeExam: number;
+  belowTarget: number;
+  dailyGoal: number;
+  readiness: number;
+};
+
+/** Mirrors `StudyCalendar`: oldest day first, today last. */
+export type StudyCalendar = {
+  days: { date: string; reviews: number }[];
+  currentStreak: number;
+  longestStreak: number;
+};
+
+/** Every active exam, the soonest date first. */
+export function listExams(): Promise<Exam[]> {
+  return invoke<Exam[]>("list_exams");
+}
+
+/**
+ * Adds an exam for a deck or a tag (give exactly one). A past date is
+ * allowed. Rejects with field "title", "examDate" or "examScope" if refused.
+ */
+export function createExam(
+  title: string,
+  examDate: string,
+  scope: { deckId: number } | { tagId: number },
+): Promise<Exam> {
+  return invoke<Exam>("create_exam", {
+    title,
+    examDate,
+    deckId: "deckId" in scope ? scope.deckId : null,
+    tagId: "tagId" in scope ? scope.tagId : null,
+  });
+}
+
+/** Changes an exam's title and date (its deck or tag stays). */
+export function updateExam(examId: number, title: string, examDate: string): Promise<Exam> {
+  return invoke<Exam>("update_exam", { examId, title, examDate });
+}
+
+/** Deletes an exam (soft). Rejects as stale if it is already gone. */
+export function deleteExam(examId: number): Promise<void> {
+  return invoke<void>("delete_exam", { examId });
+}
+
+/** The plan and readiness for one exam. */
+export function getExamPlan(examId: number): Promise<ExamPlan> {
+  return invoke<ExamPlan>("get_exam_plan", { examId });
+}
+
+/** Reviews per day for the last 365 local days, with current and longest streak. */
+export function getStudyCalendar(): Promise<StudyCalendar> {
+  return invoke<StudyCalendar>("get_study_calendar");
+}
+
+/** Mirrors `Bullet` in `src-tauri/src/tutor.rs`: a summary point and its quote from the note. */
+export type SummaryBullet = { text: string; quote: string };
+
+/** Mirrors `KeyTerm` in `src-tauri/src/tutor.rs`: a key term and its quote from the note. */
+export type SummaryKeyTerm = { term: string; quote: string };
+
+/**
+ * Mirrors `SummaryOutcome` in `src-tauri/src/commands.rs`. Nothing has been
+ * saved. `dropped` counts points whose quote isn't in the note; `leftOut`
+ * those unusable (blank, repeated, over the limits).
+ */
+export type SummaryOutcome =
+  | {
+      status: "written";
+      bullets: SummaryBullet[];
+      keyTerms: SummaryKeyTerm[];
+      dropped: number;
+      leftOut: number;
+    }
+  | { status: "stopped" };
+
+/**
+ * Asks `model`, in Ollama on this computer, to summarise a note, or `part` of
+ * one too long to use whole (see `noteParts.ts`). Nothing is saved. Resolves
+ * with `{ status: "stopped" }` if `stopTutor` is called first; rejects with
+ * kind "stale" if the model has left Ollama, or the note was deleted or no
+ * longer has that part.
+ */
+export function summarizeNote(
+  noteId: number,
+  model: string,
+  part?: { start: number; end: number }
+): Promise<SummaryOutcome> {
+  const where = part && { part: { start: part.start, end: part.end } };
+  return invoke<SummaryOutcome>("summarize_note", { noteId, model, ...where });
+}
+
+/** Mirrors `OpenQuestion` in `src-tauri/src/tutor.rs`. */
+export type OpenQuestion = { question: string; reference: string; quote: string };
+
+/** Mirrors `QuestionsOutcome` in `src-tauri/src/commands.rs`. Nothing has been saved. */
+export type QuestionsOutcome =
+  | { status: "written"; questions: OpenQuestion[]; dropped: number; leftOut: number }
+  | { status: "stopped" };
+
+/**
+ * Asks `model`, in Ollama on this computer, for open questions about a note
+ * (or `part` of one), each with the answer the note supports and its quote.
+ * Resolves with `{ status: "stopped" }` if `stopTutor` is called first.
+ */
+export function tutorQuestions(
+  noteId: number,
+  model: string,
+  part?: { start: number; end: number }
+): Promise<QuestionsOutcome> {
+  const where = part && { part: { start: part.start, end: part.end } };
+  return invoke<QuestionsOutcome>("tutor_questions", { noteId, model, ...where });
+}
+
+/** Mirrors `MissedPoint` in `src-tauri/src/tutor.rs`. */
+export type MissedPoint = { point: string; quote: string };
+
+/** Mirrors `Verdict` in `src-tauri/src/tutor.rs`. */
+export type Verdict = "right" | "partly" | "wrong";
+
+/** Mirrors `GradeOutcome` in `src-tauri/src/commands.rs`. `score` is 0–100. */
+export type GradeOutcome =
+  | {
+      status: "written";
+      score: number;
+      verdict: Verdict;
+      correct: string[];
+      missed: MissedPoint[];
+      wrong: string[];
+      dropped: number;
+    }
+  | { status: "stopped" };
+
+/**
+ * Asks `model` to grade `answer` (the student's own words, 1–4,000
+ * characters) to one of `tutorQuestions`' questions, against the note. A
+ * blank or oversized answer rejects with kind "invalid". Resolves with
+ * `{ status: "stopped" }` if `stopTutor` is called first.
+ */
+export function gradeAnswer(
+  noteId: number,
+  model: string,
+  question: OpenQuestion,
+  answer: string,
+  part?: { start: number; end: number }
+): Promise<GradeOutcome> {
+  const where = part && { part: { start: part.start, end: part.end } };
+  return invoke<GradeOutcome>("grade_answer", {
+    noteId,
+    model,
+    question: question.question,
+    reference: question.reference,
+    quote: question.quote,
+    answer,
+    ...where,
+  });
+}
+
+/** Mirrors `FollowupOutcome` in `src-tauri/src/commands.rs`. Nothing has been saved. */
+export type FollowupOutcome =
+  | { status: "written"; question: string; quote: string }
+  | { status: "stopped" };
+
+/**
+ * Asks `model` for ONE short guiding question after `answer` to `question`,
+ * grounded in a quote from the note. A blank or oversized answer rejects with
+ * kind "invalid". Resolves with `{ status: "stopped" }` if `stopTutor` is
+ * called first.
+ */
+export function socraticFollowup(
+  noteId: number,
+  model: string,
+  question: OpenQuestion,
+  answer: string,
+  part?: { start: number; end: number }
+): Promise<FollowupOutcome> {
+  const where = part && { part: { start: part.start, end: part.end } };
+  return invoke<FollowupOutcome>("socratic_followup", {
+    noteId,
+    model,
+    question: question.question,
+    answer,
+    ...where,
+  });
+}
+
+/** Stops the tutor request being written, if any, which frees up the model. */
+export function stopTutor(): Promise<void> {
+  return invoke<void>("stop_tutor");
 }

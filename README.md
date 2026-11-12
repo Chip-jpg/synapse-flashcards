@@ -51,6 +51,11 @@ migrations, validation, scheduling, and every business rule; React only calls ty
 - **Tags** — label cards and notes with one-word tags (`biology`, `bio::cells`), filter a deck, the
   notes or *Search* by tag, tag many cards at once, rename tags on the *Tags* screen, and review
   one tag's due cards from every deck together.
+- **Exam planner** — give a deck or a tag an exam date under *Exams* and see the days left, a daily
+  review goal, how many cards are new, due before the exam or below target, and an estimated
+  readiness; *Study now* starts the review, and the Study Desk shows your next exam. *Statistics*
+  adds your current and longest study streak and a 365-day calendar. The plan is an estimate from
+  your schedules and FSRS parameters, not a grade.
 - **Cards from a spreadsheet** — add front/back cards to a deck from a CSV or TSV file, after
   checking every row, and save a deck's cards as a CSV file.
 - **Picture cards (image occlusion)** — draw boxes over a picture (a diagram, a map, a labelled
@@ -76,6 +81,9 @@ migrations, validation, scheduling, and every business rule; React only calls ty
   multiple-choice questions about a note, and answer them one at a time (keys 1–4 work). After each
   answer you see the passage of the note it comes from; at the end, your score, and any question you
   missed can be added to a deck as a card. Nothing else is saved.
+- **AI tutor (optional)** — local note summaries, open questions graded against the note ("Explain
+  it"), and an optional Socratic follow-up question. Same rules: Ollama on your computer only,
+  every point backed by a verbatim quote from your note, nothing saved unless you choose.
 - **Help with hard cards (optional)** — after you answer Again on a card three times in a row,
   Synapse offers help with it once its answer is shown: a model in Ollama, on your computer, writes
   a mnemonic, a simpler explanation, an analogy, or the question asked another way, from the
@@ -472,6 +480,28 @@ newer format first. A PDF is read by a second, short-lived run of Synapse, so a 
 crash the app: it's just reported as a file that couldn't be read. Text over 12,000 characters can
 still be saved as one note; *Suggest cards* then offers it in parts (Synapse says so).
 
+**Lesson transcripts and saved web pages.** *Import file* also reads two more kinds of file, still
+text only and still offline.
+
+- **Lesson transcripts** — subtitle files (`.srt`, `.vtt`) and `.txt`/`.md` transcripts whose lines
+  start with a time (`[00:35]`, `[1:02:10]`, `00:00:35 --> …`), such as a lesson recorded and
+  transcribed by a tool of your own. Short lines are merged into paragraphs of about half a minute,
+  each starting with a marker, `[m:ss]` or `[h:mm:ss]`. Caption styling, cue numbers and settings are
+  dropped. In a note, a marker is shown as a time; clicking it copies the time and highlights its
+  paragraph. Synapse doesn't play audio or video, so nothing jumps to that moment. A `.txt` or `.md`
+  file with fewer than two timed lines is kept as written. The file is kept as a text source.
+- **Saved web pages** — a page you saved from your browser with *Save page as* (`.html`, `.htm`).
+  Synapse reads the file only: scripts, styles, menus, headers and footers, forms and comments are
+  left out, the page's `<article>` or `<main>` is used when it has one, and the rest becomes
+  Markdown (headings, lists, quotes, code, simple tables, links as `[text](address)`). Links are
+  shown as text and never opened. Pictures are left out, and Synapse says how many; nothing is loaded
+  from the web. The title is the page's own, else its first heading, else the file name. The file's
+  declared character set is used when it's UTF-8 or Latin-1 (other sets are read as text would be).
+  The same 50 MB and 100,000-character limits apply, and the file is kept as a text source.
+
+Not offered: YouTube transcripts and clipping a page from its address, which need network access.
+Synapse has none; save the page or the transcript as a file first.
+
 **Search your notes.** *Search notes*, above the library, narrows it to the notes whose title or
 text contains what you type, ignoring capitals (accented letters included), still most recently
 edited first. It's plain matching: no fuzzy matches, and deleted notes aren't searched. *Clear* (or
@@ -545,6 +575,25 @@ question on the front and the right answer on the back, saved all together like 
 The quiz itself isn't kept anywhere. Leaving asks first only while you have missed questions that
 haven't been added as cards, since those can't be got back; a quiz with nothing missed can simply be
 written again.
+
+**Use the AI tutor on a note.** With Ollama set up as above, open a note → *Summarise* (or the
+tutor's tabs). Every mode follows the rules of suggestions: Ollama on this computer
+(`127.0.0.1`) only, local models only, nothing sent until you press the button, *Stop* at any time,
+and a note over 12,000 characters used one part at a time. Whatever the model writes must quote the
+passage of your note it comes from; anything whose quote isn't in the note word for word is left
+out, and you're told how many. If your note (or answer) is in Italian, the model is told to answer
+in Italian. Nothing is saved unless you choose to, so the database and backups don't change.
+
+- *Summary*: up to ten bullet points and ten key terms, each with its passage. *Save as a note*
+  keeps it as an ordinary note called "Summary: …".
+- *Explain it*: *Ask me questions* gives up to five open questions. Answer one in your own words
+  (up to 4,000 characters) and *Check my answer*: the model scores it from 0 to 100 against the note
+  only, and lists what you got right, what you missed (with the passage) and what the note
+  contradicts. Missed points can be added to a deck as cards. The "right / partly / wrong" label is
+  worked out from the score by Synapse, not taken from the model.
+- *Ask me a follow-up* (optional, after a graded answer): one short guiding question that points
+  you toward an idea you missed without giving the answer, with the passage of the note it is about.
+  Only asked when you press the button, and dropped if its passage isn't in your note.
 
 **Get help with a card you keep forgetting.** A card's *Again streak* is how many of its latest
 reviews, in the order they were recorded, were all rated Again; a Hard, Good or Easy ends it.

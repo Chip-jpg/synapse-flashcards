@@ -1332,6 +1332,25 @@ body {
   font-style: italic;
 }
 
+/* A lesson transcript's time marker: a small button that copies the time. */
+.markdown-timestamp {
+  margin-right: 0.4em;
+  padding: 0 0.4em;
+  border: 1px solid var(--border);
+  border-radius: 0.5em;
+  background-color: var(--surface-low);
+  color: var(--primary-ink);
+  font: inherit;
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.markdown-timestamp-active {
+  border-left: 3px solid var(--primary-ink);
+  padding-left: 0.6em;
+}
+
 /* The note shown beside the card being written from it. It sticks to the top
    of the window, so it stays readable while the fields below it scroll. */
 .note-context {
@@ -3269,4 +3288,135 @@ textarea.field-input {
 
 .tag-rename .form-actions {
   margin-top: 0.75rem;
+}
+
+/* Exam planner: one card an exam, its figures and a readiness bar. */
+.exam-item {
+  gap: 0.875rem;
+}
+
+.exam-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.exam-figures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+}
+
+.exam-figures dt {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.exam-figures dd {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.125rem;
+  color: var(--text);
+}
+
+.exam-readiness-label {
+  margin: 0 0 0.375rem;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+.exam-bar {
+  height: 0.625rem;
+  overflow: hidden;
+  background-color: var(--surface-sunken);
+  border-radius: var(--radius-full);
+}
+
+.exam-bar-fill {
+  height: 100%;
+  background-color: var(--sage);
+  border-radius: var(--radius-full);
+}
+
+.exams-finished {
+  margin-top: 1rem;
+}
+
+.exams-finished summary {
+  cursor: pointer;
+  margin-bottom: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.exam-kind {
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+
+.next-exam {
+  margin-bottom: 1rem;
+}
+
+/* Study calendar (Statistics): week columns, Sunday on top, five levels. */
+.stats-streaks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 2rem;
+  margin: 0 0 0.5rem;
+}
+
+.heatmap {
+  display: grid;
+  grid-template-rows: repeat(7, 0.75rem);
+  grid-auto-flow: column;
+  grid-auto-columns: 0.75rem;
+  gap: 3px;
+  margin: 0.5rem 0;
+  padding: 0 0 0.5rem;
+  overflow-x: auto;
+  list-style: none;
+}
+
+.heat-cell-item {
+  display: block;
+}
+
+.heat-cell {
+  display: block;
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 2px;
+  background-color: var(--surface-sunken);
+}
+
+.heat-blank {
+  background: none;
+}
+
+.heat-1 {
+  background-color: #cbe2d5;
+}
+
+.heat-2 {
+  background-color: #94c1a9;
+}
+
+.heat-3 {
+  background-color: #537c68;
+}
+
+.heat-4 {
+  background-color: #234937;
+}
+
+.heat-legend {
+  display: flex;
+  gap: 0.25rem;
+  align-items: center;
+  margin: 0;
 }

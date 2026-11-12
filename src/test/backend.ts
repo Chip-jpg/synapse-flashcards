@@ -264,6 +264,55 @@ export function fakeBackend(overrides: Record<string, Handler> = {}) {
       unsupported: 0,
     }),
     stop_quiz: () => null,
+    summarize_note: () => ({
+      status: "written",
+      bullets: [
+        {
+          text: "Mitosis makes two identical cells.",
+          quote: "It produces two genetically identical daughter cells.",
+        },
+      ],
+      keyTerms: [{ term: "Mitosis", quote: "Mitosis is the division of one cell's nucleus" }],
+      dropped: 0,
+      leftOut: 0,
+    }),
+    tutor_questions: () => ({
+      status: "written",
+      questions: [
+        {
+          question: "Why are the daughter cells identical?",
+          reference: "Mitosis produces two genetically identical daughter cells.",
+          quote: "It produces two genetically identical daughter cells.",
+        },
+        {
+          question: "What is mitosis?",
+          reference: "The division of one cell's nucleus into two identical nuclei.",
+          quote: "Mitosis is the division of one cell's nucleus",
+        },
+      ],
+      dropped: 0,
+      leftOut: 0,
+    }),
+    grade_answer: () => ({
+      status: "written",
+      score: 55,
+      verdict: "partly",
+      correct: ["You said the cells divide."],
+      missed: [
+        {
+          point: "The two daughter cells are genetically identical.",
+          quote: "It produces two genetically identical daughter cells.",
+        },
+      ],
+      wrong: ["Mitosis is not the division of the whole organism."],
+      dropped: 0,
+    }),
+    socratic_followup: () => ({
+      status: "written",
+      question: "Why are the two daughter cells identical?",
+      quote: "It produces two genetically identical daughter cells.",
+    }),
+    stop_tutor: () => null,
     get_scheduling: () => ({
       version: 0,
       personal: false,
@@ -284,6 +333,9 @@ export function fakeBackend(overrides: Record<string, Handler> = {}) {
       decks: [{ id: deck.id, name: deck.name, percent: null }],
       archivedOwn: 0,
     }),
+    // No exams, and an empty calendar, unless a test says so.
+    list_exams: () => [],
+    get_study_calendar: () => ({ days: [], currentStreak: 0, longestStreak: 0 }),
     // No tags are in use unless a test says so.
     get_tags: () => [],
     // No note comes from a kept source unless a test says so.

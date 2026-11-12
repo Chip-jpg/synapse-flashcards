@@ -2,6 +2,7 @@ import { Fragment, type ReactNode } from "react";
 import {
   ArchiveIcon,
   BookIcon,
+  CalendarIcon,
   ChartIcon,
   DatabaseIcon,
   DeskIcon,
@@ -17,6 +18,7 @@ export type Place =
   | "desk"
   | "search"
   | "tags"
+  | "exams"
   | "notes"
   | "sources"
   | "stats"
@@ -28,6 +30,7 @@ const PLACES: { place: Place; label: string; icon: ReactNode }[] = [
   { place: "desk", label: "Study Desk", icon: <DeskIcon /> },
   { place: "search", label: "Search", icon: <SearchIcon /> },
   { place: "tags", label: "Tags", icon: <TagIcon /> },
+  { place: "exams", label: "Exams", icon: <CalendarIcon /> },
   { place: "notes", label: "Notes", icon: <BookIcon /> },
   { place: "sources", label: "Sources", icon: <FileIcon /> },
   { place: "stats", label: "Statistics", icon: <ChartIcon /> },

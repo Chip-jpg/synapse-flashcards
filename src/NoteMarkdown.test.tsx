@@ -110,3 +110,35 @@ describe("reading a note written in Markdown", () => {
     ]);
   });
 });
+
+describe("timestamps in a lesson transcript", () => {
+  const TRANSCRIPT = "[0:05] Hello class.\n\n[1:02:03] An hour in.";
+
+  it("shows each marker as a button that copies its time and marks the paragraph", async () => {
+    const { user } = await openNote(TRANSCRIPT);
+
+    const first = screen.getByRole("button", { name: "Time 0:05: copy it" });
+    const second = screen.getByRole("button", { name: "Time 1:02:03: copy it" });
+    expect(first.textContent).toBe("0:05");
+    expect(first.closest("p")?.textContent).toBe("0:05 Hello class.");
+
+    await user.click(first);
+    expect(await navigator.clipboard.readText()).toBe("0:05");
+    expect(first.closest("p")?.className).toBe("markdown-timestamp-active");
+    expect(second.closest("p")?.className).toBe("");
+
+    await user.click(second);
+    expect(await navigator.clipboard.readText()).toBe("1:02:03");
+    expect(first.closest("p")?.className).toBe("");
+    expect(second.closest("p")?.className).toBe("markdown-timestamp-active");
+  });
+
+  it("shows the markers as plain text with Plain text", async () => {
+    const { user } = await openNote(TRANSCRIPT);
+
+    await user.click(screen.getByRole("button", { name: "Plain text" }));
+
+    expect(screen.queryByRole("button", { name: /^Time / })).toBeNull();
+    expect(screen.getByText(/\[0:05\] Hello class\./)).toBeTruthy();
+  });
+});

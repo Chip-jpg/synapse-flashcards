@@ -62,11 +62,23 @@ pub enum FileKind {
     Markdown,
     Word,
     PowerPoint,
+    /// Subtitle files of a lesson transcript. The frontend sees them as
+    /// `text`, and they are kept as text sources (no migration needed).
+    #[serde(rename = "text")]
+    Srt,
+    #[serde(rename = "text")]
+    Vtt,
+    /// A web page saved from a browser, read as Markdown (`webpage.rs`). Kept
+    /// as a text source, like subtitle files.
+    #[serde(rename = "text")]
+    Html,
 }
 
 impl FileKind {
     /// The extensions offered in the file window, without the dot.
-    pub const EXTENSIONS: [&'static str; 6] = ["pdf", "txt", "md", "markdown", "docx", "pptx"];
+    pub const EXTENSIONS: [&'static str; 10] = [
+        "pdf", "txt", "md", "markdown", "docx", "pptx", "srt", "vtt", "html", "htm",
+    ];
 
     /// The kind of file `path` is, by its extension (any letter case).
     pub fn of(path: &Path) -> Option<FileKind> {
@@ -77,6 +89,9 @@ impl FileKind {
             "md" | "markdown" => FileKind::Markdown,
             "docx" => FileKind::Word,
             "pptx" => FileKind::PowerPoint,
+            "srt" => FileKind::Srt,
+            "vtt" => FileKind::Vtt,
+            "html" | "htm" => FileKind::Html,
             _ => return None,
         })
     }
@@ -98,6 +113,13 @@ pub struct ExtractedText {
     pub pages: Option<usize>,
     /// The pages of a PDF (counting from 1) that had no text.
     pub pages_without_text: Vec<usize>,
+    /// Pictures of a saved web page, which are left out (none: not sent).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub images_left_out: usize,
+}
+
+fn is_zero(count: &usize) -> bool {
+    *count == 0
 }
 
 /// Why a file couldn't be imported. Detail is for logs only, and never holds
@@ -164,11 +186,29 @@ pub fn read_document(path: &Path, helper: &Path) -> Result<Document, ExtractErro
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
 
+    let mut images_left_out = 0;
     let (own_title, body, pages, pages_without_text, page_texts) = match kind {
-        FileKind::Text => (None, decode_text(&bytes), None, Vec::new(), None),
+        FileKind::Html => {
+            let page = crate::webpage::read(&decode_html(&bytes));
+            images_left_out = page.images_left_out;
+            (page.title, page.body, None, Vec::new(), None)
+        }
+        FileKind::Text => {
+            // A lesson transcript with `[mm:ss]` lines gets normalised
+            // timestamps; any other text is kept as it is.
+            let text = decode_text(&bytes);
+            let body = crate::transcript::from_timestamped_text(&text).unwrap_or(text);
+            (None, body, None, Vec::new(), None)
+        }
         FileKind::Markdown => {
             let text = decode_text(&bytes).replace("\r\n", "\n");
-            (markdown_title(&text), text, None, Vec::new(), None)
+            let body =
+                crate::transcript::from_timestamped_text(&text).unwrap_or_else(|| text.clone());
+            (markdown_title(&text), body, None, Vec::new(), None)
+        }
+        FileKind::Srt | FileKind::Vtt => {
+            let body = crate::transcript::from_cue_file(&decode_text(&bytes));
+            (None, body, None, Vec::new(), None)
         }
         FileKind::Word => {
             let (title, body) = word_text(&bytes)?;
@@ -217,6 +257,7 @@ pub fn read_document(path: &Path, helper: &Path) -> Result<Document, ExtractErro
             body,
             pages,
             pages_without_text,
+            images_left_out,
         },
         pages: pages_text,
     })
@@ -321,6 +362,26 @@ pub(crate) fn decode_text(bytes: &[u8]) -> String {
         Ok(text) => text.to_string(),
         Err(_) => bytes.iter().map(|&byte| windows_1252(byte)).collect(),
     }
+}
+
+/// A saved web page's characters: a byte order mark decides, else the
+/// charset the page declares (UTF-8, or Latin-1/Windows-1252, which browsers
+/// treat alike), else as [`decode_text`]. Other declared charsets aren't
+/// converted, and are read as `decode_text` would.
+fn decode_html(bytes: &[u8]) -> String {
+    let has_bom = bytes.starts_with(&[0xEF, 0xBB, 0xBF])
+        || bytes.starts_with(&[0xFF, 0xFE])
+        || bytes.starts_with(&[0xFE, 0xFF]);
+    if !has_bom {
+        match crate::webpage::declared_charset(bytes).as_deref() {
+            Some("utf-8" | "utf8") => return String::from_utf8_lossy(bytes).into_owned(),
+            Some("iso-8859-1" | "latin1" | "windows-1252" | "cp1252" | "us-ascii" | "ascii") => {
+                return bytes.iter().map(|&byte| windows_1252(byte)).collect();
+            }
+            _ => {}
+        }
+    }
+    decode_text(bytes)
 }
 
 /// One Windows-1252 byte as a character. It's Latin-1 except for 0x80–0x9F,
@@ -854,6 +915,10 @@ mod tests {
             ("notes.markdown", Some(FileKind::Markdown)),
             ("essay.DocX", Some(FileKind::Word)),
             ("talk.pptx", Some(FileKind::PowerPoint)),
+            ("lesson.SRT", Some(FileKind::Srt)),
+            ("lesson.vtt", Some(FileKind::Vtt)),
+            ("page.html", Some(FileKind::Html)),
+            ("Page.HTM", Some(FileKind::Html)),
             ("old.doc", None),
             ("old.ppt", None),
             ("picture.png", None),
@@ -885,6 +950,57 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_web_page_becomes_markdown_with_its_title() {
+        let read = import(
+            "Mitosis.html",
+            include_bytes!("../testdata/html/article.html"),
+        )
+        .unwrap();
+        assert_eq!(read.kind, FileKind::Html);
+        assert_eq!(read.title, "Mitosis explained");
+        assert!(read.body.starts_with("# Mitosis explained\n\n"));
+        assert_eq!(read.images_left_out, 1);
+        // No title anywhere: the first heading; none at all: the file name.
+        let untitled = import(
+            "untitled.htm",
+            include_bytes!("../testdata/html/untitled.html"),
+        )
+        .unwrap();
+        assert_eq!(untitled.title, "Only a heading");
+        assert_eq!(
+            import("saved page.html", b"<p>Just text</p>")
+                .unwrap()
+                .title,
+            "saved page"
+        );
+        // A page with nothing to read is refused like an empty file.
+        assert!(matches!(
+            import(
+                "empty.html",
+                b"<html><body><script>x()</script></body></html>"
+            ),
+            Err(ExtractError::NoText)
+        ));
+    }
+
+    #[test]
+    fn a_saved_web_page_is_decoded_by_its_declared_charset() {
+        let latin1 = b"<meta charset=\"iso-8859-1\"><p>caff\xe8 \x80</p>";
+        assert_eq!(import("a.html", latin1).unwrap().body, "caffè €");
+        let utf8 = "<meta charset=utf-8><p>città</p>".as_bytes();
+        assert_eq!(import("a.html", utf8).unwrap().body, "città");
+        // No declaration: UTF-8 if valid, else Windows-1252, as for text.
+        assert_eq!(import("a.html", b"<p>caff\xe8</p>").unwrap().body, "caffè");
+        let italian = import(
+            "italiano.html",
+            include_bytes!("../testdata/html/italiano.html"),
+        )
+        .unwrap();
+        assert_eq!(italian.title, "La cellula è l'unità della vita");
+        assert_eq!(italian.images_left_out, 0);
+    }
+
+    #[test]
     fn text_is_tidied_and_titled_by_the_file_name() {
         let read = import(
             "Cell biology.txt",
@@ -899,6 +1015,7 @@ mod tests {
                 body: "Mitosis\n\nhas\tphases".to_string(),
                 pages: None,
                 pages_without_text: Vec::new(),
+                images_left_out: 0,
             }
         );
     }

@@ -21,6 +21,7 @@ use crate::authoring::{self, ArchivedDeck, AuthoringError, CardText, DeckDetail,
 use crate::cards_csv::{self, CardsImported, CsvCard, CsvError, Delimiter, Duplicate, RowProblem};
 use crate::cloze::{self, ClozeChanges, RestoreBlock};
 use crate::db::Database;
+use crate::exams;
 use crate::export::{self, ExportError};
 use crate::extract::{self, ExtractError, ExtractedText, FileKind};
 use crate::import::{self, ImportError, ImportState, RestoreError};
@@ -41,6 +42,7 @@ use crate::stats::{self, Statistics};
 use crate::study::{self, DeckSummary, SessionCard, StartedSession, StudyError, TodaySummary};
 use crate::suggest::{self, NotePart, Ollama, SuggestError, SuggestedCard, Suggesting};
 use crate::tags::{self, TagError, TagProblem, TagSummary};
+use crate::tutor::{self, Bullet, KeyTerm, Tutoring};
 use crate::vision::{self, ModelSourceReading, VisionError};
 
 /// Error sent to React: `{ "kind": "failed" | "stale" | "invalid", "message": "..." }`,
@@ -83,6 +85,10 @@ enum Field {
     Boxes,
     /// A card's or note's tags, or a tag's new name.
     Tags,
+    /// An exam's date.
+    ExamDate,
+    /// The deck or tag an exam covers.
+    ExamScope,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -1973,6 +1979,406 @@ pub async fn quiz_note(
 #[tauri::command]
 pub fn stop_quiz(quizzing: State<'_, Quizzing>) {
     quizzing.0.stop();
+}
+
+/// Turns a failed tutor request into a user-safe error, logging internal
+/// detail. Neither the note nor the model's answer is ever logged.
+fn tutor_error(err: SuggestError) -> CommandError {
+    match err {
+        SuggestError::NoteTooLong => CommandError::invalid(
+            "This is too long to summarise: up to 12,000 characters of a note can be used at a \
+             time.",
+        ),
+        SuggestError::NoteOverflowed => CommandError::failed(
+            "This note was too long for the model to read all at once, so no summary was \
+             written. Try a shorter note.",
+        ),
+        SuggestError::Unusable(detail) => {
+            eprintln!("[synapse] the model's summary was unusable: {detail}");
+            CommandError::failed(
+                "The model's answer didn't include a usable summary. Try again, or choose \
+                 another model.",
+            )
+        }
+        SuggestError::Ungrounded => CommandError::failed(
+            "None of the points the model wrote could be traced back to your note, so none are \
+             shown. Try again, or choose a larger model.",
+        ),
+        SuggestError::Internal(detail) => {
+            eprintln!("[synapse] setting up a request to Ollama failed: {detail}");
+            CommandError::failed("Synapse couldn't ask Ollama for a summary.")
+        }
+        other => suggest_error(other),
+    }
+}
+
+/// What asking for a summary did: `{ "status": "written", "bullets": [{ text,
+/// quote }], "keyTerms": [{ term, quote }], "dropped": 1, "leftOut": 0 }` or
+/// `{ "status": "stopped" }`.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum SummaryOutcome {
+    Written {
+        /// The summary, to read on screen: nothing has been saved.
+        bullets: Vec<Bullet>,
+        key_terms: Vec<KeyTerm>,
+        /// Items dropped because their quote isn't in the note.
+        dropped: usize,
+        /// Items left out as unusable (blank, repeated, over the limits).
+        left_out: usize,
+    },
+    /// `stop_tutor` was called first.
+    Stopped,
+}
+
+/// Asks a local model in Ollama for a summary of a note: bullet points and key
+/// terms, each kept only if its quote is in the note word for word. Only
+/// Ollama on this computer is asked, and nothing is saved; the user may save
+/// the summary as a note with `create_note`. Asking again, or `stop_tutor`,
+/// stops this one. The other local-model features are separate.
+///
+/// Arguments: `{ noteId, model, part? }`, as for `quiz_note`. Returns
+/// [`SummaryOutcome`]; rejects with kind "stale" if the note was deleted, no
+/// longer has that part, or the model is no longer in Ollama.
+#[tauri::command]
+pub async fn summarize_note(
+    app: AppHandle,
+    database: State<'_, Database>,
+    tutoring: State<'_, Tutoring>,
+    note_id: i64,
+    model: String,
+    part: Option<NotePart>,
+) -> Result<SummaryOutcome, CommandError> {
+    if note_id < 1 {
+        return Err(CommandError::invalid(NOTE_NOT_FOUND));
+    }
+    // Tracked from the start, so a stop while the note loads counts too.
+    let request = tutoring.0.begin();
+    let work = async {
+        let pool = pool(&app, &database).await?;
+        let note = notes::note(&pool, note_id).await.map_err(|err| {
+            note_error(
+                err,
+                "loading a note to summarise",
+                "Synapse couldn't load this note.",
+            )
+        })?;
+        let body = match part {
+            None => note.body.as_str(),
+            Some(part) => suggest::part_of(&note.body, part).ok_or_else(|| {
+                CommandError::stale(
+                    "That part of the note has changed. Go back to the note and try again.",
+                )
+            })?,
+        };
+        let ollama = Ollama::local().map_err(tutor_error)?;
+        tutor::summarize(&ollama, &model, &note.title, body)
+            .await
+            .map_err(tutor_error)
+    };
+    match request.run(work).await {
+        None => Ok(SummaryOutcome::Stopped),
+        Some(result) => result.map(|written| SummaryOutcome::Written {
+            bullets: written.bullets,
+            key_terms: written.key_terms,
+            dropped: written.dropped,
+            left_out: written.left_out,
+        }),
+    }
+}
+
+/// Stops the summary being written, if any; its `summarize_note` call then
+/// returns `{ status: "stopped" }`. Takes no arguments; returns `null`.
+#[tauri::command]
+pub fn stop_tutor(tutoring: State<'_, Tutoring>) {
+    tutoring.0.stop();
+}
+
+// --- Tutor: "Explain it" (open questions graded against the note) ---
+
+/// Turns a failed open-question or grading request into a user-safe error,
+/// logging internal detail. Neither the note nor any answer is ever logged.
+fn explain_error(err: SuggestError) -> CommandError {
+    match err {
+        SuggestError::NoteTooLong => CommandError::invalid(
+            "This is too long to use: up to 12,000 characters of a note can be used at a time.",
+        ),
+        SuggestError::NoteOverflowed => CommandError::failed(
+            "This note was too long for the model to read all at once. Try a shorter note.",
+        ),
+        SuggestError::Unusable(detail) => {
+            eprintln!("[synapse] the model's tutor answer was unusable: {detail}");
+            CommandError::failed(
+                "The model's answer wasn't usable. Try again, or choose another model.",
+            )
+        }
+        SuggestError::Ungrounded => CommandError::failed(
+            "None of what the model wrote could be traced back to your note, so none of it is \
+             shown. Try again, or choose a larger model.",
+        ),
+        SuggestError::Internal(detail) => {
+            eprintln!("[synapse] setting up a request to Ollama failed: {detail}");
+            CommandError::failed("Synapse couldn't ask Ollama.")
+        }
+        other => suggest_error(other),
+    }
+}
+
+/// The user-facing refusal for an answer the tutor won't take.
+fn answer_problem_error(problem: tutor::AnswerProblem) -> CommandError {
+    match problem {
+        tutor::AnswerProblem::Blank => CommandError::invalid("Write your answer first."),
+        tutor::AnswerProblem::TooLong => {
+            CommandError::invalid("Answers can be at most 4,000 characters.")
+        }
+    }
+}
+
+/// The title and the text to use (the whole body, or one `part` of it) of an
+/// active note, for the tutor.
+async fn tutor_note_text(
+    app: &AppHandle,
+    database: &Database,
+    note_id: i64,
+    part: Option<NotePart>,
+) -> Result<(String, String), CommandError> {
+    let pool = pool(app, database).await?;
+    let note = notes::note(&pool, note_id).await.map_err(|err| {
+        note_error(
+            err,
+            "loading a note for the tutor",
+            "Synapse couldn't load this note.",
+        )
+    })?;
+    let body = match part {
+        None => note.body.as_str(),
+        Some(part) => suggest::part_of(&note.body, part).ok_or_else(|| {
+            CommandError::stale(
+                "That part of the note has changed. Go back to the note and try again.",
+            )
+        })?,
+    };
+    let body = body.to_string();
+    Ok((note.title, body))
+}
+
+/// What asking for open questions did: `{ "status": "written", "questions": [{
+/// question, reference, quote }], "dropped": 1, "leftOut": 0 }` or
+/// `{ "status": "stopped" }`.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum QuestionsOutcome {
+    Written {
+        questions: Vec<tutor::OpenQuestion>,
+        /// Questions dropped because their quote isn't in the note or their
+        /// answer isn't drawn from it.
+        dropped: usize,
+        /// Questions left out as unusable.
+        left_out: usize,
+    },
+    /// `stop_tutor` was called first.
+    Stopped,
+}
+
+/// Asks a local model in Ollama for up to 5 open questions about a note, each
+/// with the answer the note supports and its quote, kept only if the quote is
+/// in the note word for word and the answer drawn from it. Nothing is saved.
+///
+/// Arguments: `{ noteId, model, part? }`, as for `summarize_note`. Returns
+/// [`QuestionsOutcome`]; rejects with kind "stale" if the note was deleted, no
+/// longer has that part, or the model is no longer in Ollama. Stoppable with
+/// `stop_tutor`.
+#[tauri::command]
+pub async fn tutor_questions(
+    app: AppHandle,
+    database: State<'_, Database>,
+    tutoring: State<'_, Tutoring>,
+    note_id: i64,
+    model: String,
+    part: Option<NotePart>,
+) -> Result<QuestionsOutcome, CommandError> {
+    if note_id < 1 {
+        return Err(CommandError::invalid(NOTE_NOT_FOUND));
+    }
+    let request = tutoring.0.begin();
+    let work = async {
+        let (title, body) = tutor_note_text(&app, &database, note_id, part).await?;
+        let ollama = Ollama::local().map_err(explain_error)?;
+        tutor::open_questions(&ollama, &model, &title, &body)
+            .await
+            .map_err(explain_error)
+    };
+    match request.run(work).await {
+        None => Ok(QuestionsOutcome::Stopped),
+        Some(result) => result.map(|written| QuestionsOutcome::Written {
+            questions: written.questions,
+            dropped: written.dropped,
+            left_out: written.left_out,
+        }),
+    }
+}
+
+/// What grading an answer did: `{ "status": "written", "score": 70, "verdict":
+/// "partly", "correct": [..], "missed": [{ point, quote }], "wrong": [..],
+/// "dropped": 0 }` or `{ "status": "stopped" }`.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum GradeOutcome {
+    Written {
+        /// 0 to 100.
+        score: u8,
+        /// "right", "partly" or "wrong", worked out from the score.
+        verdict: tutor::Verdict,
+        correct: Vec<String>,
+        /// Points of the note the answer left out, each with its quote.
+        missed: Vec<tutor::MissedPoint>,
+        wrong: Vec<String>,
+        /// Missed points dropped because their quote isn't in the note.
+        dropped: usize,
+    },
+    /// `stop_tutor` was called first.
+    Stopped,
+}
+
+/// Asks a local model in Ollama to grade a student's own answer to one of
+/// `tutor_questions`' questions, judged only against the note. Missed points
+/// are kept only if their quote is in the note word for word. Nothing is saved.
+///
+/// Arguments: `{ noteId, model, part?, question, reference, quote, answer }`.
+/// A blank answer, or one over 4,000 characters, rejects with kind "invalid"
+/// before anything is sent. Returns [`GradeOutcome`]; other rejections are as
+/// for `tutor_questions`. Stoppable with `stop_tutor`.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn grade_answer(
+    app: AppHandle,
+    database: State<'_, Database>,
+    tutoring: State<'_, Tutoring>,
+    note_id: i64,
+    model: String,
+    part: Option<NotePart>,
+    question: String,
+    reference: String,
+    quote: String,
+    answer: String,
+) -> Result<GradeOutcome, CommandError> {
+    if note_id < 1 {
+        return Err(CommandError::invalid(NOTE_NOT_FOUND));
+    }
+    tutor::check_answer(&answer).map_err(answer_problem_error)?;
+    let request = tutoring.0.begin();
+    let work = async {
+        let (title, body) = tutor_note_text(&app, &database, note_id, part).await?;
+        let ollama = Ollama::local().map_err(explain_error)?;
+        let graded = tutor::GradeRequest {
+            title: &title,
+            body: &body,
+            question: &question,
+            reference: &reference,
+            quote: &quote,
+            answer: &answer,
+        };
+        tutor::grade(&ollama, &model, &graded)
+            .await
+            .map_err(|err| match err {
+                tutor::GradeError::Answer(problem) => answer_problem_error(problem),
+                tutor::GradeError::Model(err) => explain_error(err),
+            })
+    };
+    match request.run(work).await {
+        None => Ok(GradeOutcome::Stopped),
+        Some(result) => result.map(|graded| GradeOutcome::Written {
+            score: graded.score,
+            verdict: graded.verdict,
+            correct: graded.correct,
+            missed: graded.missed,
+            wrong: graded.wrong,
+            dropped: graded.dropped,
+        }),
+    }
+}
+
+// --- Tutor: Socratic follow-up (one guiding question after a graded answer) ---
+
+/// What asking for a follow-up did: `{ "status": "written", "question",
+/// "quote" }` or `{ "status": "stopped" }`.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum FollowupOutcome {
+    Written {
+        /// One short guiding question that doesn't give the answer.
+        question: String,
+        /// The passage of the note it is about, checked to be in the note.
+        quote: String,
+    },
+    /// `stop_tutor` was called first.
+    Stopped,
+}
+
+/// Asks a local model in Ollama for ONE short guiding question after the
+/// student's answer to one of `tutor_questions`' questions, grounded in the
+/// note by a quote that must be in it word for word. Nothing is saved.
+///
+/// Arguments: `{ noteId, model, part?, question, answer }`. A blank answer, or
+/// one over 4,000 characters, rejects with kind "invalid" before anything is
+/// sent. Returns [`FollowupOutcome`]; other rejections are as for
+/// `tutor_questions`. Stoppable with `stop_tutor`.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn socratic_followup(
+    app: AppHandle,
+    database: State<'_, Database>,
+    tutoring: State<'_, Tutoring>,
+    note_id: i64,
+    model: String,
+    part: Option<NotePart>,
+    question: String,
+    answer: String,
+) -> Result<FollowupOutcome, CommandError> {
+    if note_id < 1 {
+        return Err(CommandError::invalid(NOTE_NOT_FOUND));
+    }
+    tutor::check_answer(&answer).map_err(answer_problem_error)?;
+    let request = tutoring.0.begin();
+    let work = async {
+        let (title, body) = tutor_note_text(&app, &database, note_id, part).await?;
+        let ollama = Ollama::local().map_err(explain_error)?;
+        let asked = tutor::FollowupRequest {
+            title: &title,
+            body: &body,
+            question: &question,
+            answer: &answer,
+        };
+        tutor::socratic_followup(&ollama, &model, &asked)
+            .await
+            .map_err(|err| match err {
+                tutor::GradeError::Answer(problem) => answer_problem_error(problem),
+                tutor::GradeError::Model(err) => explain_error(err),
+            })
+    };
+    match request.run(work).await {
+        None => Ok(FollowupOutcome::Stopped),
+        Some(result) => result.map(|found| FollowupOutcome::Written {
+            question: found.question,
+            quote: found.quote,
+        }),
+    }
 }
 
 /// What choosing a file to import as a note did: `{ "status": "read", "fileName",
@@ -4220,6 +4626,161 @@ pub async fn recognise_source_pages_with_model(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Exam planner (exams.rs)
+
+const EXAM_NOT_FOUND: &str = "That exam is no longer there.";
+
+impl CommandError {
+    /// A refused exam. The limits must match `exams.rs`.
+    fn invalid_exam(problem: exams::ExamProblem) -> Self {
+        use exams::ExamProblem;
+        let (field, message) = match problem {
+            ExamProblem::TitleBlank => (Field::Title, "Give the exam a title."),
+            ExamProblem::TitleTooLong => (Field::Title, "Titles can be at most 100 characters."),
+            ExamProblem::DateInvalid => (Field::ExamDate, "Choose a valid exam date."),
+            ExamProblem::ScopeNeeded => (
+                Field::ExamScope,
+                "Choose either a deck or a tag for the exam.",
+            ),
+            ExamProblem::ScopeGone => (
+                Field::ExamScope,
+                "That deck or tag isn't available. Choose another.",
+            ),
+        };
+        CommandError {
+            kind: ErrorKind::Invalid,
+            message,
+            field: Some(field),
+            index: None,
+        }
+    }
+}
+
+fn exam_error(err: exams::ExamError, what: &str, failure: &'static str) -> CommandError {
+    match err {
+        exams::ExamError::Invalid(problem) => CommandError::invalid_exam(problem),
+        exams::ExamError::NotFound => CommandError::stale(EXAM_NOT_FOUND),
+        exams::ExamError::Internal(detail) => {
+            eprintln!("[synapse] {what} failed: {detail}");
+            CommandError::failed(failure)
+        }
+    }
+}
+
+/// Every active exam, the soonest date first.
+///
+/// Returns `[{ id, title, examDate, deckId, tagId, scopeName, scopeArchived,
+/// createdAt }]`; `examDate` is `YYYY-MM-DD` on this computer's calendar and
+/// exactly one of `deckId` / `tagId` is set.
+#[tauri::command]
+pub async fn list_exams(
+    app: AppHandle,
+    database: State<'_, Database>,
+) -> Result<Vec<exams::Exam>, CommandError> {
+    let pool = pool(&app, &database).await?;
+    exams::list_exams(&pool)
+        .await
+        .map_err(|err| exam_error(err, "loading exams", "Synapse couldn't load your exams."))
+}
+
+/// Adds an exam for a deck or a tag (exactly one of `deckId`, `tagId`).
+/// A past date is allowed. Arguments: `{ title, examDate, deckId?, tagId? }`.
+/// Returns the exam (same shape as `list_exams`). Rejects with kind "invalid"
+/// and field "title", "examDate" or "examScope" if refused.
+#[tauri::command]
+pub async fn create_exam(
+    app: AppHandle,
+    database: State<'_, Database>,
+    title: String,
+    exam_date: String,
+    deck_id: Option<i64>,
+    tag_id: Option<i64>,
+) -> Result<exams::Exam, CommandError> {
+    let pool = pool(&app, &database).await?;
+    let scope = exams::Scope::from_ids(deck_id, tag_id)
+        .map_err(|err| exam_error(err, "adding an exam", "Synapse couldn't save the exam."))?;
+    exams::create_exam(&pool, &title, &exam_date, scope, Utc::now())
+        .await
+        .map_err(|err| exam_error(err, "adding an exam", "Synapse couldn't save the exam."))
+}
+
+/// Changes an exam's title and date (its deck or tag stays). Arguments:
+/// `{ examId, title, examDate }`. Returns the exam; "stale" if it is gone.
+#[tauri::command]
+pub async fn update_exam(
+    app: AppHandle,
+    database: State<'_, Database>,
+    exam_id: i64,
+    title: String,
+    exam_date: String,
+) -> Result<exams::Exam, CommandError> {
+    if exam_id < 1 {
+        return Err(CommandError::invalid(EXAM_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    exams::update_exam(&pool, exam_id, &title, &exam_date)
+        .await
+        .map_err(|err| exam_error(err, "changing an exam", "Synapse couldn't save the exam."))
+}
+
+/// Deletes an exam (soft: the row stays, it just isn't listed). Arguments:
+/// `{ examId }`. Returns nothing; "stale" if it is already gone.
+#[tauri::command]
+pub async fn delete_exam(
+    app: AppHandle,
+    database: State<'_, Database>,
+    exam_id: i64,
+) -> Result<(), CommandError> {
+    if exam_id < 1 {
+        return Err(CommandError::invalid(EXAM_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    exams::delete_exam(&pool, exam_id, Utc::now())
+        .await
+        .map_err(|err| exam_error(err, "deleting an exam", "Synapse couldn't delete the exam."))
+}
+
+/// The plan for one exam, on this computer's calendar. Reads only.
+/// Arguments: `{ examId }`. Returns `{ examId, title, examDate, status
+/// ("upcoming" | "today" | "finished"), daysLeft, cards, newCards,
+/// dueBeforeExam, belowTarget, dailyGoal, readiness }`; `readiness` is a
+/// percentage from 0 to 100. A past exam is "finished", not an error.
+#[tauri::command]
+pub async fn get_exam_plan(
+    app: AppHandle,
+    database: State<'_, Database>,
+    exam_id: i64,
+) -> Result<exams::ExamPlan, CommandError> {
+    if exam_id < 1 {
+        return Err(CommandError::invalid(EXAM_NOT_FOUND));
+    }
+    let pool = pool(&app, &database).await?;
+    exams::plan_for(&pool, exam_id, Utc::now(), &chrono::Local)
+        .await
+        .map_err(|err| exam_error(err, "planning an exam", "Synapse couldn't plan the exam."))
+}
+
+/// Reviews per day for the last 365 local days, and the study streaks.
+/// Reads only. Returns `{ days: [{ date, reviews }], currentStreak,
+/// longestStreak }`, oldest day first and today last.
+#[tauri::command]
+pub async fn get_study_calendar(
+    app: AppHandle,
+    database: State<'_, Database>,
+) -> Result<exams::StudyCalendar, CommandError> {
+    let pool = pool(&app, &database).await?;
+    exams::study_calendar(&pool, Utc::now(), &chrono::Local)
+        .await
+        .map_err(|err| {
+            exam_error(
+                err,
+                "loading the study calendar",
+                "Synapse couldn't load your study calendar.",
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5076,6 +5637,7 @@ mod tests {
                     body: "Slide 1\nMitosis".to_string(),
                     pages: Some(12),
                     pages_without_text: vec![4, 7],
+                    images_left_out: 0,
                 },
             })
             .unwrap(),

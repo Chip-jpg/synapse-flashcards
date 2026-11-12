@@ -6,6 +6,7 @@ mod cards_csv;
 mod cloze;
 mod commands;
 mod db;
+mod exams;
 mod export;
 // Public for its test of the PDF helper process (`tests/pdf_helper.rs`).
 pub mod extract;
@@ -26,7 +27,10 @@ mod stats;
 mod study;
 mod suggest;
 mod tags;
+mod transcript;
+mod tutor;
 mod vision;
+mod webpage;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -45,6 +49,8 @@ pub fn run() {
         .manage(aid::Helping::default())
         // The quiz Ollama is writing, so it can be stopped.
         .manage(quiz::Quizzing::default())
+        // The tutor request (summary) Ollama is writing, so it can be stopped.
+        .manage(tutor::Tutoring::default())
         // The text being read from a picture or scanned pages, so it can be stopped.
         .manage(recognition::Recognising::default())
         // Fitting FSRS parameters, so it can be stopped, and its result.
@@ -142,6 +148,11 @@ pub fn run() {
             commands::stop_card_help,
             commands::quiz_note,
             commands::stop_quiz,
+            commands::summarize_note,
+            commands::stop_tutor,
+            commands::tutor_questions,
+            commands::grade_answer,
+            commands::socratic_followup,
             commands::read_anki_package,
             commands::import_anki_package,
             commands::cancel_anki_import,
@@ -171,7 +182,14 @@ pub fn run() {
             commands::locate_quotes,
             commands::get_quoted_page,
             commands::save_source_copy,
-            commands::open_source_original
+            commands::open_source_original,
+            // Exam planner
+            commands::list_exams,
+            commands::create_exam,
+            commands::update_exam,
+            commands::delete_exam,
+            commands::get_exam_plan,
+            commands::get_study_calendar
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
