@@ -477,6 +477,28 @@ newer format first. A PDF is read by a second, short-lived run of Synapse, so a 
 crash the app: it's just reported as a file that couldn't be read. Text over 12,000 characters can
 still be saved as one note; *Suggest cards* then offers it in parts (Synapse says so).
 
+**Lesson transcripts and saved web pages.** *Import file* also reads two more kinds of file, still
+text only and still offline.
+
+- **Lesson transcripts** — subtitle files (`.srt`, `.vtt`) and `.txt`/`.md` transcripts whose lines
+  start with a time (`[00:35]`, `[1:02:10]`, `00:00:35 --> …`), such as a lesson recorded and
+  transcribed by a tool of your own. Short lines are merged into paragraphs of about half a minute,
+  each starting with a marker, `[m:ss]` or `[h:mm:ss]`. Caption styling, cue numbers and settings are
+  dropped. In a note, a marker is shown as a time; clicking it copies the time and highlights its
+  paragraph. Synapse doesn't play audio or video, so nothing jumps to that moment. A `.txt` or `.md`
+  file with fewer than two timed lines is kept as written. The file is kept as a text source.
+- **Saved web pages** — a page you saved from your browser with *Save page as* (`.html`, `.htm`).
+  Synapse reads the file only: scripts, styles, menus, headers and footers, forms and comments are
+  left out, the page's `<article>` or `<main>` is used when it has one, and the rest becomes
+  Markdown (headings, lists, quotes, code, simple tables, links as `[text](address)`). Links are
+  shown as text and never opened. Pictures are left out, and Synapse says how many; nothing is loaded
+  from the web. The title is the page's own, else its first heading, else the file name. The file's
+  declared character set is used when it's UTF-8 or Latin-1 (other sets are read as text would be).
+  The same 50 MB and 100,000-character limits apply, and the file is kept as a text source.
+
+Not offered: YouTube transcripts and clipping a page from its address, which need network access.
+Synapse has none; save the page or the transcript as a file first.
+
 **Search your notes.** *Search notes*, above the library, narrows it to the notes whose title or
 text contains what you type, ignoring capitals (accented letters included), still most recently
 edited first. It's plain matching: no fuzzy matches, and deleted notes aren't searched. *Clear* (or

@@ -211,3 +211,64 @@ describe("hasFormatting", () => {
     expect(hasFormatting(parseMarkdown("- a list"))).toBe(true);
   });
 });
+
+describe("timestamps from lesson transcripts", () => {
+  const stamp = (seconds: number, label: string): Inline => ({ type: "timestamp", seconds, label });
+
+  it("reads a marker at the start of a paragraph or a line", () => {
+    expect(parseMarkdown("[0:05] Hello there\n[12:34] and later\n\n[1:02:03] An hour in")).toEqual([
+      {
+        type: "paragraph",
+        content: [
+          stamp(5, "0:05"),
+          text(" Hello there"),
+          text("\n"),
+          stamp(754, "12:34"),
+          text(" and later"),
+        ],
+      },
+      { type: "paragraph", content: [stamp(3723, "1:02:03"), text(" An hour in")] },
+    ]);
+  });
+
+  it("reads a marker alone on its line, and keeps formatting in the rest", () => {
+    expect(parseMarkdown("[0:09]")).toEqual([{ type: "paragraph", content: [stamp(9, "0:09")] }]);
+    expect(parseMarkdown("[0:09] some **bold** words")).toEqual([
+      {
+        type: "paragraph",
+        content: [
+          stamp(9, "0:09"),
+          text(" some "),
+          { type: "strong", children: [text("bold")] },
+          text(" words"),
+        ],
+      },
+    ]);
+  });
+
+  it("leaves other brackets as they were", () => {
+    for (const source of [
+      "[1] a footnote",
+      "see [0:05] in the middle",
+      "[1:30](https://example.org)",
+      "[12:75] not a time",
+      "[0:5] one digit of seconds",
+    ]) {
+      const [block] = parseMarkdown(source);
+      expect(block.type, source).toBe("paragraph");
+      if (block.type === "paragraph") {
+        expect(
+          block.content.some((node) => node.type === "timestamp"),
+          source,
+        ).toBe(false);
+      }
+    }
+    expect(parseMarkdown("[1:30](https://example.org)")[0]).toMatchObject({
+      content: [{ type: "link", url: "https://example.org" }],
+    });
+  });
+
+  it("counts as formatting, so the note can be shown formatted", () => {
+    expect(hasFormatting(parseMarkdown("[0:05] Hello"))).toBe(true);
+  });
+});

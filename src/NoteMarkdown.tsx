@@ -1,4 +1,14 @@
+import { createContext, useContext, useId, useState } from "react";
 import type { Block, Inline } from "./markdown";
+
+/**
+ * Which paragraph's timestamp was clicked last. Synapse keeps no recording to
+ * play, so a click copies the time and marks that paragraph.
+ */
+const TimestampContext = createContext<{
+  active: string | null;
+  activate: (id: string) => void;
+}>({ active: null, activate: () => {} });
 
 /**
  * A note's text shown formatted as Markdown, from the `blocks` `parseMarkdown`
@@ -7,7 +17,47 @@ import type { Block, Inline } from "./markdown";
  * loaded.
  */
 export function MarkdownView({ blocks }: { blocks: Block[] }) {
-  return <div className="note-body markdown">{renderBlocks(blocks)}</div>;
+  const [active, setActive] = useState<string | null>(null);
+  return (
+    <TimestampContext.Provider value={{ active, activate: setActive }}>
+      <div className="note-body markdown">{renderBlocks(blocks)}</div>
+    </TimestampContext.Provider>
+  );
+}
+
+function ParagraphView({ content }: { content: Inline[] }) {
+  const id = useId();
+  const { active } = useContext(TimestampContext);
+  const marked = active === id;
+  return (
+    <ParagraphIdContext.Provider value={id}>
+      <p className={marked ? "markdown-timestamp-active" : undefined}>{renderInline(content)}</p>
+    </ParagraphIdContext.Provider>
+  );
+}
+
+const ParagraphIdContext = createContext<string>("");
+
+function TimestampButton({ seconds, label }: { seconds: number; label: string }) {
+  const paragraph = useContext(ParagraphIdContext);
+  const { activate } = useContext(TimestampContext);
+  return (
+    <button
+      type="button"
+      className="markdown-timestamp"
+      data-seconds={seconds}
+      title={`Copy ${label} and mark this paragraph`}
+      aria-label={`Time ${label}: copy it`}
+      onClick={() => {
+        activate(paragraph);
+        // Not every webview offers the clipboard; marking the paragraph is
+        // the part that always works.
+        void navigator.clipboard?.writeText(label)?.catch(() => {});
+      }}
+    >
+      {label}
+    </button>
+  );
 }
 
 function renderBlocks(blocks: Block[]) {
@@ -22,7 +72,7 @@ function BlockView({ block }: { block: Block }) {
       return <Tag className={`markdown-h${block.level}`}>{renderInline(block.content)}</Tag>;
     }
     case "paragraph":
-      return <p>{renderInline(block.content)}</p>;
+      return <ParagraphView content={block.content} />;
     case "code":
       return (
         <pre className="markdown-code">
@@ -115,6 +165,8 @@ function InlineView({ node }: { node: Inline }) {
         </span>
       );
     }
+    case "timestamp":
+      return <TimestampButton seconds={node.seconds} label={node.label} />;
     case "image":
       return (
         <span className="markdown-image">

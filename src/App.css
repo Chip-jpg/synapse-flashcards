@@ -1332,6 +1332,25 @@ body {
   font-style: italic;
 }
 
+/* A lesson transcript's time marker: a small button that copies the time. */
+.markdown-timestamp {
+  margin-right: 0.4em;
+  padding: 0 0.4em;
+  border: 1px solid var(--border);
+  border-radius: 0.5em;
+  background-color: var(--surface-low);
+  color: var(--primary-ink);
+  font: inherit;
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.markdown-timestamp-active {
+  border-left: 3px solid var(--primary-ink);
+  padding-left: 0.6em;
+}
+
 /* The note shown beside the card being written from it. It sticks to the top
    of the window, so it stays readable while the fields below it scroll. */
 .note-context {

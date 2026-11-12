@@ -63,6 +63,8 @@ export type SourceNoteDraft = {
   pagesWithoutText: number[];
   /** Pages whose text was recognised from their picture, so may hold mistakes. */
   recognisedPages: number[];
+  /** Pictures of a saved web page that the text leaves out (absent: none). */
+  imagesLeftOut?: number;
   justKept: boolean;
 };
 
@@ -77,6 +79,7 @@ export function draftFromImport(kept: SourceImport & { status: "imported" }): So
     pages: kept.text.pages,
     pagesWithoutText: kept.text.pagesWithoutText,
     recognisedPages: [],
+    imagesLeftOut: kept.text.imagesLeftOut,
     justKept: true,
   };
 }

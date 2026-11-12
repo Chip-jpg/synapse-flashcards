@@ -123,7 +123,9 @@ impl From<AssetError> for SourceError {
 pub fn media_type(kind: FileKind) -> MediaType {
     match kind {
         FileKind::Pdf => MediaType::Pdf,
-        FileKind::Text | FileKind::Markdown => MediaType::Text,
+        FileKind::Text | FileKind::Markdown | FileKind::Srt | FileKind::Vtt | FileKind::Html => {
+            MediaType::Text
+        }
         FileKind::Word => MediaType::Word,
         FileKind::PowerPoint => MediaType::PowerPoint,
     }
@@ -132,7 +134,9 @@ pub fn media_type(kind: FileKind) -> MediaType {
 fn kind_name(kind: FileKind) -> &'static str {
     match kind {
         FileKind::Pdf => "pdf",
-        FileKind::Text => "text",
+        // Subtitle files are kept as text sources: the `kind` column's CHECK
+        // (migration 0016) has no value for them.
+        FileKind::Text | FileKind::Srt | FileKind::Vtt | FileKind::Html => "text",
         FileKind::Markdown => "markdown",
         FileKind::Word => "word",
         FileKind::PowerPoint => "powerPoint",
@@ -557,6 +561,9 @@ pub fn copy_file_name(source: &Source) -> String {
     let extension = match source.kind {
         FileKind::Pdf => "pdf",
         FileKind::Text => "txt",
+        FileKind::Srt => "srt",
+        FileKind::Vtt => "vtt",
+        FileKind::Html => "html",
         FileKind::Markdown => "md",
         FileKind::Word => "docx",
         FileKind::PowerPoint => "pptx",
@@ -565,7 +572,11 @@ pub fn copy_file_name(source: &Source) -> String {
         .extension()
         .is_some_and(|found| {
             let found = found.to_string_lossy().to_lowercase();
-            found == extension || (source.kind == FileKind::Markdown && found == "markdown")
+            found == extension
+                || (source.kind == FileKind::Markdown && found == "markdown")
+                // A kept subtitle file or saved web page reads back as text.
+                || (source.kind == FileKind::Text
+                    && matches!(found.as_str(), "srt" | "vtt" | "html" | "htm"))
         });
     if !has_extension {
         name.push('.');
@@ -772,6 +783,7 @@ pub mod test_support {
                 body: format!("{}\n\n{}", pages[0], pages[2]),
                 pages: Some(3),
                 pages_without_text: vec![2],
+                images_left_out: 0,
             },
             pages,
         }
@@ -787,6 +799,7 @@ pub mod test_support {
                 body: text.to_string(),
                 pages: None,
                 pages_without_text: Vec::new(),
+                images_left_out: 0,
             },
             pages: vec![text.to_string()],
         }
