@@ -240,6 +240,8 @@ towards the total, so the bar fills only once you finish the session. The total 
 each card rather than fixed when the session starts: if another card falls due while you're
 studying, the total goes up instead of the bar sliding backwards.
 
+**Command palette.** Press **Ctrl+K** (or **Cmd+K** on macOS) to find places and decks.
+
 **Study from the keyboard.** **Space** or **Enter** reveals the answer, then **1** = Again,
 **2** = Hard, **3** = Good, **4** = Easy. The number keys do nothing until the answer is revealed,
 and nothing while a rating is saving, so a stray press can't rate the card twice or rate the next

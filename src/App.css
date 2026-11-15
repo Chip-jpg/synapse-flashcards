@@ -3566,3 +3566,20 @@ textarea.field-input {
 .source-search-marks .field-hint {
   margin: 0;
 }
+
+.command-palette {
+  width: min(36rem, calc(100vw - 2 * var(--gutter)));
+  max-height: min(70vh, 40rem);
+  padding: 1.5rem;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-2xl);
+  box-shadow: var(--shadow-dialog);
+}
+.command-palette::backdrop { background: rgb(45 43 40 / 0.32); }
+.command-palette h2 { margin: 0 0 1rem; }
+.command-palette input { width: 100%; }
+.command-palette ul { list-style: none; margin: 1rem 0 0; padding: 0; }
+.command-palette li { cursor: pointer; padding: 0.6rem; border-radius: 0.4rem; }
+.command-palette li[aria-selected="true"] { background: var(--primary-soft); }
