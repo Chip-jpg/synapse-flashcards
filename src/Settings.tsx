@@ -14,6 +14,7 @@ import { RestoreIcon, SlidersIcon } from "./icons";
 import { Retention } from "./Retention";
 import { translate, useLang, useT, type Lang, type MessageKey } from "./i18n";
 import { formatDateTime, Message, useFocusOnMount } from "./ui";
+import { applyTheme, getTheme, type Theme } from "./theme";
 
 type SettingsState =
   | { status: "loading" }
@@ -44,6 +45,7 @@ async function loadSettings(): Promise<SettingsState> {
 export function Settings() {
   const { lang, setLang } = useLang();
   const { t } = useT();
+  const [theme, setTheme] = useState<Theme>(getTheme);
   const [state, setState] = useState<SettingsState>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
   const [view, setView] = useState<SettingsView>({ key: 0, notice: null });
@@ -73,6 +75,17 @@ export function Settings() {
       <select id="language" value={lang} onChange={(event) => setLang(event.target.value as Lang)}>
         <option value="en">{t("settings.english")}</option>
         <option value="it">{t("settings.italian")}</option>
+      </select>
+      <label htmlFor="theme">{t("settings.theme")}</label>{" "}
+      <select id="theme" value={theme} onChange={(event) => {
+        const next = event.target.value as Theme;
+        setTheme(next);
+        localStorage.setItem("synapse.theme", next);
+        applyTheme(next);
+      }}>
+        <option value="system">{t("settings.themeSystem")}</option>
+        <option value="light">{t("settings.themeLight")}</option>
+        <option value="dark">{t("settings.themeDark")}</option>
       </select>
     </section>
   );

@@ -53,6 +53,13 @@
   --danger-line: #ecc5c5;
 
   --focus: #343b80;
+  --selection: rgb(94 102 180 / 0.2);
+  --backdrop: rgb(45 43 40 / 0.32);
+  --shadow-context: 0 6px 16px -10px rgb(50 48 45 / 0.25);
+  --heat-1: #cbe2d5;
+  --heat-2: #94c1a9;
+  --heat-3: #537c68;
+  --heat-4: #234937;
 
   /* Type */
   --font-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, Roboto,
@@ -90,6 +97,100 @@
   -webkit-text-size-adjust: 100%;
 }
 
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #1d1c1a;
+  --surface: #292724;
+  --surface-low: #33302c;
+  --surface-sunken: #3d3934;
+  --border: #5a554e;
+  --border-soft: #49453f;
+  --border-strong: #716a60;
+  --border-control: #a8a095;
+  --text: #f2eee8;
+  --text-muted: #c4bdb3;
+  --primary: #aeb5ff;
+  --primary-hover: #c3c8ff;
+  --primary-soft: #353754;
+  --primary-soft-hover: #444765;
+  --primary-line: #62689a;
+  --primary-ink: #d5d8ff;
+  --on-primary: #20213a;
+  --sage: #a5d4b8;
+  --sage-soft: #293e33;
+  --sage-line: #527965;
+  --sage-ink: #c1e8cf;
+  --amber: #efb57f;
+  --amber-soft: #493427;
+  --amber-line: #886348;
+  --amber-ink: #ffd4ac;
+  --rose: #f29b9b;
+  --danger: #ffb4ad;
+  --danger-hover: #ffc9c4;
+  --danger-soft: #4b2d2d;
+  --danger-line: #966060;
+  --focus: #c3c8ff;
+  --selection: rgb(174 181 255 / 0.3);
+  --backdrop: rgb(0 0 0 / 0.65);
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.3);
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3), 0 10px 28px -16px rgb(0 0 0 / 0.6);
+  --shadow-primary: 0 2px 8px rgb(0 0 0 / 0.4);
+  --shadow-dialog: 0 24px 48px -16px rgb(0 0 0 / 0.7);
+  --shadow-context: 0 6px 16px -10px rgb(0 0 0 / 0.7);
+  --heat-1: #395747;
+  --heat-2: #527d64;
+  --heat-3: #79ad8d;
+  --heat-4: #b2dfc1;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #1d1c1a;
+    --surface: #292724;
+    --surface-low: #33302c;
+    --surface-sunken: #3d3934;
+    --border: #5a554e;
+    --border-soft: #49453f;
+    --border-strong: #716a60;
+    --border-control: #a8a095;
+    --text: #f2eee8;
+    --text-muted: #c4bdb3;
+    --primary: #aeb5ff;
+    --primary-hover: #c3c8ff;
+    --primary-soft: #353754;
+    --primary-soft-hover: #444765;
+    --primary-line: #62689a;
+    --primary-ink: #d5d8ff;
+    --on-primary: #20213a;
+    --sage: #a5d4b8;
+    --sage-soft: #293e33;
+    --sage-line: #527965;
+    --sage-ink: #c1e8cf;
+    --amber: #efb57f;
+    --amber-soft: #493427;
+    --amber-line: #886348;
+    --amber-ink: #ffd4ac;
+    --rose: #f29b9b;
+    --danger: #ffb4ad;
+    --danger-hover: #ffc9c4;
+    --danger-soft: #4b2d2d;
+    --danger-line: #966060;
+    --focus: #c3c8ff;
+    --selection: rgb(174 181 255 / 0.3);
+    --backdrop: rgb(0 0 0 / 0.65);
+    --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.3);
+    --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3), 0 10px 28px -16px rgb(0 0 0 / 0.6);
+    --shadow-primary: 0 2px 8px rgb(0 0 0 / 0.4);
+    --shadow-dialog: 0 24px 48px -16px rgb(0 0 0 / 0.7);
+    --shadow-context: 0 6px 16px -10px rgb(0 0 0 / 0.7);
+    --heat-1: #395747;
+    --heat-2: #527d64;
+    --heat-3: #79ad8d;
+    --heat-4: #b2dfc1;
+  }
+}
+
 *,
 *::before,
 *::after {
@@ -102,7 +203,7 @@ body {
 }
 
 ::selection {
-  background-color: rgb(94 102 180 / 0.2);
+  background-color: var(--selection);
 }
 
 /* App shell: the sidebar beside the workspace */
@@ -920,7 +1021,7 @@ body {
 }
 
 .dialog::backdrop {
-  background-color: rgb(45 43 40 / 0.32);
+  background-color: var(--backdrop);
 }
 
 .dialog-text {
@@ -1363,7 +1464,7 @@ body {
   background-color: var(--surface-low);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
-  box-shadow: 0 6px 16px -10px rgb(50 48 45 / 0.25);
+  box-shadow: var(--shadow-context);
 }
 
 .note-context .side-label {
@@ -3399,19 +3500,19 @@ textarea.field-input {
 }
 
 .heat-1 {
-  background-color: #cbe2d5;
+  background-color: var(--heat-1);
 }
 
 .heat-2 {
-  background-color: #94c1a9;
+  background-color: var(--heat-2);
 }
 
 .heat-3 {
-  background-color: #537c68;
+  background-color: var(--heat-3);
 }
 
 .heat-4 {
-  background-color: #234937;
+  background-color: var(--heat-4);
 }
 
 .heat-legend {

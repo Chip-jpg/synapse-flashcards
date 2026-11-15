@@ -155,7 +155,7 @@ thing that replaces it is *Import data*, and only after you confirm.
 **Find your way around.** The sidebar has nine places: the **Study Desk** (your decks, with the
 first one that has cards due at the top), **Search**, **Tags**, **Notes**, **Sources**,
 **Statistics**, **Archived decks**, **Backup & restore**, and **Settings**.
-In a narrow window it becomes a bar across the top.
+In a narrow window it becomes a bar across the top. Choose System, Light, or Dark theme under Settings.
 
 **Unsaved changes are never dropped silently.** If you've typed something in a form (a deck, card,
 or note) and haven't saved it, choosing a place in the sidebar or closing the window first asks
