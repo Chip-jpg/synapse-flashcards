@@ -711,12 +711,11 @@ pub async fn create_flashcard_with_pictures(
     picture_ids: &CardPictureIds,
     now: DateTime<Utc>,
 ) -> Result<DeckDetail, AuthoringError> {
-    create_flashcard_tagged(pool, deck_id, front, back, picture_ids, None, now).await
+    create_flashcard_from_note(pool, deck_id, front, back, picture_ids, None, None, now).await
 }
 
-/// As [`create_flashcard_with_pictures`], also giving the card the tags
-/// `tag_names` (`tags.rs`; `None` or an empty list gives none). The text,
-/// pictures and tags are all checked before anything is written.
+/// Test helper for creating a card with optional tags and no source note.
+#[cfg(test)]
 pub async fn create_flashcard_tagged(
     pool: &SqlitePool,
     deck_id: i64,
@@ -739,6 +738,8 @@ pub async fn create_flashcard_tagged(
     .await
 }
 
+/// Creates a card with optional pictures, tags, and source note. All inputs
+/// are checked before anything is written.
 #[allow(clippy::too_many_arguments)]
 pub async fn create_flashcard_from_note(
     pool: &SqlitePool,

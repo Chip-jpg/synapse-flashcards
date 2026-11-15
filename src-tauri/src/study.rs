@@ -105,6 +105,8 @@ pub struct SessionProgress {
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
+// Sent to the UI once per card; boxing the due payload isn't worth the indirection.
+#[allow(clippy::large_enum_variant)]
 pub enum SessionCard {
     Due {
         card: Flashcard,
