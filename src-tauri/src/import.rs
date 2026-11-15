@@ -1356,12 +1356,18 @@ mod tests {
                     .fetch_one(&source)
                     .await
                     .unwrap();
-            let linked =
-                sqlx::query("UPDATE flashcards SET source_note_id = ?1 WHERE deleted_at IS NULL")
-                    .bind(note_id)
-                    .execute(&source)
-                    .await
-                    .unwrap();
+            let linked = sqlx::query(
+                "UPDATE flashcards SET source_note_id = ?1
+                 WHERE deleted_at IS NULL
+                   AND EXISTS (
+                       SELECT 1 FROM decks
+                       WHERE decks.id = flashcards.deck_id AND decks.archived_at IS NULL
+                   )",
+            )
+            .bind(note_id)
+            .execute(&source)
+            .await
+            .unwrap();
             assert!(linked.rows_affected() > 0);
             let archive = dir.join("backup.zip");
             write_package(
