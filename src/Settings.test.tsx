@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { OptimizeOutcome, SchedulingSettings } from "./api";
 import App from "./App";
 import { formatInterval, formatPercent } from "./Settings";
+import { applyTheme } from "./theme";
 import { DEFAULTS, deferred, fakeBackend, refuse, type Handler } from "./test/backend";
 
 const FITTED = DEFAULTS.map((value) => value * 2);
@@ -59,6 +60,44 @@ async function openSettings(user: UserEvent, handlers: Record<string, Handler>) 
   await screen.findByRole("heading", { name: "Settings" });
   return backend;
 }
+
+describe("theme", () => {
+  it("persists Dark and removes the override for System", async () => {
+    const user = userEvent.setup();
+    try {
+      localStorage.removeItem("synapse.theme");
+      applyTheme();
+      await openSettings(user, { get_scheduling: () => DEFAULT_SETTINGS });
+      const select = screen.getByRole("combobox", { name: "Theme" });
+      await user.selectOptions(select, "dark");
+      expect(document.documentElement.dataset.theme).toBe("dark");
+      expect(localStorage.getItem("synapse.theme")).toBe("dark");
+      await user.selectOptions(select, "system");
+      expect(document.documentElement.hasAttribute("data-theme")).toBe(false);
+      expect(localStorage.getItem("synapse.theme")).toBe("system");
+    } finally {
+      localStorage.removeItem("synapse.theme");
+      applyTheme();
+    }
+  });
+
+  it("applies the saved theme at startup", () => {
+    try {
+      localStorage.setItem("synapse.theme", "light");
+      applyTheme();
+      expect(document.documentElement.dataset.theme).toBe("light");
+      localStorage.setItem("synapse.theme", "dark");
+      applyTheme();
+      expect(document.documentElement.dataset.theme).toBe("dark");
+      localStorage.setItem("synapse.theme", "invalid");
+      applyTheme();
+      expect(document.documentElement.hasAttribute("data-theme")).toBe(false);
+    } finally {
+      localStorage.removeItem("synapse.theme");
+      applyTheme();
+    }
+  });
+});
 
 describe("personal scheduling", () => {
   it("explains why optimizing isn't possible yet, and doesn't ask Rust", async () => {
