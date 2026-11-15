@@ -19,6 +19,7 @@ import {
   type Verdict,
 } from "./api";
 import { loadDeckChoices, type DeckChoices } from "./deckChoices";
+import { translate, useT, useLang, type MessageKey } from "./i18n";
 import { SelectField, TextField, useFormSave } from "./forms";
 import { SparkleIcon } from "./icons";
 import { noteParts, SUGGESTION_NOTE_MAX_CHARS } from "./noteParts";
@@ -28,7 +29,8 @@ import { useUnsavedChanges } from "./unsaved";
 
 /** The longest a note's title may be, in characters. */
 const NOTE_TITLE_MAX_CHARS = 200;
-const SUMMARY_PREFIX = "Summary: ";
+type T = ReturnType<typeof useT>["t"];
+const english: T = (key, params) => translate("en", key, params);
 
 /**
  * The ways the tutor can work on a note. Each is a panel that gets the note
@@ -36,8 +38,8 @@ const SUMMARY_PREFIX = "Summary: ";
  * added here and shown as tabs.
  */
 const MODES = [
-  { id: "summary", label: "Summarise" },
-  { id: "explain", label: "Explain it" },
+  { id: "summary", label: "notes.summarise" },
+  { id: "explain", label: "tutor.explain" },
 ] as const;
 type TutorMode = (typeof MODES)[number]["id"];
 
@@ -61,6 +63,7 @@ export function Tutor({
   /** A summary was saved as a new note. */
   onSaved: (saved: Note) => void;
 }) {
+  const { t } = useT();
   const [setup, setSetup] = useState<Setup>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
   const [mode, setMode] = useState<TutorMode>("summary");
@@ -86,14 +89,14 @@ export function Tutor({
   if (setup.status === "loading") {
     return (
       <p className="loading" role="status">
-        Looking for Ollama…
+        {t("suggest.looking")}
       </p>
     );
   }
 
   const back = (
     <button type="button" className="button" onClick={onCancel}>
-      Back to note
+      {t("notes.backNote")}
     </button>
   );
 
@@ -102,7 +105,7 @@ export function Tutor({
       <Message focus tone="alert" text={setup.message}>
         <div className="actions">
           <button type="button" className="button" onClick={retry}>
-            Try again
+            {t("suggest.retry")}
           </button>
           {back}
         </div>
@@ -115,11 +118,11 @@ export function Tutor({
       <Message
         focus
         tone="status"
-        text="Ollama is running, but it has no models on this computer that can summarise a note. Download a model in Ollama, then check again."
+        text={t("tutor.noModels")}
       >
         <div className="actions">
           <button type="button" className="button" onClick={retry}>
-            Check again
+            {t("suggest.checkAgain")}
           </button>
           {back}
         </div>
@@ -130,10 +133,10 @@ export function Tutor({
   return (
     <section className="card" aria-labelledby="tutor-heading">
       <h2 id="tutor-heading" className="form-title">
-        {`Tutor: ${note.title}`}
+        {t("tutor.title", { title: note.title })}
       </h2>
       {MODES.length > 1 && (
-        <div role="tablist" aria-label="Tutor mode" className="actions">
+        <div role="tablist" aria-label={t("tutor.mode")} className="actions">
           {MODES.map((each) => (
             <button
               key={each.id}
@@ -143,7 +146,7 @@ export function Tutor({
               aria-selected={mode === each.id}
               onClick={() => setMode(each.id)}
             >
-              {each.label}
+              {t(each.label)}
             </button>
           ))}
         </div>
@@ -188,22 +191,18 @@ function choose(messages: Partial<ChooseStage> = {}): ChooseStage {
   return { step: "choose", notice: null, modelError: null, error: null, ...messages };
 }
 
-/** "1 point", "3 points". */
-function pointCount(count: number): string {
-  return count === 1 ? "1 point" : `${count} points`;
-}
-
 /** What the note-to-be holds: the bullets, then the key terms. */
-export function summaryBody(bullets: SummaryBullet[], keyTerms: SummaryKeyTerm[]): string {
+export function summaryBody(bullets: SummaryBullet[], keyTerms: SummaryKeyTerm[], t: T = english): string {
   const lines = bullets.map((bullet) => `- ${bullet.text}`).join("\n");
   if (keyTerms.length === 0) return lines;
-  return `${lines}\n\nKey terms: ${keyTerms.map((each) => each.term).join(", ")}`;
+  return `${lines}\n\n${t("tutor.keyTermsBody", { terms: keyTerms.map((each) => each.term).join(", ") })}`;
 }
 
 /** "Summary: <title>", cut so it fits a note's title. */
-export function summaryTitle(title: string): string {
-  return `${SUMMARY_PREFIX}${Array.from(title)
-    .slice(0, NOTE_TITLE_MAX_CHARS - SUMMARY_PREFIX.length)
+export function summaryTitle(title: string, t: T = english): string {
+  const prefix = t("tutor.summaryPrefix");
+  return `${prefix}${Array.from(title)
+    .slice(0, NOTE_TITLE_MAX_CHARS - prefix.length)
     .join("")}`.trim();
 }
 
@@ -226,6 +225,7 @@ function Summariser({
   onSaved: (saved: Note) => void;
   onNoModels: () => void;
 }) {
+  const { t } = useT();
   const parts = useMemo(() => noteParts(note.body), [note.body]);
   const split = parts.length > 1;
   const [partIndex, setPartIndex] = useState(0);
@@ -275,7 +275,7 @@ function Summariser({
     event.preventDefault();
     if (writingRef.current) return;
     if (model === "") {
-      show(choose({ modelError: "Choose a model to write the summary with." }));
+      show(choose({ modelError: t("tutor.summaryModelError") }));
       return;
     }
     writingRef.current = true;
@@ -285,7 +285,7 @@ function Summariser({
     try {
       const outcome = await summarizeNote(note.id, model, part ?? undefined);
       if (outcome.status === "stopped") {
-        next = choose({ notice: "Stopped. No summary was written." });
+        next = choose({ notice: t("tutor.summaryStopped") });
       } else {
         rememberModel(model);
         next = {
@@ -315,8 +315,8 @@ function Summariser({
     savingRef.current = true;
     try {
       const saved = await createNote(
-        summaryTitle(note.title),
-        summaryBody(stage.bullets, stage.keyTerms)
+        summaryTitle(note.title, t),
+        summaryBody(stage.bullets, stage.keyTerms, t)
       );
       if (shownRef.current) onSaved(saved);
     } catch (err) {
@@ -337,7 +337,7 @@ function Summariser({
           parts={
             split
               ? {
-                  labels: parts.map((each, index) => partLabel(each, index, parts.length)),
+                  labels: parts.map((each, index) => partLabel(each, index, parts.length, t)),
                   index: partIndex,
                   noteLength: Array.from(note.body).length,
                   onChoose: setPartIndex,
@@ -362,7 +362,7 @@ function Summariser({
         <Writing
           key={round}
           model={stage.model}
-          activity={`Writing a summary${part ? ` of part ${partIndex + 1} of your note` : ""}`}
+          activity={part ? t("tutor.summaryWritingPart", { part: partIndex + 1 }) : t("tutor.summaryWriting")}
           onStop={() => stopTutor().catch(() => {})}
         />
       )}
@@ -387,24 +387,23 @@ type PartChoice = {
 };
 
 /** The words of the choose step, which differ by mode. */
-type ChooseCopy = { intro: string; partRule: string; modelHint: string; submit: string };
+type ChooseCopy = { intro: MessageKey; partRule: MessageKey; modelHint: MessageKey; submit: MessageKey };
 
 const SUMMARY_COPY: ChooseCopy = {
-  intro:
-    "A model in Ollama, on this computer, reads the note and writes up to 10 bullet points and 10 key terms, in the note's language, each with the passage of your note it comes from. Points whose passage isn't in your note are left out. The note doesn't leave this computer, and nothing is saved unless you save the summary as a new note.",
-  partRule: "A summary covers one part at a time; come back for the others.",
+  intro: "tutor.summaryHint",
+  partRule: "tutor.summaryPartRule",
   modelHint:
-    "One of the models in Ollama on this computer. Larger models usually write better summaries, but take longer.",
-  submit: "Summarise",
+    "tutor.summaryModelHint",
+  submit: "notes.summarise",
 };
 
 const EXPLAIN_COPY: ChooseCopy = {
   intro:
-    "A model in Ollama, on this computer, asks up to 5 questions about the note. You answer each in your own words, and the model checks your answer against the note only, showing what you got right, what you missed (with the passage of your note) and what was wrong. Questions whose passage isn't in your note are left out. The note and your answers don't leave this computer, and nothing is saved unless you add missed points as cards.",
-  partRule: "Questions cover one part at a time; come back for the others.",
+    "tutor.explainIntro",
+  partRule: "tutor.explainPartRule",
   modelHint:
-    "One of the models in Ollama on this computer. Larger models usually ask and grade better, but take longer.",
-  submit: "Ask me questions",
+    "tutor.explainModelHint",
+  submit: "tutor.explainSubmit",
 };
 
 function ChooseModel({
@@ -430,22 +429,24 @@ function ChooseModel({
   onStart: (event: FormEvent<HTMLFormElement>) => void;
   onCancel: () => void;
 }) {
+  const { t } = useT();
+  const { lang } = useLang();
   const noticeRef = useFocusOnMount<HTMLParagraphElement>(stage.notice !== null);
 
   return (
     <>
       <section className="note-context" tabIndex={0} aria-labelledby="tutor-context-label">
         <p id="tutor-context-label" className="side-label">
-          {part ? `Your note, part ${part.index + 1} of ${part.count}` : "Your note"}
+          {part ? t("suggest.notePart", { part: part.index + 1, total: part.count }) : t("notes.yourNote")}
         </p>
         <p className="note-body">{part ? part.text : note.body}</p>
       </section>
       <p id="tutor-hint" className="field-hint">
-        {copy.intro}
+        {t(copy.intro)}
       </p>
       <form
         className="suggest-step"
-        aria-label="Choose a model"
+        aria-label={t("suggest.chooseModel")}
         noValidate
         onSubmit={onStart}
       >
@@ -457,11 +458,11 @@ function ChooseModel({
         {parts && (
           <SelectField
             id="tutor-part"
-            label="Part of the note"
-            hint={`This note is ${parts.noteLength.toLocaleString("en-US")} characters long, more than the ${SUGGESTION_NOTE_MAX_CHARS.toLocaleString("en-US")} a model reads at once, so it's split into ${parts.labels.length} parts where paragraphs end. ${copy.partRule}`}
+            label={t("suggest.part")}
+            hint={t("tutor.partHint", { length: parts.noteLength.toLocaleString(lang === "it" ? "it-IT" : "en-US"), max: SUGGESTION_NOTE_MAX_CHARS.toLocaleString(lang === "it" ? "it-IT" : "en-US"), count: parts.labels.length, rule: t(copy.partRule) })}
             value={String(parts.index)}
             options={parts.labels.map((label, index) => ({ value: String(index), label }))}
-            placeholder="Choose a part"
+            placeholder={t("suggest.choosePart")}
             required
             onChange={(value) => {
               if (value !== "") parts.onChoose(Number(value));
@@ -470,12 +471,12 @@ function ChooseModel({
         )}
         <SelectField
           id="tutor-model"
-          label="Model"
-          hint={copy.modelHint}
+          label={t("suggest.model")}
+          hint={t(copy.modelHint)}
           describedBy="tutor-hint"
           value={model}
           options={models.map((name) => ({ value: name, label: name }))}
-          placeholder="Choose a model"
+          placeholder={t("suggest.chooseModel")}
           error={stage.modelError ?? undefined}
           required
           onChange={onModel}
@@ -483,10 +484,10 @@ function ChooseModel({
         <div className="form-actions">
           <button type="submit" className="button button-primary">
             <SparkleIcon />
-            {copy.submit}
+            {t(copy.submit)}
           </button>
           <button type="button" className="button" onClick={onCancel}>
-            Cancel
+            {t("common.cancel")}
           </button>
         </div>
         {stage.error && (
@@ -510,6 +511,7 @@ function Writing({
   activity: string;
   onStop: () => void;
 }) {
+  const { t } = useT();
   const statusRef = useFocusOnMount<HTMLParagraphElement>(true);
   const [stopping, setStopping] = useState(false);
 
@@ -517,8 +519,8 @@ function Writing({
     <div className="confirm confirm-calm suggest-waiting">
       <p ref={statusRef} className="confirm-question" role="status" tabIndex={-1}>
         {stopping
-          ? "Stopping…"
-          : `${activity} with ${model}… This can take a minute or more, depending on the model and this computer.`}
+          ? t("suggest.stopping")
+          : t("tutor.waiting", { activity, model })}
       </p>
       <div className="deck-actions">
         <button
@@ -531,7 +533,7 @@ function Writing({
             onStop();
           }}
         >
-          Stop
+          {t("settings.stop")}
         </button>
       </div>
     </div>
@@ -539,19 +541,13 @@ function Writing({
 }
 
 /** What was left out, said above the summary. */
-function leftOutText(dropped: number, leftOut: number): string {
-  const droppedText =
-    dropped === 0
-      ? ""
-      : dropped === 1
-        ? " 1 point was left out because its passage couldn't be found in your note."
-        : ` ${dropped} points were left out because their passages couldn't be found in your note.`;
-  const leftOutText =
-    leftOut === 0
-      ? ""
-      : leftOut === 1
-        ? " 1 more was left out because it was empty, too long or a repeat."
-        : ` ${leftOut} more were left out because they were empty, too long or repeats.`;
+function leftOutText(dropped: number, leftOut: number, t: T): string {
+  const droppedText = dropped === 0 ? "" : t(
+    dropped === 1 ? "tutor.pointsDroppedOne" : "tutor.pointsDroppedOther", { count: dropped }
+  );
+  const leftOutText = leftOut === 0 ? "" : t(
+    leftOut === 1 ? "tutor.leftOutOne" : "tutor.leftOutOther", { count: leftOut }
+  );
   return `${droppedText}${leftOutText}`;
 }
 
@@ -566,33 +562,34 @@ function Shown({
   onAgain: () => void;
   onDone: () => void;
 }) {
+  const { t, plural } = useT();
   const introRef = useFocusOnMount<HTMLParagraphElement>(true);
   const [saving, setSaving] = useState(false);
 
   return (
     <div className="suggest-step">
       <p ref={introRef} className="notice" role="status" tabIndex={-1}>
-        {`${stage.model} wrote ${pointCount(stage.bullets.length)} and ${stage.keyTerms.length} key ${stage.keyTerms.length === 1 ? "term" : "terms"}.${leftOutText(stage.dropped, stage.leftOut)} Check them against your note: nothing is saved yet.`}
+        {t("tutor.summaryIntro", { model: stage.model, points: plural(stage.bullets.length, "tutor.pointOne", "tutor.pointOther"), terms: plural(stage.keyTerms.length, "tutor.termOne", "tutor.termOther"), leftOut: leftOutText(stage.dropped, stage.leftOut, t) })}
       </p>
-      <h3 className="side-label">Summary</h3>
+      <h3 className="side-label">{t("tutor.summary")}</h3>
       <ul className="summary-list">
         {stage.bullets.map((bullet, index) => (
           <li key={index}>
             <p>{bullet.text}</p>
-            <p className="field-hint">{`From your note: “${bullet.quote}”`}</p>
+            <p className="field-hint">{t("tutor.quote", { quote: bullet.quote })}</p>
           </li>
         ))}
       </ul>
       {stage.keyTerms.length > 0 && (
         <>
-          <h3 className="side-label">Key terms</h3>
+          <h3 className="side-label">{t("tutor.keyTerms")}</h3>
           <ul className="summary-list">
             {stage.keyTerms.map((each, index) => (
               <li key={index}>
                 <p>
                   <strong>{each.term}</strong>
                 </p>
-                <p className="field-hint">{`From your note: “${each.quote}”`}</p>
+                <p className="field-hint">{t("tutor.quote", { quote: each.quote })}</p>
               </li>
             ))}
           </ul>
@@ -615,13 +612,13 @@ function Shown({
             onSave().finally(() => setSaving(false));
           }}
         >
-          Save as note
+          {t("tutor.saveNote")}
         </button>
         <button type="button" className="button" onClick={onAgain}>
-          Summarise again
+          {t("tutor.again")}
         </button>
         <button type="button" className="button" onClick={onDone}>
-          Discard
+          {t("settings.discard")}
         </button>
       </div>
     </div>
@@ -648,31 +645,20 @@ type ExplainStage =
       leftOut: number;
     };
 
-/** "1 card", "3 cards". */
-function cardCount(count: number): string {
-  return count === 1 ? "1 card" : `${count} cards`;
-}
-
-const VERDICT_LABELS: Record<Verdict, string> = {
-  right: "Right",
-  partly: "Partly right",
-  wrong: "Not right",
+const VERDICT_LABELS: Record<Verdict, MessageKey> = {
+  right: "tutor.right",
+  partly: "tutor.partly",
+  wrong: "tutor.wrong",
 };
 
 /** What was left out of the questions, said above the first one. */
-function questionsLeftOut(dropped: number, leftOut: number): string {
-  const droppedText =
-    dropped === 0
-      ? ""
-      : dropped === 1
-        ? " 1 question was left out because its passage couldn't be found in your note."
-        : ` ${dropped} questions were left out because their passages couldn't be found in your note.`;
-  const leftOutText =
-    leftOut === 0
-      ? ""
-      : leftOut === 1
-        ? " 1 more was left out because it was empty, too long or a repeat."
-        : ` ${leftOut} more were left out because they were empty, too long or repeats.`;
+function questionsLeftOut(dropped: number, leftOut: number, t: T): string {
+  const droppedText = dropped === 0 ? "" : t(
+    dropped === 1 ? "tutor.questionsDroppedOne" : "tutor.questionsDroppedOther", { count: dropped }
+  );
+  const leftOutText = leftOut === 0 ? "" : t(
+    leftOut === 1 ? "tutor.leftOutOne" : "tutor.leftOutOther", { count: leftOut }
+  );
   return `${droppedText}${leftOutText}`;
 }
 
@@ -692,6 +678,7 @@ function Explainer({
   onCancel: () => void;
   onNoModels: () => void;
 }) {
+  const { t } = useT();
   const parts = useMemo(() => noteParts(note.body), [note.body]);
   const split = parts.length > 1;
   const [partIndex, setPartIndex] = useState(0);
@@ -749,7 +736,7 @@ function Explainer({
     event.preventDefault();
     if (writingRef.current) return;
     if (model === "") {
-      show(choose({ modelError: "Choose a model to ask the questions with." }));
+      show(choose({ modelError: t("tutor.questionsModelError") }));
       return;
     }
     writingRef.current = true;
@@ -760,7 +747,7 @@ function Explainer({
       writingRef.current = false;
       if (!shownRef.current) return;
       if (outcome.status === "stopped") {
-        show(choose({ notice: "Stopped. No questions were written." }));
+        show(choose({ notice: t("tutor.questionsStopped") }));
       } else {
         rememberModel(model);
         show({
@@ -788,7 +775,7 @@ function Explainer({
           parts={
             split
               ? {
-                  labels: parts.map((each, index) => partLabel(each, index, parts.length)),
+                  labels: parts.map((each, index) => partLabel(each, index, parts.length, t)),
                   index: partIndex,
                   noteLength: Array.from(note.body).length,
                   onChoose: setPartIndex,
@@ -813,7 +800,7 @@ function Explainer({
         <Writing
           key={round}
           model={stage.model}
-          activity={`Writing questions${part ? ` about part ${partIndex + 1} of your note` : ""}`}
+          activity={part ? t("tutor.questionsWritingPart", { part: partIndex + 1 }) : t("tutor.questionsWriting")}
           onStop={() => stopTutor().catch(() => {})}
         />
       )}
@@ -826,7 +813,7 @@ function Explainer({
           question={stage.questions[stage.index]}
           position={stage.index + 1}
           total={stage.questions.length}
-          leftOut={stage.index === 0 ? questionsLeftOut(stage.dropped, stage.leftOut) : ""}
+          leftOut={stage.index === 0 ? questionsLeftOut(stage.dropped, stage.leftOut, t) : ""}
           onNext={() =>
             setStage((current) =>
               current.step === "practice" && current.index + 1 < current.questions.length
@@ -881,6 +868,8 @@ function Practice({
   onDone: () => void;
   onStale: (failure: CommandError) => void;
 }) {
+  const { t, plural } = useT();
+  const { lang } = useLang();
   const [answer, setAnswer] = useState("");
   const [phase, setPhase] = useState<"answering" | "grading" | "graded">("answering");
   const [graded, setGraded] = useState<Graded | null>(null);
@@ -910,11 +899,11 @@ function Practice({
     if (gradingRef.current) return;
     setNotice(null);
     if (answer.trim() === "") {
-      setError("Write your answer first.");
+      setError(t("tutor.answerRequired"));
       return;
     }
     if (Array.from(answer.trim()).length > ANSWER_MAX_CHARS) {
-      setError(`Answers can be at most ${ANSWER_MAX_CHARS.toLocaleString("en-US")} characters.`);
+      setError(t("tutor.answerMax", { max: ANSWER_MAX_CHARS.toLocaleString(lang === "it" ? "it-IT" : "en-US") }));
       return;
     }
     setError(null);
@@ -925,7 +914,7 @@ function Practice({
       gradingRef.current = false;
       if (!shownRef.current) return;
       if (outcome.status === "stopped") {
-        setNotice("Stopped. Your answer wasn't graded.");
+        setNotice(t("tutor.gradeStopped"));
         setPhase("answering");
       } else {
         setGraded(outcome);
@@ -947,11 +936,11 @@ function Practice({
   return (
     <div className="suggest-step">
       {leftOut !== "" && <p className="field-hint">{leftOut.trim()}</p>}
-      <h3 className="side-label">{`Question ${position} of ${total}`}</h3>
+      <h3 className="side-label">{t("quiz.position", { position, count: total })}</h3>
       <p className="quiz-missed-question">{question.question}</p>
 
       {phase === "answering" && (
-        <form aria-label="Answer the question" noValidate onSubmit={check}>
+        <form aria-label={t("tutor.answerQuestion")} noValidate onSubmit={check}>
           {notice && (
             <p className="notice" role="status">
               {notice}
@@ -959,8 +948,8 @@ function Practice({
           )}
           <TextField
             id="tutor-answer"
-            label="Your answer"
-            hint={`In your own words. The model grades it against your note only. Up to ${ANSWER_MAX_CHARS.toLocaleString("en-US")} characters.`}
+            label={t("quiz.yourAnswer")}
+            hint={t("tutor.answerHint", { max: ANSWER_MAX_CHARS.toLocaleString(lang === "it" ? "it-IT" : "en-US") })}
             value={answer}
             onChange={(value) => {
               setAnswer(value);
@@ -974,18 +963,18 @@ function Practice({
           />
           <div className="form-actions">
             <button type="submit" className="button button-primary">
-              Check my answer
+              {t("tutor.check")}
             </button>
             <button type="button" className="button" onClick={onDone}>
-              Back to note
+              {t("notes.backNote")}
             </button>
           </div>
         </form>
       )}
 
       {phase !== "answering" && (
-        <section aria-label="Your answer">
-          <h4 className="side-label">Your answer</h4>
+        <section aria-label={t("quiz.yourAnswer")}>
+          <h4 className="side-label">{t("quiz.yourAnswer")}</h4>
           <p className="note-body">{answer.trim()}</p>
         </section>
       )}
@@ -993,7 +982,7 @@ function Practice({
       {phase === "grading" && (
         <Writing
           model={model}
-          activity="Checking your answer"
+          activity={t("tutor.checking")}
           onStop={() => stopTutor().catch(() => {})}
         />
       )}
@@ -1001,12 +990,12 @@ function Practice({
       {phase === "graded" && graded && (
         <>
           <p ref={resultRef} className="notice" role="status" tabIndex={-1}>
-            {`${VERDICT_LABELS[graded.verdict]}: ${graded.score} out of 100.`}
+            {t("tutor.score", { verdict: t(VERDICT_LABELS[graded.verdict]), score: graded.score })}
           </p>
           <GradeDetails graded={graded} question={question} />
           {added && (
             <p className="notice" role="status">
-              {`Added ${cardCount(added.count)} to ${added.deck}.`}
+              {t("tutor.added", { cards: plural(added.count, "common.cardOne", "common.cardOther"), deck: added.deck })}
             </p>
           )}
           {graded.missed.length > 0 && added === null && (
@@ -1028,14 +1017,14 @@ function Practice({
           <div className="form-actions">
             {position < total && (
               <button type="button" className="button button-primary" onClick={onNext}>
-                Next question
+                {t("quiz.next")}
               </button>
             )}
             <button type="button" className="button" onClick={onAgain}>
-              New questions
+              {t("tutor.newQuestions")}
             </button>
             <button type="button" className="button" onClick={onDone}>
-              Back to note
+              {t("notes.backNote")}
             </button>
           </div>
         </>
@@ -1064,6 +1053,7 @@ function FollowUp({
   answer: string;
   onStale: (failure: CommandError) => void;
 }) {
+  const { t } = useT();
   const [phase, setPhase] = useState<"idle" | "asking" | "done">("idle");
   const [found, setFound] = useState<{ question: string; quote: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1107,11 +1097,11 @@ function FollowUp({
   }
 
   return (
-    <section aria-label="Follow-up question">
+    <section aria-label={t("tutor.followUp")}>
       {phase === "asking" && (
         <Writing
           model={model}
-          activity="Thinking of a follow-up question"
+          activity={t("tutor.thinking")}
           onStop={() => stopTutor().catch(() => {})}
         />
       )}
@@ -1122,15 +1112,15 @@ function FollowUp({
       )}
       {phase === "done" && found && (
         <>
-          <h4 className="side-label">A question to think about</h4>
+          <h4 className="side-label">{t("tutor.think")}</h4>
           <p className="quiz-missed-question">{found.question}</p>
-          <p className="field-hint">{`From your note: “${found.quote}”`}</p>
+          <p className="field-hint">{t("tutor.quote", { quote: found.quote })}</p>
         </>
       )}
       {(phase === "idle" || phase === "done") && (
         <div className="form-actions">
           <button type="button" className="button" onClick={ask}>
-            {phase === "done" ? "Ask me another follow-up" : "Ask me a follow-up"}
+            {phase === "done" ? t("tutor.anotherFollowUp") : t("tutor.askFollowUp")}
           </button>
         </div>
       )}
@@ -1139,14 +1129,15 @@ function FollowUp({
 }
 
 function GradeDetails({ graded, question }: { graded: Graded; question: OpenQuestion }) {
+  const { t, plural } = useT();
   const nothing =
     graded.correct.length === 0 && graded.missed.length === 0 && graded.wrong.length === 0;
   return (
     <>
-      {nothing && <p className="field-hint">The model gave no details.</p>}
+      {nothing && <p className="field-hint">{t("tutor.noDetails")}</p>}
       {graded.correct.length > 0 && (
         <>
-          <h4 className="side-label">What you got right</h4>
+          <h4 className="side-label">{t("tutor.correct")}</h4>
           <ul className="summary-list">
             {graded.correct.map((each, index) => (
               <li key={index}>{each}</li>
@@ -1156,12 +1147,12 @@ function GradeDetails({ graded, question }: { graded: Graded; question: OpenQues
       )}
       {graded.missed.length > 0 && (
         <>
-          <h4 className="side-label">What you missed</h4>
+          <h4 className="side-label">{t("tutor.missed")}</h4>
           <ul className="summary-list">
             {graded.missed.map((each, index) => (
               <li key={index}>
                 <p>{each.point}</p>
-                <p className="field-hint">{`From your note: “${each.quote}”`}</p>
+                <p className="field-hint">{t("tutor.quote", { quote: each.quote })}</p>
               </li>
             ))}
           </ul>
@@ -1169,14 +1160,12 @@ function GradeDetails({ graded, question }: { graded: Graded; question: OpenQues
       )}
       {graded.dropped > 0 && (
         <p className="field-hint">
-          {graded.dropped === 1
-            ? "1 missed point was left out because its passage couldn't be found in your note."
-            : `${graded.dropped} missed points were left out because their passages couldn't be found in your note.`}
+          {plural(graded.dropped, "tutor.missedDroppedOne", "tutor.missedDroppedOther")}
         </p>
       )}
       {graded.wrong.length > 0 && (
         <>
-          <h4 className="side-label">What was wrong</h4>
+          <h4 className="side-label">{t("tutor.incorrect")}</h4>
           <ul className="summary-list">
             {graded.wrong.map((each, index) => (
               <li key={index}>{each}</li>
@@ -1184,9 +1173,9 @@ function GradeDetails({ graded, question }: { graded: Graded; question: OpenQues
           </ul>
         </>
       )}
-      <h4 className="side-label">The answer from your note</h4>
+      <h4 className="side-label">{t("tutor.reference")}</h4>
       <p>{question.reference}</p>
-      <p className="field-hint">{`From your note: “${question.quote}”`}</p>
+      <p className="field-hint">{t("tutor.quote", { quote: question.quote })}</p>
     </>
   );
 }
@@ -1206,6 +1195,7 @@ function AddMisses({
   missed: MissedPoint[];
   onAdded: (deckName: string, count: number) => void;
 }) {
+  const { t, plural } = useT();
   const [choices, setChoices] = useState<DeckChoices>({ status: "loading" });
   // Every missed point is ticked to start with.
   const [ticked, setTicked] = useState<Set<number>>(() => new Set(missed.map((_, index) => index)));
@@ -1231,14 +1221,14 @@ function AddMisses({
       if (chosen.length === 0) {
         const none: CommandError = {
           kind: "invalid",
-          message: "Tick at least one missed point to add as a card.",
+          message: t("tutor.tickMissed"),
         };
         throw none;
       }
       if (deckId === "") {
         const unchosen: CommandError = {
           kind: "invalid",
-          message: "Choose a deck for these cards.",
+          message: t("suggest.chooseDeckError"),
           field: "deck",
         };
         throw unchosen;
@@ -1258,7 +1248,7 @@ function AddMisses({
           const position = missed.indexOf(sent[error.index]) + 1;
           const refused: CommandError = {
             kind: error.kind,
-            message: `Missed point ${position}: ${error.message}`,
+            message: t("tutor.missedError", { position, message: error.message }),
           };
           throw refused;
         }
@@ -1285,8 +1275,8 @@ function AddMisses({
   }
 
   return (
-    <form className="suggest-step" aria-label="Missed points" noValidate onSubmit={submit}>
-      <h4 className="draft-label">Add missed points as cards</h4>
+    <form className="suggest-step" aria-label={t("tutor.missedPoints")} noValidate onSubmit={submit}>
+      <h4 className="draft-label">{t("tutor.addMissed")}</h4>
       <ul className="card-list">
         {missed.map((each, index) => (
           <li key={index}>
@@ -1305,7 +1295,7 @@ function AddMisses({
 
       {choices.status === "loading" && (
         <p className="loading" role="status">
-          Loading your decks…
+          {t("desk.loading")}
         </p>
       )}
       {choices.status === "error" && (
@@ -1315,19 +1305,18 @@ function AddMisses({
       )}
       {choices.status === "ready" && choices.decks.length === 0 && (
         <p className="field-hint">
-          You don't have a deck to add cards to yet. Create one on the Study Desk first; the Sample
-          deck can't take new cards.
+          {t("notes.noDeck")}
         </p>
       )}
       {choices.status === "ready" && choices.decks.length > 0 && (
         <>
           <SelectField
             id="tutor-deck"
-            label="Deck"
-            hint="Each card has the question on the front and the missed point on the back, and is due for review straight away."
+            label={t("app.deck")}
+            hint={t("tutor.deckHint")}
             value={deckId}
             options={choices.decks.map((deck: Deck) => ({ value: String(deck.id), label: deck.name }))}
-            placeholder="Choose a deck"
+            placeholder={t("exams.chooseDeck")}
             error={fieldError("deck")}
             required
             onChange={(value) => {
@@ -1338,11 +1327,11 @@ function AddMisses({
           <div className="form-actions">
             {/* `aria-disabled` rather than `disabled`, so keyboard focus stays put. */}
             <button type="submit" className="button button-primary" aria-disabled={saving}>
-              {`Add ${cardCount(chosen.length)}`}
+              {t("quiz.add", { cards: plural(chosen.length, "common.cardOne", "common.cardOther") })}
             </button>
           </div>
           <p className="form-status" role="status">
-            {saving ? "Saving…" : ""}
+            {saving ? t("common.saving") : ""}
           </p>
         </>
       )}
