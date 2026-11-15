@@ -14,6 +14,7 @@ import {
 import { loadDeckChoices, type DeckChoices } from "./deckChoices";
 import { FormActions, SelectField, TextField, useFormSave } from "./forms";
 import { PencilIcon, PlayIcon, PlusIcon, TrashIcon } from "./icons";
+import { useT } from "./i18n";
 import type { ReviewedTag } from "./ReviewSession";
 import { useUnsavedChanges } from "./unsaved";
 import { Message, useFocusOnMount } from "./ui";
@@ -56,15 +57,16 @@ function formatDate(day: string): string {
   return new Date(year, month - 1, date).toLocaleDateString(undefined, { dateStyle: "medium" });
 }
 
-function plural(count: number, unit: string): string {
-  return `${count} ${count === 1 ? unit : `${unit}s`}`;
-}
-
 /** "in 3 days", "tomorrow", "today" or "2 days ago". */
-export function daysLeftText(plan: Pick<ExamPlan, "status" | "daysLeft">): string {
-  if (plan.status === "today") return "Today";
-  if (plan.status === "finished") return "Finished";
-  return plan.daysLeft === 1 ? "Tomorrow" : `In ${plan.daysLeft} days`;
+export function daysLeftText(
+  plan: Pick<ExamPlan, "status" | "daysLeft">,
+  t: ReturnType<typeof useT>["t"],
+): string {
+  if (plan.status === "today") return t("desk.examToday");
+  if (plan.status === "finished") return t("exams.finishedStatus");
+  return plan.daysLeft === 1
+    ? t("desk.examTomorrow")
+    : t("desk.examInDays", { count: plan.daysLeft });
 }
 
 /**
@@ -79,6 +81,7 @@ export function ExamPlanner({
   onStart: (sessionId: number, deckName: string) => void;
   onStartTag: (tag: ReviewedTag) => void;
 }) {
+  const { t } = useT();
   const [state, setState] = useState<PlannerState>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
   const [form, setForm] = useState<{ exam: Exam | null } | null>(null);
@@ -104,7 +107,7 @@ export function ExamPlanner({
   if (state.status === "loading") {
     return (
       <p className="loading" role="status">
-        Loading your exams…
+        {t("exams.loading")}
       </p>
     );
   }
@@ -113,7 +116,7 @@ export function ExamPlanner({
     return (
       <Message focus tone="alert" text={state.message}>
         <button type="button" className="button" onClick={() => reload(null)}>
-          Retry
+          {t("settings.retry")}
         </button>
       </Message>
     );
@@ -125,9 +128,9 @@ export function ExamPlanner({
         exam={form.exam}
         onCancel={() => setForm(null)}
         onSaved={(exam, created) =>
-          reload(created ? `Exam “${exam.title}” added.` : `Exam “${exam.title}” saved.`)
+          reload(t(created ? "exams.added" : "exams.saved", { name: exam.title }))
         }
-        onStale={() => reload("That exam is no longer there. Here are your exams as they are now.")}
+        onStale={() => reload(t("exams.stale"))}
       />
     );
   }
@@ -145,9 +148,9 @@ export function ExamPlanner({
         setNotice(null);
         setForm({ exam });
       }}
-      onDeleted={(exam) => reload(`Exam “${exam.title}” deleted.`)}
-      onStale={() => reload("That exam is no longer there. Here are your exams as they are now.")}
-      onNoneDue={(name) => reload(`Nothing in ${name} is due right now.`)}
+      onDeleted={(exam) => reload(t("exams.deleted", { name: exam.title }))}
+      onStale={() => reload(t("exams.stale"))}
+      onNoneDue={(name) => reload(t("exams.noneDue", { name }))}
       onStart={onStart}
       onStartTag={onStartTag}
     />
@@ -177,6 +180,7 @@ function ExamList({
   onStart: (sessionId: number, deckName: string) => void;
   onStartTag: (tag: ReviewedTag) => void;
 }) {
+  const { t } = useT();
   const screenRef = useFocusOnMount<HTMLElement>(notice === null);
   const noticeRef = useFocusOnMount<HTMLParagraphElement>(notice !== null);
   // The list comes soonest first; finished exams (a past date) sit apart.
@@ -208,18 +212,15 @@ function ExamList({
       <div className="page-header">
         <div className="page-heading">
           <h2 id="exams-heading" className="page-title">
-            Exams
+            {t("app.exams")}
           </h2>
           <p className="page-intro">
-            Give a deck or a tag an exam date and Synapse works out a daily goal: the reviews that
-            are due before the exam, plus two reviews for each new card. Readiness estimates how
-            much of the material you would remember on the day, from your schedules and the FSRS
-            parameters in use; it is an estimate, not a grade.
+            {t("exams.intro")}
           </p>
         </div>
         <button type="button" className="button" onClick={onNew}>
           <PlusIcon />
-          Add exam
+          {t("exams.add")}
         </button>
       </div>
       {notice && (
@@ -230,14 +231,14 @@ function ExamList({
 
       {exams.length === 0 ? (
         <p className="empty" role="status">
-          No exams yet. Choose Add exam to plan one.
+          {t("exams.empty")}
         </p>
       ) : (
         <>
           {upcoming.length > 0 && (
             <section className="deck-section" aria-labelledby="exams-upcoming">
               <h3 id="exams-upcoming" className="section-title">
-                Upcoming <span className="count">{upcoming.length}</span>
+                {t("exams.upcoming")} <span className="count">{upcoming.length}</span>
               </h3>
               <ul className="card-list">{upcoming.map(item)}</ul>
             </section>
@@ -245,7 +246,7 @@ function ExamList({
           {finished.length > 0 && (
             <details className="exams-finished">
               <summary>
-                Finished <span className="count">{finished.length}</span>
+                {t("exams.finished")} <span className="count">{finished.length}</span>
               </summary>
               <ul className="card-list">{finished.map(item)}</ul>
             </details>
@@ -275,6 +276,7 @@ function ExamItem({
   onStart: (sessionId: number, deckName: string) => void;
   onStartTag: (tag: ReviewedTag) => void;
 }) {
+  const { t } = useT();
   const nameId = `exam-${exam.id}-name`;
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -309,8 +311,8 @@ function ExamItem({
             {exam.title}
           </h4>
           <p className="item-meta">
-            {formatDate(exam.examDate)} · {exam.deckId !== null ? "Deck" : "Tag"}: {exam.scopeName}
-            {plan && ` · ${daysLeftText(plan)}`}
+            {formatDate(exam.examDate)} · {t(exam.deckId !== null ? "search.deck" : "search.tag")}: {exam.scopeName}
+            {plan && ` · ${daysLeftText(plan, t)}`}
           </p>
         </div>
         <div className="deck-actions">
@@ -327,7 +329,7 @@ function ExamItem({
               }
             >
               <PlayIcon />
-              Study now
+              {t("exams.study")}
             </button>
           )}
           <button
@@ -337,7 +339,7 @@ function ExamItem({
             onClick={onEdit}
           >
             <PencilIcon />
-            Edit
+            {t("exams.edit")}
           </button>
           <button
             type="button"
@@ -346,25 +348,25 @@ function ExamItem({
             onClick={() => setConfirming(true)}
           >
             <TrashIcon />
-            Delete
+            {t("exams.delete")}
           </button>
         </div>
       </div>
 
       {exam.scopeArchived ? (
         <p className="field-hint">
-          This exam's deck is archived, so there is nothing to plan. Unarchive it to study again.
+          {t("exams.archived")}
         </p>
       ) : plan === null ? (
-        <p className="field-hint">The plan for this exam couldn't be read.</p>
+        <p className="field-hint">{t("exams.planUnavailable")}</p>
       ) : (
         <PlanFigures plan={plan} />
       )}
 
       {confirming && (
-        <div className="confirm confirm-danger" role="group" aria-label={`Delete ${exam.title}?`}>
+        <div className="confirm confirm-danger" role="group" aria-label={t("exams.deleteLabel", { name: exam.title })}>
           <p className="confirm-question">
-            Delete the exam “{exam.title}”? Your cards and decks are not touched.
+            {t("exams.deleteConfirm", { name: exam.title })}
           </p>
           <div className="form-actions">
             <button
@@ -373,7 +375,7 @@ function ExamItem({
               aria-disabled={deleting}
               onClick={remove}
             >
-              Delete exam
+              {t("exams.deleteExam")}
             </button>
             <button
               type="button"
@@ -381,7 +383,7 @@ function ExamItem({
               aria-disabled={deleting}
               onClick={() => setConfirming(false)}
             >
-              Keep exam
+              {t("exams.keep")}
             </button>
           </div>
         </div>
@@ -397,6 +399,7 @@ function ExamItem({
 
 /** Days left, today's goal, the counts and the readiness bar for one plan. */
 function PlanFigures({ plan }: { plan: ExamPlan }) {
+  const { t, plural } = useT();
   const readiness = Math.max(0, Math.min(100, Math.round(plan.readiness)));
   return (
     <>
@@ -404,40 +407,40 @@ function PlanFigures({ plan }: { plan: ExamPlan }) {
         {plan.status !== "finished" && (
           <>
             <div>
-              <dt>Days left</dt>
+              <dt>{t("exams.daysLeft")}</dt>
               <dd>{plan.daysLeft}</dd>
             </div>
             <div>
-              <dt>Today's goal</dt>
-              <dd>{plural(plan.dailyGoal, "review")}</dd>
+              <dt>{t("exams.todayGoal")}</dt>
+              <dd>{plural(plan.dailyGoal, "stats.reviewOne", "stats.reviewOther")}</dd>
             </div>
           </>
         )}
         <div>
-          <dt>Cards</dt>
+          <dt>{t("search.scopeCards")}</dt>
           <dd>{plan.cards}</dd>
         </div>
         <div>
-          <dt>New</dt>
+          <dt>{t("stats.new")}</dt>
           <dd>{plan.newCards}</dd>
         </div>
         <div>
-          <dt>Due before exam</dt>
+          <dt>{t("exams.dueBefore")}</dt>
           <dd>{plan.dueBeforeExam}</dd>
         </div>
         <div>
-          <dt>Below target</dt>
+          <dt>{t("exams.belowTarget")}</dt>
           <dd>{plan.belowTarget}</dd>
         </div>
       </dl>
       <div className="exam-readiness">
         <p className="exam-readiness-label">
-          Readiness <strong>{readiness}%</strong>
+          {t("exams.readiness")} <strong>{readiness}%</strong>
         </p>
         <div
           className="exam-bar"
           role="progressbar"
-          aria-label="Readiness"
+          aria-label={t("exams.readiness")}
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={readiness}
@@ -464,6 +467,7 @@ function ExamForm({
   onSaved: (exam: Exam, created: boolean) => void;
   onStale: () => void;
 }) {
+  const { t } = useT();
   const ids = useId();
   const titleId = `${ids}-title`;
   const dateId = `${ids}-date`;
@@ -530,15 +534,15 @@ function ExamForm({
       <div className="page-header">
         <div className="page-heading">
           <h2 ref={headingRef} id="exam-form-heading" className="page-title" tabIndex={-1}>
-            {exam ? "Edit exam" : "Add exam"}
+            {t(exam ? "exams.editExam" : "exams.add")}
           </h2>
         </div>
       </div>
       <form className="card-item" noValidate onSubmit={submit}>
         <TextField
           id={titleId}
-          label="Title"
-          hint="What the exam is called, up to 100 characters."
+          label={t("exams.title")}
+          hint={t("exams.titleHint")}
           value={title}
           error={fieldError("title")}
           required
@@ -550,7 +554,7 @@ function ExamForm({
 
         <div className="field">
           <label htmlFor={dateId} className="field-label">
-            Exam date
+            {t("exams.date")}
           </label>
           <input
             id={dateId}
@@ -574,13 +578,12 @@ function ExamForm({
 
         {exam ? (
           <p className="field-hint">
-            {exam.deckId !== null ? "Deck" : "Tag"}: {exam.scopeName}. The deck or tag of an exam
-            can't be changed; delete it and add a new one instead.
+            {t(exam.deckId !== null ? "search.deck" : "search.tag")}: {exam.scopeName}. {t("exams.scopeFixed")}
           </p>
         ) : (
           <>
             <fieldset className="field exam-kind">
-              <legend className="field-label">What the exam covers</legend>
+              <legend className="field-label">{t("exams.covers")}</legend>
               <label className="check-field">
                 <input
                   type="radio"
@@ -592,7 +595,7 @@ function ExamForm({
                     edited("examScope");
                   }}
                 />
-                A deck
+                {t("exams.aDeck")}
               </label>
               <label className="check-field">
                 <input
@@ -605,20 +608,16 @@ function ExamForm({
                     edited("examScope");
                   }}
                 />
-                A tag
+                {t("exams.aTag")}
               </label>
             </fieldset>
             <SelectField
               id={scopeId}
-              label={kind === "deck" ? "Deck" : "Tag"}
-              hint={
-                kind === "deck"
-                  ? "Every active card of this deck is planned."
-                  : "Every active card with exactly this tag, in any deck."
-              }
+              label={t(kind === "deck" ? "search.deck" : "search.tag")}
+              hint={t(kind === "deck" ? "exams.deckHint" : "exams.tagHint")}
               value={scope}
               options={kind === "deck" ? deckOptions : tagOptions}
-              placeholder={kind === "deck" ? "Choose a deck" : "Choose a tag"}
+              placeholder={t(kind === "deck" ? "exams.chooseDeck" : "exams.chooseTag")}
               error={fieldError("examScope")}
               required
               onChange={(value) => {
@@ -630,7 +629,7 @@ function ExamForm({
         )}
 
         <FormActions
-          saveLabel={exam ? "Save exam" : "Add exam"}
+          saveLabel={t(exam ? "exams.save" : "exams.add")}
           saving={saving}
           error={formError}
           onCancel={onCancel}
