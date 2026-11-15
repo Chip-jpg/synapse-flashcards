@@ -1,3 +1,4 @@
+import { useT, translate } from "./i18n";
 import {
   useEffect,
   useMemo,
@@ -174,10 +175,11 @@ export function OcclusionPicture({
   mode: OcclusionMode;
   revealed: boolean;
 }) {
+  const { plural } = useT();
   const own = boxes.filter((shape) => shape.number === asked).length;
   const description = revealed
-    ? `Picture with the ${own === 1 ? "box" : "boxes"} asked about uncovered.`
-    : `Picture with ${own === 1 ? "one box" : `${own} boxes`} to recall, marked with a question mark.`;
+    ? plural(own, "occlusion.revealedOne", "occlusion.revealedOther")
+    : plural(own, "occlusion.askedOne", "occlusion.askedOther");
   return (
     <div className="occlusion-stage occlusion-review" role="img" aria-label={description}>
       <img className="occlusion-image" src={keptFileUrl(picture.sha256)} alt="" draggable={false} />
@@ -212,24 +214,26 @@ export function OcclusionPicture({
 }
 
 /** "1 card" or "3 cards". */
-function cards(count: number): string {
-  return `${count} ${count === 1 ? "card" : "cards"}`;
+type Translator = ReturnType<typeof useT>["t"];
+const english: Translator = (key, params) => translate("en", key, params);
+function cards(count: number, t: Translator): string {
+  return t(count === 1 ? "common.cardOne" : "common.cardOther", { count });
 }
 
 /** What saving the boxes did, in words. */
-export function describeOcclusionChanges(changes: ClozeChanges, editing: boolean): string {
-  if (!editing) return `Picture added: it made ${cards(changes.added)}.`;
+export function describeOcclusionChanges(changes: ClozeChanges, editing: boolean, t: Translator = english): string {
+  if (!editing) return t("occlusion.added", { cards: cards(changes.added, t) });
   const parts = [
-    changes.kept > 0 && `kept ${cards(changes.kept)}`,
-    changes.restored > 0 && `brought back ${cards(changes.restored)} from Deleted cards`,
-    changes.added > 0 && `added ${changes.added} new`,
-    changes.deleted > 0 && `deleted ${cards(changes.deleted)} whose boxes were removed`,
+    changes.kept > 0 && t("occlusion.kept", { cards: cards(changes.kept, t) }),
+    changes.restored > 0 && t("occlusion.restored", { cards: cards(changes.restored, t) }),
+    changes.added > 0 && t(changes.added === 1 ? "occlusion.newOne" : "occlusion.newOther", { count: changes.added }),
+    changes.deleted > 0 && t("occlusion.deleted", { cards: cards(changes.deleted, t) }),
   ].filter((part): part is string => typeof part === "string");
   const listed =
     parts.length <= 1
-      ? (parts[0] ?? "changed nothing")
-      : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
-  return `Picture saved: it ${listed}.`;
+      ? (parts[0] ?? t("occlusion.nothing"))
+      : t("occlusion.list", { first: parts.slice(0, -1).join(", "), last: parts[parts.length - 1] });
+  return t("occlusion.saved", { changes: listed });
 }
 
 type Loaded =
@@ -262,6 +266,7 @@ export function OcclusionForm({
   onCancel: () => void;
   onSaved: (deck: Deck, notice: string) => void;
 }) {
+  const { t } = useT();
   const cardId = card?.id ?? null;
   const [loaded, setLoaded] = useState<Loaded>(
     cardId === null
@@ -289,13 +294,13 @@ export function OcclusionForm({
   return (
     <div className="card occlusion-form-card">
       <h2 id="card-form-heading" className="form-title">
-        {card ? "Edit a picture's cards in " : "Add a card to "}
+        {card ? t("occlusion.editTitle") : t("occlusion.addTitle")}
         {deck.name}
       </h2>
       {kindChoice}
       {loaded.status === "loading" && (
         <p className="loading" role="status">
-          Loading the picture…
+          {t("occlusion.loading")}
         </p>
       )}
       {loaded.status === "error" && (
@@ -309,10 +314,10 @@ export function OcclusionForm({
                 setAttempt((n) => n + 1);
               }}
             >
-              Retry
+              {t("desk.retry")}
             </button>
             <button type="button" className="button" onClick={onCancel}>
-              Cancel
+              {t("common.cancel")}
             </button>
           </div>
         </Message>
@@ -353,6 +358,7 @@ function OcclusionEditor({
   onCancel: () => void;
   onSaved: (deck: Deck, notice: string) => void;
 }) {
+  const { t, plural } = useT();
   const editing = cardId !== null;
   const [picture, setPicture] = useState<Asset | null>(initial.picture);
   const [header, setHeader] = useState(initial.header);
@@ -407,10 +413,10 @@ function OcclusionEditor({
           plainBoxes,
           tagsChanged ? tags : undefined,
         );
-        return { deck: saved.deck, notice: describeOcclusionChanges(saved.changes, true) };
+        return { deck: saved.deck, notice: describeOcclusionChanges(saved.changes, true, t) };
       }
       if (!picture) {
-        throw { kind: "invalid", message: "Choose a picture first.", field: "boxes" };
+        throw { kind: "invalid", message: t("occlusion.chooseFirst"), field: "boxes" };
       }
       const saved = await createOcclusion(
         deck.id,
@@ -426,6 +432,7 @@ function OcclusionEditor({
         notice: describeOcclusionChanges(
           { cards: added, kept: 0, restored: 0, added, deleted: 0 },
           false,
+          t,
         ),
       };
     },
@@ -475,7 +482,7 @@ function OcclusionEditor({
     if (read === null) return;
     reading.clear();
     if (read.status === "stopped") {
-      setLabelsFound("Stopped. No boxes were added.");
+      setLabelsFound(t("occlusion.stopped"));
       return;
     }
     if (read.status === "error") {
@@ -488,8 +495,8 @@ function OcclusionEditor({
     if (found.length === 0) {
       setLabelsFound(
         read.recognition.text.trim() === ""
-          ? "No text found."
-          : "Every piece of text found already has a box.",
+          ? t("occlusion.noText")
+          : t("occlusion.allCovered"),
       );
       return;
     }
@@ -501,16 +508,16 @@ function OcclusionEditor({
       key: keyRef.current++,
     }));
     if (shapes.length > 0) changeBoxes((previous) => [...previous, ...shapes]);
-    const what = labelUnit === "line" ? "line" : "word";
+    const what = labelUnit === "line" ? t("occlusion.unitLine") : t("occlusion.word");
     const parts = [
       shapes.length === 0
-        ? "No boxes were added"
-        : `Added ${shapes.length} ${shapes.length === 1 ? "box" : "boxes"}, one over each ${what} of text found, each its own card`,
+        ? t("occlusion.noneAdded")
+        : plural(shapes.length, "occlusion.foundOne", "occlusion.foundOther", { unit: what }),
       found.length > shapes.length &&
-        ` (${found.length - shapes.length} more didn't fit: a picture holds at most ${OCCLUSION_BOXES_MAX} boxes)`,
+        t("occlusion.overflow", { count: found.length - shapes.length, max: OCCLUSION_BOXES_MAX }),
     ].filter((part): part is string => typeof part === "string");
     setLabelsFound(
-      `${parts.join("")}. The labels are recognised text and can have mistakes: check them, and remove or adjust any box before saving.`,
+      t("occlusion.checkLabels", { parts: parts.join("") }),
     );
   }
 
@@ -660,10 +667,10 @@ function OcclusionEditor({
       {!editing && (
         <div className="field">
           <p className="field-label" id="occlusion-picture-label">
-            Picture
+            {t("occlusion.picture")}
           </p>
           <p className="field-hint" id="occlusion-picture-hint">
-            A PNG, JPEG, GIF or WebP picture up to 20 MB. Choose a file, or paste one here.
+            {t("occlusion.pictureHint")}
           </p>
           <div className="deck-actions">
             <button
@@ -678,7 +685,7 @@ function OcclusionEditor({
                 })
               }
             >
-              {picture ? "Choose another picture" : "Choose a picture"}
+              {picture ? t("occlusion.chooseAnother") : t("occlusion.choose")}
             </button>
           </div>
           {pictureError && (
@@ -692,14 +699,12 @@ function OcclusionEditor({
       {picture ? (
         <div className="field">
           <p className="field-label" id="occlusion-boxes-label">
-            Boxes
+            {t("occlusion.boxes")}
           </p>
           <p className="field-hint" id="occlusion-boxes-hint">
-            Drag over the picture to hide a part. Each box is its own card; give boxes the same card
-            to hide them together. Drag a box to move it, or its corner to resize it. With a box
-            focused, arrow keys move it, Shift with arrow keys resizes it, and Delete removes it.
+            {t("occlusion.boxesHint")}
             {editing &&
-              " Boxes you keep keep their schedules; removing every box of a card deletes it."}
+              t("occlusion.editingHint")}
           </p>
           <div
             id="occlusion-boxes"
@@ -725,7 +730,7 @@ function OcclusionEditor({
                 key={shape.key}
                 role="button"
                 tabIndex={0}
-                aria-label={`Box for card ${shape.number}${shape.label ? `, ${shape.label}` : ""}`}
+                aria-label={t("occlusion.boxForCard", { number: shape.number, label: shape.label ? `, ${shape.label}` : "" })}
                 aria-pressed={selected === shape.key}
                 className={
                   selected === shape.key
@@ -764,7 +769,7 @@ function OcclusionEditor({
                 addBox({ left: 0.4, top: 0.45, width: NEW_BOX.width, height: NEW_BOX.height })
               }
             >
-              Add a box
+              {t("occlusion.addBox")}
             </button>
             <button
               type="button"
@@ -773,40 +778,38 @@ function OcclusionEditor({
               aria-disabled={reading.state.status === "reading"}
               onClick={() => void findLabels()}
             >
-              {reading.state.status === "reading" ? "Finding labels…" : "Find labels"}
+              {reading.state.status === "reading" ? t("occlusion.finding") : t("occlusion.find")}
             </button>
             {reading.state.status === "reading" && (
               <button type="button" className="button button-small" onClick={reading.stop}>
-                Stop
+                {t("settings.stop")}
               </button>
             )}
             <label className="occlusion-label-unit">
-              <span>One box per</span>
+              <span>{t("occlusion.per")}</span>
               <select
                 className="field-input"
                 value={labelUnit}
                 onChange={(event) => setLabelUnit(event.target.value as LabelUnit)}
               >
-                <option value="line">line of text</option>
-                <option value="word">word</option>
+                <option value="line">{t("occlusion.line")}</option>
+                <option value="word">{t("occlusion.word")}</option>
               </select>
             </label>
           </div>
           <p className="field-hint" id="occlusion-labels-hint">
-            Find labels reads the text in the picture and puts a box, labelled with that text, over
-            each line (split where words are far apart, as labels side by side are) or each word.
-            Synapse's built-in reader doesn't read accents or handwriting well.
+            {t("occlusion.labelsHint")}
           </p>
           <p className="form-status" role="status">
-            {reading.state.status === "reading" ? "Reading the text in the picture…" : labelsFound}
+            {reading.state.status === "reading" ? t("occlusion.reading") : labelsFound}
           </p>
           <p className="cloze-preview" role="status">
             {boxes.length === 0
-              ? "No boxes yet."
-              : `${boxes.length} ${boxes.length === 1 ? "box makes" : "boxes make"} ${cards(numbers.length)}.`}
+              ? t("occlusion.noBoxes")
+              : plural(boxes.length, "occlusion.previewOne", "occlusion.previewOther", { cards: cards(numbers.length, t) })}
           </p>
           {boxes.length > 0 && (
-            <ol className="occlusion-list" aria-label="Boxes">
+            <ol className="occlusion-list" aria-label={t("occlusion.boxes")}>
               {boxes.map((shape, index) => (
                 <li
                   key={shape.key}
@@ -817,11 +820,11 @@ function OcclusionEditor({
                   }
                 >
                   <label className="occlusion-list-card">
-                    <span className="field-label">{`Box ${index + 1}`}</span>
+                    <span className="field-label">{t("occlusion.boxNumber", { number: index + 1 })}</span>
                     <select
                       className="field-input"
                       value={shape.number}
-                      aria-label={`Card for box ${index + 1}`}
+                      aria-label={t("occlusion.cardForBox", { number: index + 1 })}
                       onChange={(event) => {
                         const value = Number(event.target.value);
                         if (value === 0) {
@@ -832,19 +835,19 @@ function OcclusionEditor({
                       }}
                     >
                       {numbers.map((number) => (
-                        <option key={number} value={number}>{`Card ${number}`}</option>
+                        <option key={number} value={number}>{t("occlusion.cardNumber", { number })}</option>
                       ))}
-                      <option value={0}>A new card</option>
+                      <option value={0}>{t("occlusion.newCard")}</option>
                     </select>
                   </label>
                   <label className="occlusion-list-label">
-                    <span className="field-label">Label</span>
+                    <span className="field-label">{t("occlusion.label")}</span>
                     <input
                       className="field-input"
                       type="text"
                       value={shape.label}
-                      placeholder="What's under it (optional)"
-                      aria-label={`Label for box ${index + 1}`}
+                      placeholder={t("occlusion.labelPlaceholder")}
+                      aria-label={t("occlusion.labelForBox", { number: index + 1 })}
                       onFocus={() => setSelected(shape.key)}
                       onChange={(event) => updateBox(shape.key, { label: event.target.value })}
                     />
@@ -852,10 +855,10 @@ function OcclusionEditor({
                   <button
                     type="button"
                     className="button button-danger-soft button-small"
-                    aria-label={`Remove box ${index + 1}`}
+                    aria-label={t("occlusion.removeBox", { number: index + 1 })}
                     onClick={() => removeBox(shape.key)}
                   >
-                    Remove
+                    {t("occlusion.remove")}
                   </button>
                 </li>
               ))}
@@ -866,10 +869,10 @@ function OcclusionEditor({
         <div
           className="occlusion-paste"
           tabIndex={0}
-          aria-label="Paste a picture here"
+          aria-label={t("occlusion.paste")}
           onPaste={onPaste}
         >
-          {adding ? "Keeping the picture…" : "No picture yet. Choose one, or paste one here."}
+          {adding ? t("occlusion.keeping") : t("occlusion.noPicture")}
           {boxesError && (
             <p id="occlusion-boxes-error" className="field-error">
               {boxesError}
@@ -880,8 +883,8 @@ function OcclusionEditor({
 
       <TextField
         id="occlusion-header"
-        label="Header"
-        hint="Shown above the picture on every card, such as what the picture is. Optional. Up to 500 characters."
+        label={t("occlusion.header")}
+        hint={t("occlusion.headerHint")}
         value={header}
         error={fieldError("header")}
         onChange={(value) => {
@@ -891,7 +894,7 @@ function OcclusionEditor({
       />
 
       <fieldset className="field kind-choice">
-        <legend className="field-label">When asking</legend>
+        <legend className="field-label">{t("occlusion.asking")}</legend>
         <label className="kind-choice-option">
           <input
             type="radio"
@@ -901,7 +904,7 @@ function OcclusionEditor({
             onChange={() => setMode("hideAll")}
           />
           <span>
-            <strong>Hide all</strong>: every box is covered, and the one asked about is marked.
+            <strong>{t("occlusion.hideAll")}</strong>{t("occlusion.allDescription")}
           </span>
         </label>
         <label className="kind-choice-option">
@@ -913,14 +916,14 @@ function OcclusionEditor({
             onChange={() => setMode("hideOne")}
           />
           <span>
-            <strong>Hide one</strong>: only the box asked about is covered.
+            <strong>{t("occlusion.hideOne")}</strong>{t("occlusion.oneDescription")}
           </span>
         </label>
       </fieldset>
 
       <TagField
         id="occlusion-tags"
-        hint="Optional. Given to every card of this picture. One word each, such as exam or bio::cells; a space or comma starts the next."
+        hint={t("occlusion.tagsHint")}
         tags={tags}
         onChange={(next) => {
           setTags(next);
@@ -931,7 +934,7 @@ function OcclusionEditor({
       />
 
       <FormActions
-        saveLabel={editing ? "Save changes" : "Save cards"}
+        saveLabel={editing ? t("occlusion.saveChanges") : t("occlusion.saveCards")}
         saving={saving}
         error={formError}
         onCancel={onCancel}
