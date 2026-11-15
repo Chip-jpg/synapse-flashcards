@@ -7,7 +7,7 @@ Those are two different levels of maturity, and keeping them separate is essenti
 - The current application is real, released, and usable without AI.
 - The broader study-companion vision is the roadmap, not a list of features already implemented.
 
-As of this update, the latest published release is v0.10.0, released from `main` by the Release workflow on October 24, 2026 (the `v0.10.0` tag names the commit): the third major feature, "Tags" (section 4.21): tags on every kind of card and on notes, filters, *Search* by tag, a Tags screen, tags from Anki and CSV, and reviewing a tag across decks (migration 0020). v0.9.1 (October 22, 2026) added pictures from Anki front/back notes (section 4.7b), *Select all* for deleted cards (section 4.2), and help with picture cards from a local vision model (section 4.8); no migration. v0.9.0 (October 21, 2026) was the second major feature, "Text recognition" (sections 4.17–4.20): a built-in OCR engine, scanned PDF pages, text from pictures, and reading with a local vision model in Ollama (migration 0019). v0.8.1 (October 21, 2026) added restoring selected deleted cards and reading a deleted note (sections 4.2 and 4.3). v0.8.0 (October 20, 2026) was the first major feature, "Sources and pictures" (sections 4.13–4.16): kept originals, pictures, image occlusion, and backup format 2. Since v0.5.0 (October 18, 2026), the 2026-10-19 and 2026-10-20 rounds shipped v0.5.1, v0.6.0, v0.7.0, v0.7.1, v0.7.2, v0.7.3 and v0.8.0, 2026-10-21 v0.8.1 and v0.9.0, 2026-10-22 v0.9.1, and 2026-10-24 v0.10.0 (section 13); their features are described in sections 4 and 5, some still marked with the branch they were written on. v0.5.0 added importing files as notes (section 4.7). v0.4.0 added the first AI feature: cards suggested from a note by a model in Ollama on the user's computer (section 4.6). v0.3.2 added unsaved-changes protection and the first frontend test suite (sections 4.5 and 12). The rest of this breakdown was first written against v0.3.1 and has been updated wherever those changes reach.
+As of this update, the latest release v0.11.0 (November 15, 2026, Release workflow from `main`, tag names the commit): Italian/English interface (most screens), exam planner, lesson transcripts and saved web pages as notes, local AI tutor round two, search inside sources, merging tags, cards remembering their source note, Italian accent restoration for built-in OCR, dark theme, Ctrl+K command palette, a stricter Content Security Policy (migrations 0021 and 0022). v0.10.0 (October 24, 2026) was the third major feature, "Tags" (section 4.21): tags on every kind of card and on notes, filters, *Search* by tag, a Tags screen, tags from Anki and CSV, and reviewing a tag across decks (migration 0020). v0.9.1 (October 22, 2026) added pictures from Anki front/back notes (section 4.7b), *Select all* for deleted cards (section 4.2), and help with picture cards from a local vision model (section 4.8); no migration. v0.9.0 (October 21, 2026) was the second major feature, "Text recognition" (sections 4.17–4.20): a built-in OCR engine, scanned PDF pages, text from pictures, and reading with a local vision model in Ollama (migration 0019). v0.8.1 (October 21, 2026) added restoring selected deleted cards and reading a deleted note (sections 4.2 and 4.3). v0.8.0 (October 20, 2026) was the first major feature, "Sources and pictures" (sections 4.13–4.16): kept originals, pictures, image occlusion, and backup format 2. Since v0.5.0 (October 18, 2026), the 2026-10-19 and 2026-10-20 rounds shipped v0.5.1, v0.6.0, v0.7.0, v0.7.1, v0.7.2, v0.7.3 and v0.8.0, 2026-10-21 v0.8.1 and v0.9.0, 2026-10-22 v0.9.1, 2026-10-24 v0.10.0, and 2026-11-15 v0.11.0 (section 13); their features are described in sections 4 and 5, some still marked with the branch they were written on. v0.5.0 added importing files as notes (section 4.7). v0.4.0 added the first AI feature: cards suggested from a note by a model in Ollama on the user's computer (section 4.6). v0.3.2 added unsaved-changes protection and the first frontend test suite (sections 4.5 and 12). The rest of this breakdown was first written against v0.3.1 and has been updated wherever those changes reach.
 
 This breakdown combines that current repository documentation, your implementation reports, and the original product/specification documents. The older specification is useful for architecture and intent, but parts of its feature-status descriptions are outdated—for example, it predates the restore/unarchive work.
 
@@ -88,23 +88,18 @@ ______________________________________________________________________
 | Repository | `Chip-jpg/synapse-flashcards` |
 | Visibility | Public, by your deliberate choice |
 | Development environments | Your local Windows setup, and Claude Code cloud sessions (Linux) |
-| Latest published release | v0.10.0 (October 24, 2026) |
-| Release commit | The commit the `v0.10.0` tag points at, on `main` |
-| Windows installer | `Synapse_0.10.0_x64-setup.exe` |
-| Windows MSI | `Synapse_0.10.0_x64_en-US.msi` |
+| Latest published release | v0.11.0 (November 15, 2026) |
+| Release commit | The commit the `v0.11.0` tag points at, on `main` |
+| Windows installer | `Synapse_0.11.0_x64-setup.exe` |
+| Windows MSI | `Synapse_0.11.0_x64_en-US.msi` |
 | Installer signing | Release notes say the installers are unsigned |
 | How releases are built | The manual **Release** GitHub Actions workflow on `windows-latest` (since v0.3.2; section 13) |
 | Database migrations documented in current README | `0001`–`0020` |
-| Frontend tests | Vitest + Testing Library: 361 tests at v0.10.0 (`npm test`; section 12.4) |
+| Frontend tests | Vitest + Testing Library: 443 tests at v0.11.0 (`npm test`; section 12.4) |
 | AI generation | Cards suggested from a note by a local model in Ollama, since v0.4.0 (section 4.6) |
 | File import | PDF, TXT, MD, DOCX, PPTX as notes, since v0.5.0 (section 4.7); originals kept as sources since v0.8.0 (sections 4.13, 4.16) |
 
-The v0.10.0 release assets are uploaded, as GitHub lists them:
-
-- EXE: 16,507,810 bytes, SHA-256 `cffb134b4e6b394ae62438cd77d56859ee45ef19a5a16f7a831722057ad42969`.
-- MSI: 18,722,816 bytes, SHA-256 `14a43055a8479e1a65711cc1e10c6e1552390e66171b7cc40ff5b7c23961f5c3`.
-
-Each release's hashes can be checked against the ones its Release run logged (section 13). That is release metadata, not an installation test: the repository doesn't record whether a release has been installed and run on Windows.
+The v0.11.0 release asset sizes and SHA-256 hashes are in the release page and the Release run log (section 13). Each release's hashes can be checked against the ones its Release run logged (section 13). That is release metadata, not an installation test: the repository doesn't record whether a release has been installed and run on Windows.
 
 ### 3.2 Important distinction: repository, app, and personal data
 
