@@ -566,9 +566,9 @@ mod tests {
     }
 
     #[test]
-    fn an_export_keeps_active_history_deleted_cards_and_archived_decks() {
+    fn an_export_keeps_card_source_note_links() {
         tauri::async_runtime::block_on(async {
-            let dir = scratch("export-payload");
+            let dir = scratch("export-source-note");
             let pool = populated(&dir).await;
             let note = crate::notes::create_note(&pool, "Source", "Some text", at(NOW))
                 .await
@@ -585,6 +585,36 @@ mod tests {
             .await
             .unwrap();
             let archive = dir.join("backup.zip");
+            write_package(
+                &pool,
+                &store_of(&pool).await,
+                &archive,
+                at(NOW),
+                APP_VERSION,
+            )
+            .await
+            .unwrap();
+            let restored = exported_database(&archive, &dir.join("restored.sqlite")).await;
+            let link: Option<i64> =
+                sqlx::query_scalar("SELECT source_note_id FROM flashcards WHERE id = ?1")
+                    .bind(linked_card)
+                    .fetch_one(&restored)
+                    .await
+                    .unwrap();
+            assert_eq!(link, Some(note.id));
+
+            restored.close().await;
+            pool.close().await;
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    #[test]
+    fn an_export_keeps_active_history_deleted_cards_and_archived_decks() {
+        tauri::async_runtime::block_on(async {
+            let dir = scratch("export-payload");
+            let pool = populated(&dir).await;
+            let archive = dir.join("backup.zip");
 
             write_package(
                 &pool,
@@ -597,14 +627,6 @@ mod tests {
             .unwrap();
 
             let restored = exported_database(&archive, &dir.join("restored.sqlite")).await;
-
-            let link: Option<i64> =
-                sqlx::query_scalar("SELECT source_note_id FROM flashcards WHERE id = ?1")
-                    .bind(linked_card)
-                    .fetch_one(&restored)
-                    .await
-                    .unwrap();
-            assert_eq!(link, Some(note.id));
 
             // The exported file stands on its own: no journal beside it, no
             // half-written page. This is the check an import runs first.

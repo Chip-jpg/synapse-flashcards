@@ -1350,6 +1350,19 @@ mod tests {
         tauri::async_runtime::block_on(async {
             let dir = scratch("import-restore");
             let source = source_database(&dir.join("source").join("synapse.sqlite")).await;
+            // Whole-database restore must retain newer columns as well as old history.
+            let note_id: i64 =
+                sqlx::query_scalar("SELECT MIN(id) FROM notes WHERE deleted_at IS NULL")
+                    .fetch_one(&source)
+                    .await
+                    .unwrap();
+            let linked =
+                sqlx::query("UPDATE flashcards SET source_note_id = ?1 WHERE deleted_at IS NULL")
+                    .bind(note_id)
+                    .execute(&source)
+                    .await
+                    .unwrap();
+            assert!(linked.rows_affected() > 0);
             let archive = dir.join("backup.zip");
             write_package(
                 &source,
@@ -2301,14 +2314,16 @@ mod tests {
             // The backup's history is all there, and its ratings are
             // scheduled with FSRS's defaults, not the replaced database's.
             // Its cards gained only their kind (migration 0012) and no image
-            // occlusion (0018).
+            // occlusion (0018) or source-note link (0022).
             let imported = dump(&restored).await;
             for (name, rows) in &source_rows {
                 if name != "sqlite_master" && name != "_sqlx_migrations" {
                     let found = imported.iter().find(|(table, _)| table == name).unwrap();
                     let rows: Vec<String> = if name == "flashcards" {
                         rows.iter()
-                            .map(|row| format!("{row} | 'basic' | NULL | NULL | NULL | NULL"))
+                            .map(|row| {
+                                format!("{row} | 'basic' | NULL | NULL | NULL | NULL | NULL")
+                            })
                             .collect()
                     } else {
                         rows.clone()
@@ -2688,7 +2703,7 @@ mod tests {
                 let found = imported.iter().find(|(table, _)| table == name).unwrap();
                 let rows: Vec<String> = if name == "flashcards" {
                     rows.iter()
-                        .map(|row| format!("{row} | 'basic' | NULL | NULL | NULL | NULL"))
+                        .map(|row| format!("{row} | 'basic' | NULL | NULL | NULL | NULL | NULL"))
                         .collect()
                 } else {
                     rows.clone()
@@ -2854,10 +2869,10 @@ mod tests {
                 assert_eq!(table(&imported, name), table(&source_rows, name), "{name}");
             }
             // Its cards gained only their kind (migration 0012) and no image
-            // occlusion (0018).
+            // occlusion (0018) or source-note link (0022).
             let cards: Vec<String> = table(&source_rows, "flashcards")
                 .into_iter()
-                .map(|row| format!("{row} | 'basic' | NULL | NULL | NULL | NULL"))
+                .map(|row| format!("{row} | 'basic' | NULL | NULL | NULL | NULL | NULL"))
                 .collect();
             assert_eq!(table(&imported, "flashcards"), cards);
             let notes: Vec<String> = table(&source_rows, "notes")
@@ -2883,7 +2898,7 @@ mod tests {
 
             // Each wrote only its state column, which is the last column of
             // decks and, before the three cloze columns of 0012 and the two
-            // image occlusion columns of 0018, of cards:
+            // image occlusion columns of 0018 and source-note link of 0022, of cards:
             // set aside, every row is still the backup's. Nothing else
             // moved, and no session was opened.
             fn without_state(rows: Vec<String>, from_end: usize) -> Vec<String> {
@@ -2896,7 +2911,7 @@ mod tests {
                     .collect()
             }
             let after = dump(&restored).await;
-            for (name, from_end) in [("decks", 0), ("flashcards", 5)] {
+            for (name, from_end) in [("decks", 0), ("flashcards", 6)] {
                 assert_eq!(
                     without_state(table(&after, name), from_end),
                     without_state(table(&imported, name), from_end),

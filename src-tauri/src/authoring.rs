@@ -2287,7 +2287,8 @@ mod tests {
             assert!(
                 matches!(next, SessionCard::Due { source_note_id: Some(source), .. } if source == note.id)
             );
-            let tag = sqlx::query("INSERT INTO tags (name) VALUES ('linked')")
+            let tag = sqlx::query("INSERT INTO tags (name, created_at) VALUES ('linked', ?1)")
+                .bind(to_db_time(now))
                 .execute(&pool)
                 .await
                 .unwrap()
