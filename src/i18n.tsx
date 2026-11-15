@@ -3,6 +3,10 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from "
 /** Language selection, messages, and interpolation for the app. */
 export type Lang = "it" | "en";
 export const en = {
+  "palette.title": "Command palette",
+  "palette.openDeck": "Open deck: {name}",
+  "palette.reviewDeck": "Review deck: {name}",
+  "palette.noMatches": "No matches",
   "nav.desk": "Study Desk",
   "nav.search": "Search",
   "nav.tags": "Tags",
@@ -209,6 +213,10 @@ export const en = {
   "app.backupNotice": "Backup restored from {name}. Everything shown now comes from that backup.",
 } as const;
 export const it: Record<keyof typeof en, string> = {
+  "palette.title": "Comandi rapidi",
+  "palette.openDeck": "Apri mazzo: {name}",
+  "palette.reviewDeck": "Ripassa mazzo: {name}",
+  "palette.noMatches": "Nessun risultato",
   "nav.desk": "Scrivania",
   "nav.search": "Cerca",
   "nav.tags": "Etichette",

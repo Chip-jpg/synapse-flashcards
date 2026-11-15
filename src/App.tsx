@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { closeWindow, holdWindowClose } from "./api";
+import { closeWindow, holdWindowClose, startSession, type Deck } from "./api";
+import { CommandPalette } from "./CommandPalette";
 import { ArchivedDecks } from "./ArchivedDecks";
 import { Backup } from "./Backup";
 import { Dashboard } from "./Dashboard";
@@ -118,7 +119,25 @@ function App() {
   const { unsaved, report } = useUnsavedTracker();
   // Where the user was going when asked whether to discard unsaved changes: a
   // sidebar place, or "close" for closing the window. Null when not asking.
-  const [leaving, setLeaving] = useState<Place | "close" | null>(null);
+  const [leaving, setLeaving] = useState<Place | "close" | { deck: Deck; review: boolean } | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        !event.altKey &&
+        event.key.toLowerCase() === "k" &&
+        !locked &&
+        leaving === null
+      ) {
+        event.preventDefault();
+        setPaletteOpen(true);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [locked, leaving]);
 
   // While something is unsaved, closing the window asks first. Otherwise
   // nothing is held, and the window closes as it always has.
@@ -145,10 +164,27 @@ function App() {
     show(PLACE_VIEWS[next]);
   }
 
+  /** Open a deck or start reviewing its due cards. */
+  function navigateDeck(deck: Deck, review: boolean) {
+    if (!review) {
+      show({ screen: "deck", deckId: deck.id, justCreated: false });
+      return;
+    }
+    void startSession(deck.id).then((result) => {
+      if (result.status === "started") startReview(result.sessionId, deck.name);
+      else goTo("desk");
+    }).catch(() => goTo("desk"));
+  }
+
   function discard() {
     setLeaving(null);
-    if (leaving === "close") void closeWindow();
-    else if (leaving !== null) goTo(leaving);
+    if (leaving === "close") {
+      void closeWindow();
+    } else if (typeof leaving === "string") {
+      goTo(leaving);
+    } else if (leaving !== null) {
+      navigateDeck(leaving.deck, leaving.review);
+    }
   }
 
   const { place, atPlace, trail } = locate(view, t);
@@ -315,6 +351,21 @@ function App() {
           />
         )}
       </Shell>
+      {paletteOpen && (
+        <CommandPalette
+          onClose={() => setPaletteOpen(false)}
+          onPlace={(next) => {
+            setPaletteOpen(false);
+            if (unsaved) setLeaving(next);
+            else goTo(next);
+          }}
+          onDeck={(deck, review) => {
+            setPaletteOpen(false);
+            if (unsaved) setLeaving({ deck, review });
+            else navigateDeck(deck, review);
+          }}
+        />
+      )}
       <DiscardDialog
         leaving={leaving === null ? null : leaving === "close" ? "close" : "navigate"}
         onDiscard={discard}
