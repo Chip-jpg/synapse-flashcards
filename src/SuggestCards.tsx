@@ -11,6 +11,7 @@ import {
   type Note,
   type SuggestedCard,
 } from "./api";
+import { translate, useT, useLang } from "./i18n";
 import { loadDeckChoices } from "./deckChoices";
 import { FormActions, SelectField, TextField, useFormSave } from "./forms";
 import { SparkleIcon, TrashIcon } from "./icons";
@@ -21,11 +22,6 @@ import { useUnsavedChanges } from "./unsaved";
 
 /** Where the model last used is remembered, in this computer's web storage. */
 const MODEL_KEY = "synapse.suggestionModel";
-
-/** "1 card", "3 cards". */
-function cardCount(count: number): string {
-  return count === 1 ? "1 card" : `${count} cards`;
-}
 
 // Remembering the model is only a convenience: if storage isn't available,
 // the user simply chooses again.
@@ -85,6 +81,7 @@ export function SuggestCards({
   /** The cards were saved: `count` of them, into `deck`. */
   onSaved: (deck: DeckDetail, count: number) => void;
 }) {
+  const { t } = useT();
   const [setup, setSetup] = useState<Setup>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
 
@@ -106,14 +103,14 @@ export function SuggestCards({
   if (setup.status === "loading") {
     return (
       <p className="loading" role="status">
-        Looking for Ollama…
+        {t("suggest.looking")}
       </p>
     );
   }
 
   const back = (
     <button type="button" className="button" onClick={onCancel}>
-      Back to note
+      {t("notes.backNote")}
     </button>
   );
 
@@ -122,7 +119,7 @@ export function SuggestCards({
       <Message focus tone="alert" text={setup.message}>
         <div className="actions">
           <button type="button" className="button" onClick={retry}>
-            Try again
+            {t("suggest.retry")}
           </button>
           {back}
         </div>
@@ -135,7 +132,7 @@ export function SuggestCards({
       <Message
         focus
         tone="status"
-        text="You don't have a deck to add cards to yet. Create one on the Study Desk first; the Sample deck can't take new cards."
+        text={t("notes.noDeck")}
       >
         {back}
       </Message>
@@ -147,11 +144,11 @@ export function SuggestCards({
       <Message
         focus
         tone="status"
-        text="Ollama is running, but it has no models on this computer that can write cards. Download a model in Ollama, then check again."
+        text={t("suggest.noModels")}
       >
         <div className="actions">
           <button type="button" className="button" onClick={retry}>
-            Check again
+            {t("suggest.checkAgain")}
           </button>
           {back}
         </div>
@@ -189,11 +186,16 @@ type ChooseStage = {
 };
 
 /** How a part of a long note is offered: where it is, and how it begins. */
-export function partLabel(part: NotePart, index: number, count: number): string {
+export function partLabel(
+  part: NotePart,
+  index: number,
+  count: number,
+  t: ReturnType<typeof useT>["t"] = (key, params) => translate("en", key, params)
+): string {
   const firstLine = part.text.split("\n", 1)[0].replace(/\s+/gu, " ").trim();
   const begins = Array.from(firstLine);
   const opening = begins.length > 60 ? `${begins.slice(0, 60).join("").trimEnd()}…` : firstLine;
-  return `Part ${index + 1} of ${count}: ${opening}`;
+  return t("suggest.partLabel", { part: index + 1, count, opening });
 }
 
 /** Choosing a model, waiting for its suggestions, or checking them. */
@@ -233,6 +235,7 @@ function Suggester({
   onNoDecks: () => void;
   onNoModels: () => void;
 }) {
+  const { t } = useT();
   // A note too long to use whole is offered in parts, one used at a time.
   const parts = useMemo(() => noteParts(note.body), [note.body]);
   const split = parts.length > 1;
@@ -289,7 +292,7 @@ function Suggester({
     event.preventDefault();
     if (suggestingRef.current) return;
     if (model === "") {
-      show(choose("model", { modelError: "Choose a model to suggest cards with." }));
+      show(choose("model", { modelError: t("suggest.chooseModelError") }));
       return;
     }
     suggestingRef.current = true;
@@ -299,7 +302,7 @@ function Suggester({
     try {
       const outcome = await suggestCards(note.id, model, part ?? undefined);
       if (outcome.status === "stopped") {
-        next = choose("notice", { notice: "Stopped. No cards were suggested." });
+        next = choose("notice", { notice: t("suggest.stopped") });
       } else {
         rememberModel(model);
         next = {
@@ -326,22 +329,18 @@ function Suggester({
   return (
     <section className="card" aria-labelledby="suggest-heading">
       <h2 id="suggest-heading" className="form-title">
-        {`Suggest cards from ${note.title}`}
+        {t("suggest.title", { title: note.title })}
       </h2>
 
       {/* Focusable so keyboard users can scroll a long note. */}
       <section className="note-context" tabIndex={0} aria-labelledby="suggest-context-label">
         <p id="suggest-context-label" className="side-label">
-          {part ? `Your note, part ${partIndex + 1} of ${parts.length}` : "Your note"}
+          {part ? t("suggest.notePart", { part: partIndex + 1, total: parts.length }) : t("notes.yourNote")}
         </p>
         <p className="note-body">{part ? part.text : note.body}</p>
       </section>
       <p id="suggest-hint" className="field-hint">
-        A model in Ollama, on this computer, reads the note and suggests up to 10 cards, each with
-        the passage of your note it comes from. Cards that can't be traced back to your note are
-        left out. The note doesn't leave this computer, and nothing is saved until you save the
-        cards. Models still get things wrong, so check each card against its passage before you
-        save it.
+        {t("suggest.hint")}
       </p>
 
       {stage.step === "choose" && (
@@ -350,7 +349,7 @@ function Suggester({
           parts={
             split
               ? {
-                  labels: parts.map((each, index) => partLabel(each, index, parts.length)),
+                  labels: parts.map((each, index) => partLabel(each, index, parts.length, t)),
                   index: partIndex,
                   noteLength: Array.from(note.body).length,
                   onChoose: setPartIndex,
@@ -374,7 +373,7 @@ function Suggester({
         <Waiting
           key={round}
           model={stage.model}
-          part={part ? `part ${partIndex + 1} of your note` : null}
+          part={part ? t("suggest.writingPart", { part: partIndex + 1 }) : null}
           onStop={() => stopSuggesting().catch(() => {})}
         />
       )}
@@ -395,7 +394,7 @@ function Suggester({
               show(
                 choose("notice", {
                   notice:
-                    "You removed every suggested card, so there's nothing to save. Suggest again, or go back to the note.",
+                    t("suggest.allRemoved"),
                 })
               )
             }
@@ -432,13 +431,15 @@ function ChooseModel({
   onSuggest: (event: FormEvent<HTMLFormElement>) => void;
   onCancel: () => void;
 }) {
+  const { t } = useT();
+  const { lang } = useLang();
   const noticeRef = useFocusOnMount<HTMLParagraphElement>(
     stage.focus === "notice" && stage.notice !== null
   );
   const suggestRef = useFocusOnMount<HTMLButtonElement>(stage.focus === "suggest");
 
   return (
-    <form className="suggest-step" aria-label="Choose a model" noValidate onSubmit={onSuggest}>
+    <form className="suggest-step" aria-label={t("suggest.chooseModel")} noValidate onSubmit={onSuggest}>
       {stage.notice && (
         <p ref={noticeRef} className="notice" role="status" tabIndex={-1}>
           {stage.notice}
@@ -447,11 +448,11 @@ function ChooseModel({
       {parts && (
         <SelectField
           id="suggest-part"
-          label="Part of the note"
-          hint={`This note is ${parts.noteLength.toLocaleString("en-US")} characters long, more than the ${SUGGESTION_NOTE_MAX_CHARS.toLocaleString("en-US")} a model reads at once, so it's split into ${parts.labels.length} parts where paragraphs end. Cards are suggested from one part at a time; come back for the others.`}
+          label={t("suggest.part")}
+          hint={t("suggest.partHint", { length: parts.noteLength.toLocaleString(lang === "it" ? "it-IT" : "en-US"), max: SUGGESTION_NOTE_MAX_CHARS.toLocaleString(lang === "it" ? "it-IT" : "en-US"), count: parts.labels.length })}
           value={String(parts.index)}
           options={parts.labels.map((label, index) => ({ value: String(index), label }))}
-          placeholder="Choose a part"
+          placeholder={t("suggest.choosePart")}
           required
           autoFocus={stage.focus === "part"}
           onChange={(value) => {
@@ -461,12 +462,12 @@ function ChooseModel({
       )}
       <SelectField
         id="suggest-model"
-        label="Model"
-        hint="One of the models in Ollama on this computer. Larger models usually write better cards, but take longer."
+        label={t("suggest.model")}
+        hint={t("suggest.modelHint")}
         describedBy="suggest-hint"
         value={model}
         options={models.map((name) => ({ value: name, label: name }))}
-        placeholder="Choose a model"
+        placeholder={t("suggest.chooseModel")}
         error={stage.modelError ?? undefined}
         required
         autoFocus={stage.focus === "model"}
@@ -475,10 +476,10 @@ function ChooseModel({
       <div className="form-actions">
         <button ref={suggestRef} type="submit" className="button button-primary">
           <SparkleIcon />
-          Suggest cards
+          {t("notes.suggest")}
         </button>
         <button type="button" className="button" onClick={onCancel}>
-          Cancel
+          {t("common.cancel")}
         </button>
       </div>
       {stage.error && (
@@ -501,6 +502,7 @@ function Waiting({
   part: string | null;
   onStop: () => void;
 }) {
+  const { t } = useT();
   const statusRef = useFocusOnMount<HTMLParagraphElement>(true);
   const [stopping, setStopping] = useState(false);
 
@@ -508,8 +510,8 @@ function Waiting({
     <div className="confirm confirm-calm suggest-waiting">
       <p ref={statusRef} className="confirm-question" role="status" tabIndex={-1}>
         {stopping
-          ? "Stopping…"
-          : `Suggesting cards${part ? ` from ${part}` : ""} with ${model}… This can take a minute or more, depending on the model and this computer.`}
+          ? t("suggest.stopping")
+          : t(part ? "suggest.waitingPart" : "suggest.waiting", { part: part ?? "", model })}
       </p>
       <div className="deck-actions">
         <button
@@ -522,7 +524,7 @@ function Waiting({
             onStop();
           }}
         >
-          Stop
+          {t("settings.stop")}
         </button>
       </div>
     </div>
@@ -561,6 +563,7 @@ function ReviewSuggestions({
   onNoDecks: () => void;
   onAllRemoved: () => void;
 }) {
+  const { t, plural } = useT();
   const [drafts, setDrafts] = useState(suggested);
   const [decks, setDecks] = useState(initialDecks);
   // An explicit choice: no deck is picked until the user picks one.
@@ -595,7 +598,7 @@ function ReviewSuggestions({
       if (deckId === "") {
         const unchosen: CommandError = {
           kind: "invalid",
-          message: "Choose a deck for these cards.",
+          message: t("suggest.chooseDeckError"),
           field: "deck",
         };
         throw unchosen;
@@ -646,31 +649,20 @@ function ReviewSuggestions({
     setDrafts(left);
     setRemoval((previous) => ({
       count: (previous?.count ?? 0) + 1,
-      text: `Card removed. ${cardCount(left.length)} left.`,
+      text: t("suggest.removed", { cards: plural(left.length, "common.cardOne", "common.cardOther") }),
     }));
   }
 
-  const unsupportedText =
-    unsupported === 0
-      ? ""
-      : unsupported === 1
-        ? " 1 more suggestion was left out because it couldn't be traced back to your note."
-        : ` ${unsupported} more suggestions were left out because they couldn't be traced back to your note.`;
-  const leftOutText =
-    leftOut === 0
-      ? ""
-      : leftOut === 1
-        ? " 1 more was left out because it was empty, too long, or a repeat."
-        : ` ${leftOut} more were left out because they were empty, too long, or repeats.`;
+  const unsupportedText = unsupported === 0 ? "" : plural(unsupported, "suggest.unsupportedOne", "suggest.unsupportedOther");
+  const leftOutText = leftOut === 0 ? "" : plural(leftOut, "suggest.leftOutOne", "suggest.leftOutOther");
 
   return (
-    <form className="suggest-step" aria-label="Suggested cards" noValidate onSubmit={submit}>
+    <form className="suggest-step" aria-label={t("suggest.cards")} noValidate onSubmit={submit}>
       <p ref={noticeRef} className="notice" role="status" tabIndex={-1}>
-        {`${model} suggested ${cardCount(suggested.length)}. Check each one against the passage it comes from, edit or remove any you don't want, then choose a deck and save.${unsupportedText}${leftOutText}`}
+        {t("suggest.intro", { model, cards: plural(suggested.length, "common.cardOne", "common.cardOther"), unsupported: unsupportedText, leftOut: leftOutText })}
       </p>
       <p className="field-hint">
-        Each card needs a front (the question) and a back (the answer), each up to 2,000
-        characters.
+        {t("suggest.cardHint")}
       </p>
 
       <ol className="card-list">
@@ -681,11 +673,11 @@ function ReviewSuggestions({
               {/* A group, so its two fields are read out under the card's name. */}
               <div className="card-item" role="group" aria-labelledby={labelId}>
                 <h3 id={labelId} className="draft-label">
-                  {`Card ${position + 1}`}
+                  {t("suggest.cardNumber", { position: position + 1 })}
                 </h3>
                 <TextField
                   id={`draft-${draft.key}-front`}
-                  label="Front"
+                  label={t("csv.front")}
                   value={draft.front}
                   error={fieldError("front", draft.key)}
                   required
@@ -695,7 +687,7 @@ function ReviewSuggestions({
                 />
                 <TextField
                   id={`draft-${draft.key}-back`}
-                  label="Back"
+                  label={t("csv.back")}
                   value={draft.back}
                   error={fieldError("back", draft.key)}
                   required
@@ -704,12 +696,12 @@ function ReviewSuggestions({
                   onChange={(value) => change(draft.key, "back", value)}
                 />
                 <figure className="draft-source">
-                  <figcaption className="side-label">From your note</figcaption>
+                  <figcaption className="side-label">{t("suggest.fromNote")}</figcaption>
                   <blockquote className="draft-quote">{draft.source}</blockquote>
                   <QuotePageLink quote={draft.source} />
                   {draft.unfamiliar.length > 0 && (
                     <p className="draft-check">
-                      {`Not in your note: ${draft.unfamiliar.join(", ")}. The suggested answer may say more than your note does.`}
+                      {t("suggest.unfamiliar", { words: draft.unfamiliar.join(", ") })}
                     </p>
                   )}
                 </figure>
@@ -722,7 +714,7 @@ function ReviewSuggestions({
                     onClick={() => remove(draft.key)}
                   >
                     <TrashIcon />
-                    Remove card
+                    {t("suggest.remove")}
                   </button>
                 </div>
               </div>
@@ -738,11 +730,11 @@ function ReviewSuggestions({
 
       <SelectField
         id="suggest-deck"
-        label="Deck"
-        hint="The cards are added to this deck and are due for review straight away."
+        label={t("stats.deck")}
+        hint={t("suggest.deckHint")}
         value={deckId}
         options={decks.map((deck) => ({ value: String(deck.id), label: deck.name }))}
-        placeholder="Choose a deck"
+        placeholder={t("exams.chooseDeck")}
         error={fieldError("deck")}
         required
         onChange={(value) => {
@@ -752,7 +744,7 @@ function ReviewSuggestions({
       />
 
       <FormActions
-        saveLabel={`Save ${cardCount(drafts.length)}`}
+        saveLabel={t("suggest.save", { cards: plural(drafts.length, "common.cardOne", "common.cardOther") })}
         saving={saving}
         error={formError}
         onCancel={onCancel}
