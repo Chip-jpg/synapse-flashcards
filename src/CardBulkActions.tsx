@@ -1,3 +1,4 @@
+import { useT, translate } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import {
   deleteFlashcards,
@@ -14,9 +15,12 @@ import { ArrowRightIcon, RestoreIcon, TagIcon, TrashIcon } from "./icons";
 import { hasTag, TagField, tagsIn } from "./tagInput";
 
 /** "1 card", "3 cards". */
-export function cardCount(count: number): string {
-  return `${count} ${count === 1 ? "card" : "cards"}`;
+export function cardCount(count: number, t: Translator = english): string {
+  return t(count === 1 ? "common.cardOne" : "common.cardOther", { count });
 }
+
+type Translator = ReturnType<typeof useT>["t"];
+const english: Translator = (key, params) => translate("en", key, params);
 
 /**
  * The cards whose front or back contains `query`, ignoring capitals and outer
@@ -64,15 +68,16 @@ export function CardTagFilter({
   tag: string;
   onChange: (tag: string) => void;
 }) {
+  const { t } = useT();
   return (
     <div className="card-tag-filter">
       <SelectField
         id="card-tag-filter"
-        label="Show cards tagged"
-        hint="Only this deck's cards with the tag you choose, or a tag below it (bio::cells for bio)."
+        label={t("bulk.filter")}
+        hint={t("bulk.filterHint")}
         value={tag}
-        placeholder="Any tag or none"
-        options={tags.map((t) => ({ value: t.name, label: `${t.name} (${cardCount(t.cards)})` }))}
+        placeholder={t("bulk.anyTag")}
+        options={tags.map((tag) => ({ value: tag.name, label: `${tag.name} (${cardCount(tag.cards, t)})` }))}
         onChange={onChange}
       />
     </div>
@@ -90,13 +95,14 @@ export function CardSearchField({
   shown: number;
   onChange: (query: string) => void;
 }) {
+  const { t, plural } = useT();
   const inputRef = useRef<HTMLInputElement>(null);
   const searching = query.trim() !== "";
 
   return (
     <div className="field card-search">
       <label htmlFor="card-search" className="field-label">
-        Search cards
+        {t("bulk.search")}
       </label>
       <div className="note-search-row">
         <input
@@ -125,19 +131,19 @@ export function CardSearchField({
               inputRef.current?.focus();
             }}
           >
-            Clear
+            {t("search.clear")}
           </button>
         )}
       </div>
       <p id="card-search-hint" className="field-hint">
-        Finds this deck's cards whose front or back contains what you type, ignoring capitals.
+        {t("bulk.searchHint")}
       </p>
       <p className="form-status" role="status">
         {!searching
           ? ""
           : shown === 0
-            ? "No cards match."
-            : `${cardCount(shown)} ${shown === 1 ? "matches" : "match"}.`}
+            ? t("bulk.noMatches")
+            : plural(shown, "bulk.matchesOne", "bulk.matchesOther", { cards: cardCount(shown, t) })}
       </p>
     </div>
   );
@@ -178,6 +184,7 @@ export function SelectionActions({
   /** Refused because this screen is out of date; `message` says what changed. */
   onStale: (message: string) => void;
 }) {
+  const { t, plural } = useT();
   const [step, setStep] = useState<Step>({ kind: "choose" });
   const [choices, setChoices] = useState<DeckChoices>({ status: "loading" });
   const [target, setTarget] = useState("");
@@ -292,7 +299,7 @@ export function SelectionActions({
     const to =
       choices.status === "ready" ? choices.decks.find((d) => String(d.id) === target) : null;
     if (!to) {
-      setTargetError("Choose a deck to move the cards to.");
+      setTargetError(t("bulk.chooseTarget"));
       document.getElementById("move-target")?.focus();
       return;
     }
@@ -307,7 +314,7 @@ export function SelectionActions({
     const add = addTags;
     const remove = removeTag === "" ? [] : [removeTag];
     if (add.length === 0 && remove.length === 0) {
-      setTagsError("Type a tag to add, or choose one to take off.");
+      setTagsError(t("bulk.chooseTags"));
       return;
     }
     send(async () => {
@@ -322,18 +329,21 @@ export function SelectionActions({
 
   // Selected cards stay selected while the search changes, so say when some
   // of what would be changed isn't on screen.
+  const hider = hiddenBy === "the search" ? t("bulk.searchHider")
+    : hiddenBy === "the tag filter" ? t("bulk.tagHider")
+    : hiddenBy === "the search and tag filter" ? t("bulk.bothHider") : hiddenBy;
   let hiddenNote = "";
   if (hidden === count) {
     hiddenNote =
-      count === 1 ? ` It's hidden by ${hiddenBy}.` : ` They're all hidden by ${hiddenBy}.`;
+      plural(count, "bulk.hiddenOne", "bulk.hiddenAll", { hider });
   } else if (hidden > 0) {
-    hiddenNote = ` ${hidden} of them ${hidden === 1 ? "is" : "are"} hidden by ${hiddenBy}.`;
+    hiddenNote = plural(hidden, "bulk.hiddenSomeOne", "bulk.hiddenSomeOther", { hider });
   }
 
   return (
-    <div className="selection-bar" role="region" aria-label="Selected cards">
+    <div className="selection-bar" role="region" aria-label={t("bulk.selected")}>
       <p className="selection-summary">
-        <strong>{`${cardCount(count)} selected.`}</strong>
+        <strong>{plural(count, "bulk.selectedCountOne", "bulk.selectedCountOther", { cards: cardCount(count, t) })}</strong>
         {hiddenNote}
       </p>
 
@@ -346,7 +356,7 @@ export function SelectionActions({
             onClick={() => setStep({ kind: "tag" })}
           >
             <TagIcon />
-            Tag selected
+            {t("bulk.tag")}
           </button>
           <button
             ref={moveRef}
@@ -355,7 +365,7 @@ export function SelectionActions({
             onClick={() => setStep({ kind: "move" })}
           >
             <ArrowRightIcon />
-            Move selected
+            {t("bulk.move")}
           </button>
           <button
             ref={deleteRef}
@@ -364,10 +374,10 @@ export function SelectionActions({
             onClick={() => setStep({ kind: "delete" })}
           >
             <TrashIcon />
-            Delete selected
+            {t("bulk.delete")}
           </button>
           <button type="button" className="button button-quiet button-small" onClick={onClear}>
-            Clear selection
+            {t("bulk.clear")}
           </button>
         </div>
       )}
@@ -375,7 +385,7 @@ export function SelectionActions({
       {step.kind === "delete" && (
         <div className="confirm">
           <p ref={questionRef} className="confirm-question" tabIndex={-1}>
-            {`Delete ${count === 1 ? "this card" : `these ${count} cards`}?${hiddenNote} ${count === 1 ? "It" : "They"} will leave this deck and won't appear in reviews. Schedules and review history are kept, and you can restore ${count === 1 ? "it" : "them"} from Deleted cards below.`}
+            {plural(count, "bulk.deleteQuestionOne", "bulk.deleteQuestionOther", { hiddenNote })}
           </p>
           <div className="deck-actions">
             <button
@@ -384,7 +394,7 @@ export function SelectionActions({
               aria-disabled={busy}
               onClick={confirmDelete}
             >
-              {`Delete ${cardCount(count)}`}
+              {t("bulk.deleteCount", { cards: cardCount(count, t) })}
             </button>
             <button
               type="button"
@@ -392,11 +402,11 @@ export function SelectionActions({
               aria-disabled={busy}
               onClick={back}
             >
-              Keep cards
+              {t("bulk.keep")}
             </button>
           </div>
           <p className="form-status" role="status">
-            {busy ? "Deleting…" : ""}
+            {busy ? t("bulk.deleting") : ""}
           </p>
         </div>
       )}
@@ -404,12 +414,12 @@ export function SelectionActions({
       {step.kind === "tag" && (
         <div className="confirm confirm-calm">
           <p ref={questionRef} className="confirm-question" tabIndex={-1}>
-            {`Change the tags of ${count === 1 ? "this card" : `these ${count} cards`}?${hiddenNote} Tags you add join the ones ${count === 1 ? "it has" : "each has"}; nothing else about ${count === 1 ? "it" : "them"} changes.`}
+            {plural(count, "bulk.tagQuestionOne", "bulk.tagQuestionOther", { hiddenNote })}
           </p>
           <TagField
             id="tag-selected-add"
-            label="Add tags"
-            hint="One word each, such as exam or bio::cells; a space or comma starts the next."
+            label={t("bulk.addTags")}
+            hint={t("bulk.tagsHint")}
             tags={addTags}
             onChange={(next) => {
               setAddTags(next);
@@ -421,13 +431,13 @@ export function SelectionActions({
           {selectedTags.length > 0 && (
             <SelectField
               id="tag-selected-remove"
-              label="Take off a tag"
-              hint="Optional. Removed from every selected card that has it."
+              label={t("bulk.removeTag")}
+              hint={t("bulk.removeHint")}
               value={removeTag}
-              placeholder="Don't take one off"
-              options={selectedTags.map((t) => ({
-                value: t.name,
-                label: `${t.name} (${cardCount(t.count)})`,
+              placeholder={t("bulk.noRemove")}
+              options={selectedTags.map((tag) => ({
+                value: tag.name,
+                label: `${tag.name} (${cardCount(tag.count, t)})`,
               }))}
               onChange={(value) => {
                 setRemoveTag(value);
@@ -442,7 +452,7 @@ export function SelectionActions({
               aria-disabled={busy}
               onClick={confirmTag}
             >
-              {`Save tags on ${cardCount(count)}`}
+              {t("bulk.saveTags", { cards: cardCount(count, t) })}
             </button>
             <button
               type="button"
@@ -450,11 +460,11 @@ export function SelectionActions({
               aria-disabled={busy}
               onClick={back}
             >
-              Cancel
+              {t("common.cancel")}
             </button>
           </div>
           <p className="form-status" role="status">
-            {busy ? "Saving tags…" : ""}
+            {busy ? t("bulk.savingTags") : ""}
           </p>
         </div>
       )}
@@ -462,11 +472,11 @@ export function SelectionActions({
       {step.kind === "move" && (
         <div className="confirm confirm-calm">
           <p ref={questionRef} className="confirm-question" tabIndex={-1}>
-            {`Move ${count === 1 ? "this card" : `these ${count} cards`} to another deck?${hiddenNote} ${count === 1 ? "It keeps its" : "They keep their"} schedule and review history, and ${count === 1 ? "is" : "are"} due there exactly when ${count === 1 ? "it" : "they"} would have been here.`}
+            {plural(count, "bulk.moveQuestionOne", "bulk.moveQuestionOther", { hiddenNote })}
           </p>
           {choices.status === "loading" && (
             <p className="loading" role="status">
-              Loading your decks…
+              {t("desk.loading")}
             </p>
           )}
           {choices.status === "error" && (
@@ -476,16 +486,16 @@ export function SelectionActions({
           )}
           {choices.status === "ready" && choices.decks.length === 0 && (
             <p className="field-hint">
-              There's no other deck to move them to. Create one from the Study Desk first.
+              {t("bulk.noDeck")}
             </p>
           )}
           {choices.status === "ready" && choices.decks.length > 0 && (
             <SelectField
               id="move-target"
-              label="Move to"
-              hint="Your other decks. The sample deck can't take cards."
+              label={t("bulk.moveTo")}
+              hint={t("bulk.moveHint")}
               value={target}
-              placeholder="Choose a deck"
+              placeholder={t("exams.chooseDeck")}
               options={choices.decks.map((d) => ({
                 value: String(d.id),
                 label: d.name,
@@ -506,7 +516,7 @@ export function SelectionActions({
                 aria-disabled={busy}
                 onClick={confirmMove}
               >
-                {`Move ${cardCount(count)}`}
+                {t("bulk.moveCount", { cards: cardCount(count, t) })}
               </button>
             )}
             <button
@@ -515,11 +525,11 @@ export function SelectionActions({
               aria-disabled={busy}
               onClick={back}
             >
-              Cancel
+              {t("common.cancel")}
             </button>
           </div>
           <p className="form-status" role="status">
-            {busy ? "Moving…" : ""}
+            {busy ? t("bulk.moving") : ""}
           </p>
         </div>
       )}
@@ -554,6 +564,7 @@ export function RestoreSelected({
   /** Refused because this screen is out of date; `message` says what changed. */
   onStale: (message: string) => void;
 }) {
+  const { t, plural } = useT();
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -600,15 +611,15 @@ export function RestoreSelected({
   }
 
   return (
-    <div className="selection-bar" role="region" aria-label="Selected deleted cards">
+    <div className="selection-bar" role="region" aria-label={t("bulk.selectedDeleted")}>
       <p className="selection-summary">
-        <strong>{`${cardCount(count)} selected.`}</strong>
+        <strong>{plural(count, "bulk.selectedCountOne", "bulk.selectedCountOther", { cards: cardCount(count, t) })}</strong>
       </p>
 
       {confirming ? (
         <div className="confirm confirm-calm">
           <p ref={questionRef} className="confirm-question" tabIndex={-1}>
-            {`Restore ${count === 1 ? "this card" : `these ${count} cards`}? ${count === 1 ? "It goes" : "They go"} back into this deck with the same ${count === 1 ? "schedule" : "schedules"} and review history ${count === 1 ? "it" : "they"} had, and ${count === 1 ? "becomes" : "each becomes"} due again only on the date it already had.`}
+            {plural(count, "bulk.restoreQuestionOne", "bulk.restoreQuestionOther")}
           </p>
           <div className="deck-actions">
             <button
@@ -617,7 +628,7 @@ export function RestoreSelected({
               aria-disabled={busy}
               onClick={confirmRestore}
             >
-              {`Restore ${cardCount(count)}`}
+              {t("bulk.restoreCount", { cards: cardCount(count, t) })}
             </button>
             <button
               type="button"
@@ -627,11 +638,11 @@ export function RestoreSelected({
                 if (!busyRef.current) setConfirming(false);
               }}
             >
-              Keep deleted
+              {t("bulk.keepDeleted")}
             </button>
           </div>
           <p className="form-status" role="status">
-            {busy ? "Restoring…" : ""}
+            {busy ? t("bulk.restoring") : ""}
           </p>
         </div>
       ) : (
@@ -643,10 +654,10 @@ export function RestoreSelected({
             onClick={() => setConfirming(true)}
           >
             <RestoreIcon />
-            Restore selected
+            {t("bulk.restore")}
           </button>
           <button type="button" className="button button-quiet button-small" onClick={onClear}>
-            Clear selection
+            {t("bulk.clear")}
           </button>
         </div>
       )}
