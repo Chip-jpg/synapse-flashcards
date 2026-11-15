@@ -517,6 +517,127 @@ pub async fn rename_tag(
     Ok(tags(pool).await?)
 }
 
+/// What [`merge_tags`] did: `{ tags, cards, notes, keptCards, keptNotes }`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergedTags {
+    /// The tags as [`tags`] lists them afterwards.
+    pub tags: Vec<TagSummary>,
+    /// Active cards (in decks that aren't archived) that moved to the tag
+    /// merged into.
+    pub cards: i64,
+    /// Active notes that moved to it.
+    pub notes: i64,
+    /// Deleted cards, and cards in archived decks, that had the old tag and
+    /// keep it: their tags are frozen (0020), so they come back with it.
+    pub kept_cards: i64,
+    /// Deleted notes that had the old tag and keep it.
+    pub kept_notes: i64,
+}
+
+/// Why [`merge_tags`] didn't happen.
+#[derive(Debug)]
+pub enum MergeError {
+    /// The two tags are the same tag.
+    SameTag,
+    /// One of the tags doesn't exist.
+    NotFound,
+    /// No active card or note has the tag being merged any more, so the
+    /// screen asking was out of date.
+    NothingToMerge,
+    Internal(DbError),
+}
+
+impl From<sqlx::Error> for MergeError {
+    fn from(err: sqlx::Error) -> Self {
+        MergeError::Internal(err.into())
+    }
+}
+
+/// Merges tag `from` into tag `into`, in one transaction: every active card
+/// (in a deck that isn't archived) and active note with `from` loses it and
+/// has `into` instead, unless it already had `into`, so no card or note gains
+/// a tag and none goes over [`TAGS_MAX`].
+///
+/// Deleted cards and notes, and cards in archived decks, keep `from`: their
+/// tags are frozen (0020's triggers), as their text is, so restoring one gives
+/// it back exactly as it was, `from` included. How many kept it is returned,
+/// so the screen can say so. Neither tag row is removed (a tag never is);
+/// `from` is just no longer listed once nothing active has it.
+///
+/// Only the tag itself is merged: a tag below it (`bio::cells` for `bio`)
+/// stays as it is. No card text, schedule, `updated_at` or note `updatedAt`
+/// changes.
+pub async fn merge_tags(pool: &SqlitePool, from: i64, into: i64) -> Result<MergedTags, MergeError> {
+    if from == into {
+        return Err(MergeError::SameTag);
+    }
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let found: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tags WHERE id IN (?1, ?2)")
+        .bind(from)
+        .bind(into)
+        .fetch_one(&mut *tx)
+        .await?;
+    if found != 2 {
+        return Err(MergeError::NotFound);
+    }
+
+    let cards: Vec<i64> = sqlx::query_scalar(
+        "SELECT l.card_id FROM card_tags l
+         JOIN flashcards f ON f.id = l.card_id
+         JOIN decks d ON d.id = f.deck_id
+         WHERE l.tag_id = ?1 AND f.deleted_at IS NULL AND d.archived_at IS NULL",
+    )
+    .bind(from)
+    .fetch_all(&mut *tx)
+    .await?;
+    let notes: Vec<i64> = sqlx::query_scalar(
+        "SELECT l.note_id FROM note_tags l
+         JOIN notes n ON n.id = l.note_id
+         WHERE l.tag_id = ?1 AND n.deleted_at IS NULL",
+    )
+    .bind(from)
+    .fetch_all(&mut *tx)
+    .await?;
+    if cards.is_empty() && notes.is_empty() {
+        return Err(MergeError::NothingToMerge);
+    }
+
+    for (owner, ids) in [(Owner::Card, &cards), (Owner::Note, &notes)] {
+        for &id in ids {
+            sqlx::query(owner.delete_sql())
+                .bind(id)
+                .bind(from)
+                .execute(&mut *tx)
+                .await?;
+            if !linked_ids(&mut tx, owner, id).await?.contains(&into) {
+                sqlx::query(owner.insert_sql())
+                    .bind(id)
+                    .bind(into)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        }
+    }
+
+    let kept_cards: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM card_tags WHERE tag_id = ?1")
+        .bind(from)
+        .fetch_one(&mut *tx)
+        .await?;
+    let kept_notes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM note_tags WHERE tag_id = ?1")
+        .bind(from)
+        .fetch_one(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(MergedTags {
+        tags: tags(pool).await?,
+        cards: cards.len() as i64,
+        notes: notes.len() as i64,
+        kept_cards,
+        kept_notes,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -942,6 +1063,179 @@ mod tests {
                 .unwrap();
             assert_eq!(rows(&pool, "SELECT COUNT(*) FROM tags").await, 1);
             assert_eq!(tags(&pool).await.unwrap()[0].name, "bio");
+        });
+    }
+
+    #[test]
+    fn merging_moves_every_active_link_and_leaves_frozen_ones() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let deck_id = deck(&pool, "Bio").await;
+            let only_old = card(&pool, deck_id, "only old").await;
+            let both = card(&pool, deck_id, "both").await;
+            let full = card(&pool, deck_id, "full").await;
+            let deleted = card(&pool, deck_id, "deleted").await;
+            authoring::set_card_tags(&pool, only_old, &names(&["biology", "bio::cells"]), at(NOW))
+                .await
+                .unwrap();
+            authoring::set_card_tags(&pool, both, &names(&["biology", "Bio"]), at(NOW))
+                .await
+                .unwrap();
+            // At the limit with both tags: merging must not push it over.
+            let mut many: Vec<String> = (0..TAGS_MAX - 2).map(|n| format!("t{n}")).collect();
+            many.extend(names(&["biology", "bio"]));
+            authoring::set_card_tags(&pool, full, &many, at(NOW))
+                .await
+                .unwrap();
+            authoring::set_card_tags(&pool, deleted, &names(&["biology"]), at(NOW))
+                .await
+                .unwrap();
+            authoring::delete_flashcard(&pool, deleted, at(NOW))
+                .await
+                .unwrap();
+
+            let archived_deck = deck(&pool, "Old").await;
+            let archived = card(&pool, archived_deck, "archived").await;
+            authoring::set_card_tags(&pool, archived, &names(&["biology"]), at(NOW))
+                .await
+                .unwrap();
+            authoring::archive_deck(&pool, archived_deck, at(NOW))
+                .await
+                .unwrap();
+
+            let note = notes::create_note_tagged(
+                &pool,
+                "N",
+                "B",
+                &[],
+                Some(&names(&["biology"])),
+                at(NOW),
+            )
+            .await
+            .unwrap();
+            let gone = notes::create_note_tagged(
+                &pool,
+                "G",
+                "B",
+                &[],
+                Some(&names(&["biology"])),
+                at(NOW),
+            )
+            .await
+            .unwrap();
+            notes::delete_note(&pool, gone.id, at(NOW)).await.unwrap();
+
+            let id_of = |listed: &[TagSummary], name: &str| {
+                listed.iter().find(|t| t.name == name).unwrap().id
+            };
+            let listed = tags(&pool).await.unwrap();
+            let (biology, bio) = (id_of(&listed, "biology"), id_of(&listed, "Bio"));
+            let edited_before: Vec<String> =
+                sqlx::query_scalar("SELECT updated_at FROM flashcards ORDER BY id")
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+
+            let merged = merge_tags(&pool, biology, bio).await.unwrap();
+            assert_eq!((merged.cards, merged.notes), (3, 1));
+            assert_eq!((merged.kept_cards, merged.kept_notes), (2, 1));
+            assert_eq!(
+                merged
+                    .tags
+                    .iter()
+                    .map(|t| (t.name.as_str(), t.cards, t.notes))
+                    .collect::<Vec<_>>()[..2],
+                [("Bio", 3, 1), ("bio::cells", 1, 0)]
+            );
+            assert!(!merged.tags.iter().any(|t| t.id == biology));
+
+            let mut conn = pool.acquire().await.unwrap();
+            assert_eq!(
+                card_tags(&mut conn, only_old).await.unwrap(),
+                names(&["Bio", "bio::cells"])
+            );
+            assert_eq!(card_tags(&mut conn, both).await.unwrap(), names(&["Bio"]));
+            assert_eq!(
+                card_tags(&mut conn, full).await.unwrap().len(),
+                TAGS_MAX - 1
+            );
+            assert_eq!(
+                note_tags(&mut conn, note.id).await.unwrap(),
+                names(&["Bio"])
+            );
+            // Frozen links stay on the old tag.
+            assert_eq!(
+                card_tags(&mut conn, deleted).await.unwrap(),
+                names(&["biology"])
+            );
+            assert_eq!(
+                card_tags(&mut conn, archived).await.unwrap(),
+                names(&["biology"])
+            );
+            assert_eq!(
+                note_tags(&mut conn, gone.id).await.unwrap(),
+                names(&["biology"])
+            );
+            drop(conn);
+            let edited_after: Vec<String> =
+                sqlx::query_scalar("SELECT updated_at FROM flashcards ORDER BY id")
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(edited_before, edited_after);
+            assert_eq!(
+                notes::note(&pool, note.id).await.unwrap().updated_at,
+                note.updated_at
+            );
+
+            // Restoring a card brings the old tag back into the list.
+            authoring::restore_flashcard(&pool, deleted, at(LATER))
+                .await
+                .unwrap();
+            let listed = tags(&pool).await.unwrap();
+            assert_eq!(listed.iter().find(|t| t.id == biology).unwrap().cards, 1);
+        });
+    }
+
+    #[test]
+    fn merging_refuses_the_same_tag_a_missing_one_or_nothing_to_move() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let deck_id = deck(&pool, "Bio").await;
+            let one = card(&pool, deck_id, "one").await;
+            let two = card(&pool, deck_id, "two").await;
+            authoring::set_card_tags(&pool, one, &names(&["a"]), at(NOW))
+                .await
+                .unwrap();
+            authoring::set_card_tags(&pool, two, &names(&["b"]), at(NOW))
+                .await
+                .unwrap();
+            let listed = tags(&pool).await.unwrap();
+            let (a, b) = (listed[0].id, listed[1].id);
+
+            assert!(matches!(
+                merge_tags(&pool, a, a).await,
+                Err(MergeError::SameTag)
+            ));
+            assert!(matches!(
+                merge_tags(&pool, a, 999).await,
+                Err(MergeError::NotFound)
+            ));
+            assert!(matches!(
+                merge_tags(&pool, 999, b).await,
+                Err(MergeError::NotFound)
+            ));
+            // Only a deleted card has `a`: nothing active to move, so stale.
+            authoring::delete_flashcard(&pool, one, at(NOW))
+                .await
+                .unwrap();
+            assert!(matches!(
+                merge_tags(&pool, a, b).await,
+                Err(MergeError::NothingToMerge)
+            ));
+            let mut conn = pool.acquire().await.unwrap();
+            assert_eq!(card_tags(&mut conn, one).await.unwrap(), names(&["a"]));
+            assert_eq!(card_tags(&mut conn, two).await.unwrap(), names(&["b"]));
         });
     }
 }
