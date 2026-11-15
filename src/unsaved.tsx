@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useId, useRef, useState } from "react";
+import { useT } from "./i18n";
 import { AlertIcon } from "./icons";
 
 /** Tells the app whether the form with this id has changes that haven't been saved. */
@@ -44,14 +45,14 @@ export function useUnsavedChanges(unsaved: boolean) {
 /** What the question says, by why it was asked. */
 const WORDING = {
   navigate: {
-    title: "Leave without saving?",
-    text: "What you've typed in this form hasn't been saved. If you leave now, it will be lost.",
+    title: "common.leaveUnsaved",
+    text: "common.leaveUnsavedText",
   },
   close: {
-    title: "Close Synapse without saving?",
-    text: "What you've typed in this form hasn't been saved. If you close Synapse now, it will be lost.",
+    title: "common.closeUnsaved",
+    text: "common.closeUnsavedText",
   },
-};
+} as const;
 
 /**
  * Asked before unsaved changes are thrown away, when the user picks a place in
@@ -71,6 +72,7 @@ export function DiscardDialog({
   onDiscard: () => void;
   onKeep: () => void;
 }) {
+  const { t } = useT();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const wording = WORDING[leaving ?? "navigate"];
 
@@ -104,11 +106,11 @@ export function DiscardDialog({
           <AlertIcon />
         </span>
         <h2 id="discard-title" className="form-title">
-          {wording.title}
+          {t(wording.title)}
         </h2>
       </div>
       <p id="discard-text" className="dialog-text">
-        {wording.text}
+        {t(wording.text)}
       </p>
       <div className="form-actions">
         <button
@@ -116,14 +118,14 @@ export function DiscardDialog({
           className="button button-danger-soft"
           onClick={() => dialogRef.current?.close("discard")}
         >
-          Discard changes
+          {t("common.discardChanges")}
         </button>
         <button
           type="button"
           className="button"
           onClick={() => dialogRef.current?.close("keep")}
         >
-          Keep editing
+          {t("common.keepEditing")}
         </button>
       </div>
     </dialog>
