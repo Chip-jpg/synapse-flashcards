@@ -313,6 +313,7 @@ describe("explaining it", () => {
       {
         deckId: 1,
         cards: [{ front: "Why are the daughter cells identical?", back: MISSED_POINT }],
+        sourceNoteId: 5,
       },
     ]);
     // Done: the form is gone.

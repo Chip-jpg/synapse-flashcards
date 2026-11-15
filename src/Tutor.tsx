@@ -1011,6 +1011,7 @@ function Practice({
           )}
           {graded.missed.length > 0 && added === null && (
             <AddMisses
+              noteId={note.id}
               question={question.question}
               missed={graded.missed}
               onAdded={(deck, count) => setAdded({ deck, count })}
@@ -1195,10 +1196,12 @@ function GradeDetails({ graded, question }: { graded: Graded; question: OpenQues
  * back) for a chosen deck, all at once through `createFlashcards`.
  */
 function AddMisses({
+  noteId,
   question,
   missed,
   onAdded,
 }: {
+  noteId: number;
   question: string;
   missed: MissedPoint[];
   onAdded: (deckName: string, count: number) => void;
@@ -1244,7 +1247,8 @@ function AddMisses({
       try {
         const deck = await createFlashcards(
           Number(deckId),
-          sent.map((each) => ({ front: question, back: each.point }))
+          sent.map((each) => ({ front: question, back: each.point })),
+          noteId
         );
         return { deck, count: sent.length };
       } catch (err) {

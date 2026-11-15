@@ -566,6 +566,50 @@ mod tests {
     }
 
     #[test]
+    fn an_export_keeps_card_source_note_links() {
+        tauri::async_runtime::block_on(async {
+            let dir = scratch("export-source-note");
+            let pool = populated(&dir).await;
+            let note = crate::notes::create_note(&pool, "Source", "Some text", at(NOW))
+                .await
+                .unwrap();
+            let linked_card: i64 = sqlx::query_scalar(
+                "UPDATE flashcards SET source_note_id = ?1 WHERE id = (
+                    SELECT f.id FROM flashcards f JOIN decks d ON d.id = f.deck_id
+                    WHERE d.is_sample = 0 AND d.archived_at IS NULL AND f.deleted_at IS NULL
+                    ORDER BY f.id LIMIT 1
+                ) RETURNING id",
+            )
+            .bind(note.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let archive = dir.join("backup.zip");
+            write_package(
+                &pool,
+                &store_of(&pool).await,
+                &archive,
+                at(NOW),
+                APP_VERSION,
+            )
+            .await
+            .unwrap();
+            let restored = exported_database(&archive, &dir.join("restored.sqlite")).await;
+            let link: Option<i64> =
+                sqlx::query_scalar("SELECT source_note_id FROM flashcards WHERE id = ?1")
+                    .bind(linked_card)
+                    .fetch_one(&restored)
+                    .await
+                    .unwrap();
+            assert_eq!(link, Some(note.id));
+
+            restored.close().await;
+            pool.close().await;
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    #[test]
     fn an_export_keeps_active_history_deleted_cards_and_archived_decks() {
         tauri::async_runtime::block_on(async {
             let dir = scratch("export-payload");

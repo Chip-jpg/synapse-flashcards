@@ -89,7 +89,7 @@ describe("suggesting cards from a note", () => {
     ).toBe(document.activeElement);
     expect(screen.getByRole("button", { name: "Open Biology" })).toBeTruthy();
     expect(argsOf("create_flashcards")).toEqual([
-      { deckId: 1, cards: [text({ ...PHASES, front: "Name the four phases of mitosis." }), text(RESULT)] },
+      { deckId: 1, sourceNoteId: 5, cards: [text({ ...PHASES, front: "Name the four phases of mitosis." }), text(RESULT)] },
     ]);
   });
 

@@ -400,6 +400,7 @@ function Quizzer({
         >
           <Summary
             key={round}
+            noteId={note.id}
             questions={stage.questions}
             picked={stage.picked}
             onSaved={onSaved}
@@ -741,12 +742,14 @@ function TakeQuestion({
  * to a chosen deck, all at once through `createFlashcards`.
  */
 function Summary({
+  noteId,
   questions,
   picked,
   onSaved,
   onAgain,
   onDone,
 }: {
+  noteId: number;
   questions: AskedQuestion[];
   picked: number[];
   onSaved: (deck: DeckDetail, count: number) => void;
@@ -766,7 +769,7 @@ function Summary({
           ? `You got all ${questionCount(questions.length)} right.`
           : `You got ${right} of ${questionCount(questions.length)} right.`}
       </p>
-      {missed.length > 0 && <AddMissed missed={missed} onSaved={onSaved} />}
+      {missed.length > 0 && <AddMissed noteId={noteId} missed={missed} onSaved={onSaved} />}
       <div className="form-actions">
         <button type="button" className="button" onClick={onAgain}>
           New quiz
@@ -782,9 +785,11 @@ function Summary({
 type Missed = { question: AskedQuestion; index: number; chosen: number };
 
 function AddMissed({
+  noteId,
   missed,
   onSaved,
 }: {
+  noteId: number;
   missed: Missed[];
   onSaved: (deck: DeckDetail, count: number) => void;
 }) {
@@ -829,7 +834,8 @@ function AddMissed({
       try {
         const deck = await createFlashcards(
           Number(deckId),
-          sent.map(({ question }) => ({ front: question.question, back: question.answer }))
+          sent.map(({ question }) => ({ front: question.question, back: question.answer })),
+          noteId
         );
         return { deck, count: sent.length };
       } catch (err) {

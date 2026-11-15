@@ -233,3 +233,27 @@ describe("a review session", () => {
     expect(session.onExit).toHaveBeenCalledOnce();
   });
 });
+
+it.each([null, 42])("offers source-note navigation only after reveal (source %s)", async (sourceNoteId) => {
+  fakeBackend({
+    get_session_card: () => ({
+      status: "due",
+      card: CARDS[0],
+      progress: { reviewed: 0, remaining: 1 },
+      sourceNoteId,
+    }),
+  });
+  const onOpenNote = vi.fn();
+  render(<ReviewSession sessionId={7} deckName="Biology" onExit={vi.fn()} onOpenNote={onOpenNote} />);
+  const user = userEvent.setup();
+  await screen.findByText(CARDS[0].front);
+  expect(screen.queryByRole("button", { name: "Show in note" })).toBeNull();
+  await user.keyboard("[Space]");
+  await screen.findByText(CARDS[0].back);
+  if (sourceNoteId === null) {
+    expect(screen.queryByRole("button", { name: "Show in note" })).toBeNull();
+  } else {
+    await user.click(screen.getByRole("button", { name: "Show in note" }));
+    expect(onOpenNote).toHaveBeenCalledWith(sourceNoteId);
+  }
+});

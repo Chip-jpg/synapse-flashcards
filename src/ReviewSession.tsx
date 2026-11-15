@@ -24,6 +24,7 @@ type SessionState =
   | {
       status: "due";
       card: Flashcard;
+      sourceNoteId: number | null;
       progress: SessionProgress;
       againStreak: number;
       offerHelp: boolean;
@@ -89,11 +90,13 @@ export function ReviewSession({
   deckName,
   tag,
   onExit,
+  onOpenNote,
 }: (
   | { sessionId: number; deckName: string; tag?: undefined }
   | { tag: ReviewedTag; sessionId?: undefined; deckName?: undefined }
 ) & {
   onExit: () => void;
+  onOpenNote?: (noteId: number) => void;
 }) {
   const { t, plural } = useT();
   const [state, setState] = useState<SessionState>({ status: "loading" });
@@ -165,6 +168,8 @@ export function ReviewSession({
             key={`${state.card.id}:${state.card.reps}`}
             submit={submit}
             card={state.card}
+            sourceNoteId={state.sourceNoteId ?? null}
+            onOpenNote={onOpenNote}
             againStreak={state.againStreak ?? 0}
             offerHelp={state.offerHelp === true}
             cloze={state.cloze ?? null}
@@ -230,6 +235,8 @@ function Progress({ progress }: { progress: SessionProgress }) {
 }
 
 function Card({
+  sourceNoteId,
+  onOpenNote,
   submit,
   card,
   againStreak,
@@ -242,6 +249,8 @@ function Card({
   /** Saves a rating, in the deck's session or the tag's review. */
   submit: (card: Flashcard, rating: Rating) => Promise<void>;
   card: Flashcard;
+  sourceNoteId: number | null;
+  onOpenNote?: (noteId: number) => void;
   againStreak: number;
   offerHelp: boolean;
   /** A cloze card as pieces of its text, or null for a front/back card. */
@@ -392,6 +401,12 @@ function Card({
           </section>
         )}
       </div>
+
+      {revealed && sourceNoteId != null && onOpenNote && (
+        <button type="button" className="button" onClick={() => onOpenNote(sourceNoteId)}>
+          {t("review.showInNote")}
+        </button>
+      )}
 
       {revealed ? (
         <div className="rating" role="group" aria-labelledby="rating-prompt" aria-busy={saving}>

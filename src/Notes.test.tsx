@@ -385,6 +385,12 @@ describe("writing a card from a note", () => {
     expect(await screen.findByText("Choose a deck for this card.")).toBeTruthy();
     expect(document.activeElement).toBe(deck);
     expect(notes.argsOf("create_flashcard")).toEqual([]);
+
+    await user.selectOptions(deck, "Biology");
+    await user.click(screen.getByRole("button", { name: "Save card" }));
+    await waitFor(() => expect(notes.argsOf("create_flashcard")).toEqual([
+      { deckId: 1, front: "Name the phases.", back: "Prophase to telophase.", sourceNoteId: 5 },
+    ]));
   });
 
   it("shows a refusal about the deck under the deck list, and refreshes the choices", async () => {
@@ -412,7 +418,7 @@ describe("writing a card from a note", () => {
     // What was written is kept.
     expect((screen.getByLabelText("Front") as HTMLTextAreaElement).value).toBe("Name the phases.");
     expect(notes.argsOf("create_flashcard")).toEqual([
-      { deckId: 1, front: "Name the phases.", back: "Prophase to telophase." },
+      { deckId: 1, front: "Name the phases.", back: "Prophase to telophase.", sourceNoteId: 5 },
     ]);
   });
 });
