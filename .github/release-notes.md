@@ -1,52 +1,51 @@
-The big feature in this release is **tags**: short labels you give cards and notes so you can find them again across decks, filter them, and review them together. They work like Anki's tags, and tags in Anki packages now come in with the cards. **This release has a migration, so backups made with 0.10.0 can't be opened by 0.9.1 or older** (see *Backups* below).
+This release brings Synapse into **Italian**, adds an **exam planner**, **lesson import** and a second round of the **local AI tutor**, lets you **search inside your sources**, and makes cards **remember the note they came from**. **It has two migrations (0021 and 0022), so backups made with 0.11.0 can't be opened by 0.10.0 or older** (see *Backups* below).
 
 ## What's new
 
-**What a tag is.**
+**Italiano / English.**
 
-- A tag is one word: `biology`, `exam-june`. Spaces and commas aren't allowed, because typing a space or a comma ends a tag. Use `-` to join words, or `::` for a tag inside another, like `bio::cells`.
-- Upper and lower case don't matter: `Bio` and `bio` are the same tag, shown the way it was first written.
-- A tag can be up to 60 characters long, and a card or note can have up to 20 tags.
-- Every kind of card takes tags: front/back, cloze and picture cards. The sample deck doesn't.
-- Deleting or archiving something keeps its tags, and they come back when you restore it.
+- A new *Language / Lingua* setting switches the app between Italian and English. On first run Synapse follows your system language and remembers your choice.
+- Translated in this release: the sidebar, Study Desk, reviews, Settings and desired retention, deck screen, search, statistics, exam planner, archived decks, backup and restore, CSV and Anki import/export, bulk card actions, picture cards (image occlusion) and the "unsaved changes" dialogs. Notes, sources, tags, quizzes and the tutor are still in English and will follow in the next release.
+- Text recognition now gives common Italian words their accents back (*perché*, *città*, *più*, *così*, *università*…). The built-in reader still can't tell *e* from *è*. For every accent, use *Read with* a local vision model as before.
 
-**Tags on cards.**
+**Exam planner (verifiche e interrogazioni).** Give a deck or a tag an exam date. Synapse sets a daily goal so everything is seen before the date, shows a readiness score from FSRS's predicted recall, and adds a study streak and a calendar.
 
-- Every card form has a *Tags* field. Type a word and press space, comma or Enter to add it as a chip, and press Backspace to remove one. While you type, tags you already use are offered as buttons.
-- On a cloze or picture card, the tags go on every card made from that text or picture.
-- The deck's card list shows each card's tags, deleted cards included.
-- *Show cards tagged* filters the deck to one tag. `bio` also matches `bio::cells`.
-- With cards ticked, *Tag selected* adds tags to all of them or removes a tag from all of them in one step. The cards' text and schedules don't change.
+**Lessons in.** Import a lesson transcript (SRT, VTT, TXT or Markdown, e.g. from Dropscript) as a note with timestamps, or a saved web page as a note.
 
-**Tags on notes, and in search.**
+**AI tutor, round two (local Ollama only).** Note summaries, open-answer questions graded against your note, and an optional Socratic mode that asks follow-up questions. Nothing leaves your computer.
 
-- Notes get the same *Tags* field, including notes saved from a source. Tags show in the note, in the library and when reading a deleted note.
-- The library can be filtered by tag.
-- *Search* has a tag chooser. You can also type `#bio` in the search box: it lists everything tagged `bio` (and `bio::…`), or narrows your other search words to it.
-- A new *Tags* screen in the sidebar lists every tag with how many cards and notes have it. *Rename* changes a tag everywhere at once; renaming onto a name another tag already has is refused, so two tags are never merged by accident. *Find* opens that tag in *Search*.
+**Search inside Sources.** Search titles, file names, page text and recognised text, see snippets, and open the page with your words highlighted.
 
-**Reviewing a tag across decks.**
+**Merge tags.** On the *Tags* screen, *Merge into…* moves one tag's cards and notes onto another in one safe step. Deleted or archived items keep the old tag.
 
-- A *Review by tag* section on the Study Desk lists tags that have due cards, and reviews those cards from every active deck in one go. Each card shows which deck it is from.
-- Ratings are saved and scheduled exactly as in a normal review. Your decks' own review sessions are left alone.
+**Cards remember their note.** Cards made from a note's suggestions, a quiz, the tutor or inside the note itself keep a link to it. After the answer is shown, *Show in note* opens it, and *Back to review* returns. Deleting the note hides the link, and restoring the note brings it back.
 
-**Tags in and out.**
+**Text in pictures, everywhere.** *Text in picture* (copy only) on deleted notes and on question/answer pictures during review. A note can also be made by pasting a photo.
 
-- *Decks from Anki* now brings each note's tags onto every card the note adds, including reversed, cloze and picture cards. Tags Synapse can't take (too long, or more than 20 on one card) are counted in the preview.
-- A CSV or TSV file of cards can have a third column of tags, separated by spaces, when its header row names it *Tags*. Exporting a deck adds that column when any of its cards has a tag. Files with two columns work exactly as before.
+**Look and feel.**
+
+- *Theme*: System, Light or Dark. The dark theme covers every screen.
+- The window now opens at 1200×800, centred (it was 800×600).
+- **Ctrl+K** (Cmd+K on macOS) opens a command palette. Jump to any screen, open a deck, or start reviewing a deck that has cards due. Typing ignores accents and capitals.
+
+**Security.** The app window now has a strict Content Security Policy: no inline or remote scripts, and network access only to Synapse's own backend.
 
 ## Backups
 
-**There is one migration (0020), adding the tag tables.** Backups made with 0.10.0 can't be restored into 0.9.1 or older, which say the backup is from a newer version. Backups from 0.9.1 and older still restore into 0.10.0, with no tags. The backup format itself hasn't changed: tags are inside the database the backup already carries.
+**There are two migrations: 0021 (exam dates) and 0022 (each card's source note).** Backups made with 0.11.0 can't be restored into 0.10.0 or older, which will say the backup is from a newer version. Backups from 0.10.0 and older still restore into 0.11.0; their cards just have no source note. The backup format itself hasn't changed.
+
+## Pull requests in this release
+
+#58, #59, #60, #65, #66, #70 (#67 exam planner, #68 lesson import, #69 AI tutor), #71, #72, #73, #74, #75, #76, #77, #78, #79, #80, #81.
 
 ## Not tried yet
 
-- Everything was checked by automated tests: 361 for the screens, plus 421 for the Rust side and 11 that run the real helper processes. Each part was also tried in the real app on Linux with a scratch database.
-- Nothing has been tried on Windows yet.
+- Everything was checked by automated tests: 443 for the screens plus the full Rust suite, on GitHub's Windows machines for every pull request.
+- The Italian text was reviewed as written but hasn't been tried in the real app on Windows yet. Please report anything that reads oddly.
 
 Windows x64 installers:
 
-- Synapse_0.10.0_x64_en-US.msi
-- Synapse_0.10.0_x64-setup.exe
+- Synapse_0.11.0_x64_en-US.msi
+- Synapse_0.11.0_x64-setup.exe
 
 The installers are unsigned, so Windows SmartScreen may warn on first run. They were built on GitHub's Windows machines by the Release workflow, after its tests passed.
