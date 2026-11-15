@@ -235,7 +235,7 @@ export function RecognisedLabel({ recognised }: { recognised: RecognisedText }) 
     <p className="import-warning recognised-label">
       <strong>Recognised text, check for mistakes.</strong>{" "}
       {`This page has no text of its own, so ${readBy(recognised)} read it from the page's picture on ${formatDateTime(recognised.createdAt)}.`}
-      {recognised.engine === "ocrs" && " It doesn't read accents: è comes out as e."}
+      {recognised.engine === "ocrs" && " It may miss some accents: è comes out as e."}
     </p>
   );
 }
@@ -245,5 +245,5 @@ export function scannedHint(count: number): string {
   const one = count === 1;
   return `${counted(count, "page")} of this PDF ${one ? "has" : "have"} no text Synapse could read: ${
     one ? "it may be a scan" : "they may be scans"
-  }. Synapse can read the text in ${one ? "its picture" : "their pictures"}, on this computer. Recognised text can hold mistakes, and the built-in reader doesn't read accents (è comes out as e), so check it.`;
+  }. Synapse can read the text in ${one ? "its picture" : "their pictures"}, on this computer. Recognised text can hold mistakes, and the built-in reader may miss some accents (è comes out as e), so check it.`;
 }

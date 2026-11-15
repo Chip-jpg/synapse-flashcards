@@ -350,9 +350,9 @@ process (Synapse started with `--recognise-text`), can be stopped, and saves eac
 read. What was read is kept in `recognitions`, beside the file, never in place of what extraction
 read: a source's page still holds its extracted text (empty for a scan), and offers the
 recognised text next to it, which is used to find quotes on that page. Rows are never changed;
-reading again adds a newer one. The engine reads the Latin alphabet without accents (Italian "è"
-comes out as "e") and reads handwriting poorly, so recognised text is always shown as such, for you
-to check.
+reading again adds a newer one. The built-in engine restores accents in common unambiguous
+Italian words, but may miss some accents (Italian "è" still comes out as "e") and reads handwriting
+poorly, so recognised text is always shown as such, for you to check.
 
 **Text in pictures.** Each picture in a note (a deleted one too, read under *Deleted notes*), in
 the note and card forms, and on a card in review once its answer is shown, offers *Text in
