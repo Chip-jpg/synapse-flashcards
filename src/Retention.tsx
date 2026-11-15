@@ -7,6 +7,7 @@ import {
   type RetentionPreview,
   type RetentionSettings,
 } from "./api";
+import { translate, useT } from "./i18n";
 import { ChartIcon } from "./icons";
 import { useFocusOnMount } from "./ui";
 
@@ -30,6 +31,7 @@ async function loadRetention(): Promise<LoadState> {
  * with FSRS's simulator, and keeps every change; this only presents them.
  */
 export function Retention() {
+  const { t } = useT();
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
   // `key` changes every time, so the panel remounts fresh and its notice takes focus.
@@ -61,13 +63,13 @@ export function Retention() {
           <ChartIcon />
         </span>
         <h3 id="retention-heading" className="section-title">
-          Desired retention
+          {t("retention.title")}
         </h3>
       </div>
 
       {state.status === "loading" && (
         <p className="loading" role="status">
-          Loading the desired retention…
+          {t("retention.loading")}
         </p>
       )}
 
@@ -78,7 +80,7 @@ export function Retention() {
           </p>
           <div className="form-actions">
             <button type="button" className="button" onClick={() => reload(null)}>
-              Retry
+              {t("retention.retry")}
             </button>
           </div>
         </>
@@ -122,6 +124,7 @@ function RetentionPanel({
   onChanged: (next: RetentionSettings, notice: string) => void;
   onStale: (message: string) => void;
 }) {
+  const { t, plural } = useT();
   const noticeRef = useFocusOnMount<HTMLParagraphElement>(notice !== null);
   const [editing, setEditing] = useState<Editing | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -149,7 +152,7 @@ function RetentionPanel({
 
   function label(target: Target, value: number | null): string {
     if (value !== null) return `${value}%`;
-    return target.deckId === null ? `${settings.global}%` : `${settings.global}%, all decks`;
+    return target.deckId === null ? `${settings.global}%` : t("retention.allDecksValue", { value: settings.global });
   }
 
   function open(target: Target) {
@@ -201,13 +204,13 @@ function RetentionPanel({
       });
       const what =
         current.target.deckId === null
-          ? `Decks without a value of their own now aim for ${current.choice}%.`
+          ? t("retention.changedAll", { value: current.choice ?? "" })
           : current.choice === null
-            ? `${current.target.name} now follows the value for all decks.`
-            : `${current.target.name} now aims for ${current.choice}%.`;
+            ? t("retention.changedFollow", { name: current.target.name })
+            : t("retention.changedValue", { name: current.target.name, value: current.choice });
       onChanged(
         next,
-        `${what} Each card is scheduled with it from its next rating; due dates already set stay.`
+        what + t("retention.changedSuffix")
       );
       return;
     } catch (err) {
@@ -223,11 +226,11 @@ function RetentionPanel({
   }
 
   const targets: (Target & { value: string })[] = [
-    { deckId: null, name: "All decks", value: `${settings.global}%` },
+    { deckId: null, name: t("retention.allDecks"), value: `${settings.global}%` },
     ...settings.decks.map((deck) => ({
       deckId: deck.id,
       name: deck.name,
-      value: deck.percent === null ? `${settings.global}% (all decks)` : `${deck.percent}%`,
+      value: deck.percent === null ? t("retention.inheritedValue", { value: settings.global }) : `${deck.percent}%`,
     })),
   ];
 
@@ -245,19 +248,16 @@ function RetentionPanel({
       )}
 
       <p className="settings-text">
-        FSRS schedules each card for when you&apos;d still have this chance of remembering it.
-        Aiming higher means shorter gaps and more reviews; aiming lower means fewer reviews and
-        more forgetting. A change applies to each card from its next rating: due dates already set
-        stay.
+        {t("retention.description")}
       </p>
 
       <table className="compare-table">
-        <caption>Aims for</caption>
+        <caption>{t("retention.aimsFor")}</caption>
         <thead>
           <tr>
-            <th scope="col">Decks</th>
-            <th scope="col">Desired retention</th>
-            <th scope="col" aria-label="Actions" />
+            <th scope="col">{t("retention.decks")}</th>
+            <th scope="col">{t("retention.title")}</th>
+            <th scope="col" aria-label={t("retention.actions")} />
           </tr>
         </thead>
         <tbody>
@@ -272,11 +272,13 @@ function RetentionPanel({
                     id={`retention-change-${key}`}
                     type="button"
                     className="button button-small"
-                    aria-label={`Change ${target.deckId === null ? "for all decks" : target.name}`}
+                    aria-label={t("retention.changeLabel", {
+                      name: target.deckId === null ? t("retention.changeForAll") : target.name,
+                    })}
                     aria-disabled={editing?.busy != null}
                     onClick={() => open(target)}
                   >
-                    Change
+                    {t("retention.change")}
                   </button>
                 </td>
               </tr>
@@ -286,12 +288,9 @@ function RetentionPanel({
       </table>
 
       <p className="field-hint">
-        The sample deck and archived decks follow the value for all decks.
+        {t("retention.followHint")}
         {settings.archivedOwn > 0 &&
-          (settings.archivedOwn === 1
-            ? " One archived deck keeps a value of its own for when it's unarchived."
-            : ` ${settings.archivedOwn} archived decks keep a value of their own for when ` +
-              "they're unarchived.")}
+          " " + plural(settings.archivedOwn, "retention.archivedOne", "retention.archivedOther")}
       </p>
 
       {editing && (
@@ -299,8 +298,8 @@ function RetentionPanel({
           <div className="field retention-choice">
             <label className="field-label" htmlFor="retention-choice">
               {editing.target.deckId === null
-                ? "Desired retention for all decks"
-                : `Desired retention for ${editing.target.name}`}
+                ? t("retention.forAll")
+                : t("retention.forDeck", { name: editing.target.name })}
             </label>
             <select
               ref={selectRef}
@@ -318,12 +317,12 @@ function RetentionPanel({
               }}
             >
               {editing.target.deckId !== null && (
-                <option value="">Follow all decks ({settings.global}%)</option>
+                <option value="">{t("retention.followAll", { value: settings.global })}</option>
               )}
               {options.map((percent) => (
                 <option key={percent} value={percent}>
                   {percent === settings.default
-                    ? `${percent}% (FSRS's recommendation)`
+                    ? t("retention.recommendation", { value: percent })
                     : `${percent}%`}
                 </option>
               ))}
@@ -341,7 +340,7 @@ function RetentionPanel({
                   }
                   onClick={() => estimate(editing)}
                 >
-                  Estimate reviews
+                  {t("retention.estimateReviews")}
                 </button>
                 <button
                   type="button"
@@ -349,14 +348,14 @@ function RetentionPanel({
                   aria-disabled={editing.busy !== null}
                   onClick={close}
                 >
-                  Cancel
+                  {t("retention.cancel")}
                 </button>
               </div>
               <p className="form-status" role="status">
                 {editing.busy === "estimating"
-                  ? "Estimating your reviews…"
+                  ? t("retention.estimating")
                   : editing.choice === inUse(editing.target)
-                    ? "That's the value in use. Choose another to see what it would change."
+                    ? t("retention.sameValue")
                     : ""}
               </p>
             </>
@@ -370,10 +369,10 @@ function RetentionPanel({
               chosenLabel={label(editing.target, editing.choice)}
               question={
                 editing.target.deckId === null
-                  ? `Aim for ${editing.choice}% in every deck without a value of its own?`
+                  ? t("retention.aimAllQuestion", { value: editing.choice ?? "" })
                   : editing.choice === null
-                    ? `Have ${editing.target.name} follow the value for all decks (${settings.global}%)?`
-                    : `Aim for ${editing.choice}% in ${editing.target.name}?`
+                    ? t("retention.followQuestion", { name: editing.target.name, value: settings.global })
+                    : t("retention.aimQuestion", { name: editing.target.name, value: editing.choice })
               }
               applying={editing.busy === "applying"}
               onApply={() => apply(editing)}
@@ -412,49 +411,46 @@ function Estimate({
   onApply: () => void;
   onCancel: () => void;
 }) {
+  const { t, plural } = useT();
   return (
     <>
       <h4 ref={headingRef} className="item-title" tabIndex={-1}>
-        Estimated reviews
+        {t("retention.estimated")}
       </h4>
       {preview.cards === 0 ? (
         <p className="settings-text">
-          You have no cards to study yet, so there&apos;s nothing to estimate.
+          {t("retention.noCards")}
         </p>
       ) : (
         <>
           <table className="compare-table">
-            <caption>Over the next {preview.days} days</caption>
+            <caption>{plural(preview.days, "retention.nextDayOne", "retention.nextDays")}</caption>
             <thead>
               <tr>
-                <th scope="col">Estimate</th>
-                <th scope="col">In use ({currentLabel})</th>
-                <th scope="col">Chosen ({chosenLabel})</th>
+                <th scope="col">{t("retention.estimate")}</th>
+                <th scope="col">{t("retention.inUse", { value: currentLabel })}</th>
+                <th scope="col">{t("retention.chosen", { value: chosenLabel })}</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <th scope="row">Reviews a day, on average</th>
+                <th scope="row">{t("retention.reviewsPerDay")}</th>
                 <td>{formatReviews(preview.current.reviewsPerDay)}</td>
                 <td>{formatReviews(preview.proposed.reviewsPerDay)}</td>
               </tr>
               <tr>
-                <th scope="row">Cards you&apos;d remember on day {preview.days}</th>
-                <td>{formatRemembered(preview.current.remembered, preview.cards)}</td>
-                <td>{formatRemembered(preview.proposed.remembered, preview.cards)}</td>
+                <th scope="row">{t("retention.rememberedDay", { count: preview.days })}</th>
+                <td>{formatRemembered(preview.current.remembered, preview.cards, t)}</td>
+                <td>{formatRemembered(preview.proposed.remembered, preview.cards, t)}</td>
               </tr>
             </tbody>
           </table>
           <p className="field-hint">
-            An estimate, not a promise. Synapse simulated your{" "}
-            {preview.cards.toLocaleString()} {preview.cards === 1 ? "card" : "cards"} with the
-            scheduling parameters in use and{" "}
-            {preview.ownRatings
-              ? "how often you choose each rating"
-              : "FSRS's average mix of ratings, since you have few reviews yet"}
-            , assuming you review everything that&apos;s due each day and add no new cards. It
-            counts first reviews of new cards but not repeats on the same day after Again, and
-            real days vary.
+            {t("retention.estimateCaveat", {
+              count: preview.cards.toLocaleString(),
+              cardWord: plural(preview.cards, "retention.cardOne", "retention.cardOther"),
+              ratings: t(preview.ownRatings ? "retention.ownRatings" : "retention.averageRatings"),
+            })}
           </p>
         </>
       )}
@@ -467,7 +463,7 @@ function Estimate({
             aria-disabled={applying}
             onClick={onApply}
           >
-            Apply
+            {t("retention.apply")}
           </button>
           <button
             type="button"
@@ -475,11 +471,11 @@ function Estimate({
             aria-disabled={applying}
             onClick={onCancel}
           >
-            Cancel
+            {t("retention.cancel")}
           </button>
         </div>
         <p className="form-status" role="status">
-          {applying ? "Applying…" : ""}
+          {applying ? t("retention.applying") : ""}
         </p>
       </div>
     </>
@@ -495,10 +491,15 @@ export function formatReviews(perDay: number): string {
  * Cards remembered out of all of them, with the share, which still shows a
  * difference when the counts round the same: e.g. "131 of 141 (93.0%)".
  */
-export function formatRemembered(remembered: number, cards: number): string {
+export function formatRemembered(
+  remembered: number,
+  cards: number,
+  t: ReturnType<typeof useT>["t"] = (key, params) => translate("en", key, params)
+): string {
   const share = cards > 0 ? (remembered / cards) * 100 : 0;
-  return (
-    `${Math.round(remembered).toLocaleString()} of ${cards.toLocaleString()} ` +
-    `(${share.toFixed(1)}%)`
-  );
+  return t("retention.remembered", {
+    remembered: Math.round(remembered).toLocaleString(),
+    cards: cards.toLocaleString(),
+    percent: share.toFixed(1),
+  });
 }

@@ -16,6 +16,7 @@ import { CardHelp } from "./CardHelp";
 import { PictureGallery } from "./pictures";
 import { OcclusionPicture } from "./Occlusion";
 import { Message, useFocusOnMount } from "./ui";
+import { useT, type MessageKey } from "./i18n";
 
 type SessionState =
   | { status: "loading" }
@@ -40,11 +41,11 @@ export type ReviewedTag = { id: number; name: string };
  * The four answer buttons, with the number key that presses each one and the
  * class that colours it.
  */
-const RATINGS: { value: Rating; label: string; key: string; tone: string }[] = [
-  { value: 1, label: "Again", key: "1", tone: "rating-again" },
-  { value: 2, label: "Hard", key: "2", tone: "rating-hard" },
-  { value: 3, label: "Good", key: "3", tone: "rating-good" },
-  { value: 4, label: "Easy", key: "4", tone: "rating-easy" },
+const RATINGS: { value: Rating; label: MessageKey; key: string; tone: string }[] = [
+  { value: 1, label: "review.again", key: "1", tone: "rating-again" },
+  { value: 2, label: "review.hard", key: "2", tone: "rating-hard" },
+  { value: 3, label: "review.good", key: "3", tone: "rating-good" },
+  { value: 4, label: "review.easy", key: "4", tone: "rating-easy" },
 ];
 
 /**
@@ -94,6 +95,7 @@ export function ReviewSession({
 ) & {
   onExit: () => void;
 }) {
+  const { t, plural } = useT();
   const [state, setState] = useState<SessionState>({ status: "loading" });
   // Bumping this re-runs the load effect (Retry, or after a review).
   const [attempt, setAttempt] = useState(0);
@@ -127,18 +129,18 @@ export function ReviewSession({
       <h2 id="session-heading" className="session-title">
         {tag ? (
           <>
-            <span className="session-kicker">Reviewing tag</span> {tag.name}
+            <span className="session-kicker">{t("review.tagKicker")}</span> {tag.name}
           </>
         ) : (
           <>
-            <span className="session-kicker">Reviewing</span> {deckName}
+            <span className="session-kicker">{t("review.kicker")}</span> {deckName}
           </>
         )}
       </h2>
 
       {state.status === "loading" && (
         <p className="loading" role="status">
-          Loading the next card…
+          {t("review.loading")}
         </p>
       )}
 
@@ -146,10 +148,10 @@ export function ReviewSession({
         <Message focus tone="alert" text={state.message}>
           <div className="actions">
             <button type="button" className="button" onClick={reload}>
-              Retry
+              {t("review.retry")}
             </button>
             <button type="button" className="button" onClick={onExit}>
-              Back to Study Desk
+              {t("review.backDesk")}
             </button>
           </div>
         </Message>
@@ -158,7 +160,7 @@ export function ReviewSession({
       {state.status === "due" && (
         <>
           <Progress progress={state.progress} />
-          {state.deck !== undefined && <p className="session-deck">{`From ${state.deck}`}</p>}
+          {state.deck !== undefined && <p className="session-deck">{t("review.deckSource", { name: state.deck })}</p>}
           <Card
             key={`${state.card.id}:${state.card.reps}`}
             submit={submit}
@@ -183,13 +185,13 @@ export function ReviewSession({
           done
           text={
             <>
-              <strong className="message-title">Session complete.</strong>
-              {` You reviewed ${state.cardsReviewed} ${state.cardsReviewed === 1 ? "card" : "cards"}. ${tag ? "No more cards with this tag are due right now." : "No more cards are due in this deck right now."}`}
+              <strong className="message-title">{t("review.complete")}</strong>
+              {` ${plural(state.cardsReviewed, "review.oneCardDone", "review.manyCardsDone") } ${t(tag ? "review.tagDone" : "review.deckDone")}`}
             </>
           }
         >
           <button type="button" className="button button-primary" onClick={onExit}>
-            Back to Study Desk
+            {t("review.backDesk")}
           </button>
         </Message>
       )}
@@ -208,19 +210,20 @@ export function ReviewSession({
  * announcing it separately.
  */
 function Progress({ progress }: { progress: SessionProgress }) {
+  const { t } = useT();
   const total = progress.reviewed + progress.remaining;
   const position = progress.reviewed + 1;
 
   return (
     <div className="progress">
       <p id="session-progress" className="progress-label">
-        Card {position} of {total}
+        {t("review.cardPosition", { position, total })}
       </p>
       <progress
         className="progress-bar"
         value={progress.reviewed}
         max={total}
-        aria-label={`${progress.reviewed} of ${total} cards reviewed`}
+        aria-label={t("review.cardsReviewed", { reviewed: progress.reviewed, total })}
       />
     </div>
   );
@@ -250,6 +253,7 @@ function Card({
   /** The card is done with: `rated` if this rating was saved, not if it was stale. */
   onReviewed: (rated: boolean) => void;
 }) {
+  const { t } = useT();
   const [revealed, setRevealed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -341,7 +345,7 @@ function Card({
           aria-labelledby="session-progress card-front-label"
         >
           <h3 id="card-front-label" className="side-label">
-            Question
+            {t("review.question")}
           </h3>
           {occlusion ? (
             <OcclusionSide occlusion={occlusion} revealed={false} />
@@ -352,8 +356,8 @@ function Card({
               </p>
               <PictureGallery
                 pictures={pictures?.front}
-                label="Picture with the question"
-                listLabel="Pictures with the question"
+                label={t("review.questionPicture")}
+                listLabel={t("review.questionPictures")}
                 readText={revealed}
               />
             </>
@@ -368,7 +372,7 @@ function Card({
             aria-labelledby="card-back-label"
           >
             <h3 id="card-back-label" className="side-label">
-              Answer
+              {t("review.answer")}
             </h3>
             {occlusion ? (
               <OcclusionSide occlusion={occlusion} revealed />
@@ -379,8 +383,8 @@ function Card({
                 </p>
                 <PictureGallery
                   pictures={pictures?.back}
-                  label="Picture with the answer"
-                  listLabel="Pictures with the answer"
+                  label={t("review.answerPicture")}
+                  listLabel={t("review.answerPictures")}
                   readText
                 />
               </>
@@ -392,7 +396,7 @@ function Card({
       {revealed ? (
         <div className="rating" role="group" aria-labelledby="rating-prompt" aria-busy={saving}>
           <p id="rating-prompt" className="rating-prompt">
-            How well did you remember it?
+            {t("review.prompt")}
           </p>
           <div className="rating-buttons">
             {RATINGS.map(({ value, label, key, tone }) => (
@@ -408,7 +412,7 @@ function Card({
               >
                 <span className="rating-label">
                   <span className="dot" aria-hidden="true" />
-                  {label}
+                  {t(label)}
                 </span>
                 {/* The shortcut is on `aria-keyshortcuts` already, so this
                     copy of it is decorative. */}
@@ -419,15 +423,15 @@ function Card({
             ))}
           </div>
           <p className="rating-status" role="status">
-            {saving ? "Saving…" : ""}
+            {saving ? t("review.saving") : ""}
           </p>
           {saveError && (
             <p className="message-error" role="alert">
-              {saveError} Choose a rating to try again.
+              {saveError} {t("review.saveRetry")}
             </p>
           )}
           <p className="shortcut-hint" aria-hidden="true">
-            Press <span className="kbd">1</span>–<span className="kbd">4</span> to rate
+            {t("review.rateHint", { one: "1", four: "4" })}
           </p>
         </div>
       ) : (
@@ -438,10 +442,10 @@ function Card({
             aria-keyshortcuts="Space Enter"
             onClick={() => setRevealed(true)}
           >
-            Reveal answer
+            {t("review.reveal")}
           </button>
           <p className="shortcut-hint" aria-hidden="true">
-            or press <span className="kbd">Space</span> or <span className="kbd">Enter</span>
+            {t("review.revealHint", { space: "Space", enter: "Enter" })}
           </p>
         </div>
       )}

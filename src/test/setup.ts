@@ -1,6 +1,8 @@
 import { cleanup } from "@testing-library/react";
 import { clearMocks } from "@tauri-apps/api/mocks";
-import { afterEach } from "vitest";
+import { afterEach, beforeEach } from "vitest";
+
+beforeEach(() => { localStorage.setItem("synapse.lang", "en"); });
 
 afterEach(async () => {
   cleanup();
