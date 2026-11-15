@@ -14,6 +14,7 @@ import {
 import { ArrowRightIcon, DeckIcon, NoteIcon } from "./icons";
 import { TagChips } from "./tagInput";
 import { useFocusOnMount } from "./ui";
+import { useT, type MessageKey } from "./i18n";
 
 /** What is being searched for, kept while a result is open so Back returns to it. */
 export type SearchCriteria = {
@@ -50,10 +51,10 @@ type Found =
   | { status: "error"; message: string }
   | { status: "ready"; criteria: SearchCriteria; found: SearchResults };
 
-const SCOPES: { value: SearchScope; label: string }[] = [
-  { value: "all", label: "Cards and notes" },
-  { value: "cards", label: "Cards" },
-  { value: "notes", label: "Notes" },
+const SCOPES: { value: SearchScope; label: MessageKey }[] = [
+  { value: "all", label: "search.scopeAll" },
+  { value: "cards", label: "search.scopeCards" },
+  { value: "notes", label: "search.scopeNotes" },
 ];
 
 /**
@@ -78,9 +79,10 @@ export function SearchScreen({
   onOpenCard: (criteria: SearchCriteria, deckId: number, cardId: number, key: string) => void;
   onOpenNote: (criteria: SearchCriteria, noteId: number, key: string) => void;
 }) {
+  const { t, plural } = useT();
   const [criteria, setCriteria] = useState<SearchCriteria>(initial);
   const [state, setState] = useState<Found>({ status: "idle" });
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<"search.archived" | null>(null);
   // The decks to filter cards by. If they can't be read, every deck is searched.
   const [decks, setDecks] = useState<Deck[]>([]);
   // The tags to filter by. If they can't be read, there's no list (a tag can
@@ -127,7 +129,7 @@ export function SearchScreen({
         if (error.kind === "stale" && criteria.deckId !== null) {
           // The chosen deck was archived since the list was read: search
           // every deck instead, and say why.
-          setNotice("That deck was archived, so every deck is searched now.");
+          setNotice("search.archived");
           setDecks((list) => list.filter((deck) => deck.id !== criteria.deckId));
           setCriteria((previous) => ({ ...previous, deckId: null }));
           return;
@@ -165,15 +167,18 @@ export function SearchScreen({
 
   const trimmed = criteria.query.trim();
   let status = "";
-  if (state.status === "searching") status = "Searching…";
+  if (state.status === "searching") status = t("search.searching");
   else if (state.status === "ready") {
     const count = state.found.results.length;
-    const tagged = criteria.tag === null ? "" : ` tagged ${criteria.tag}`;
     if (count === 0)
-      status = trimmed === "" ? `Nothing is${tagged}.` : `Nothing${tagged} matches “${trimmed}”.`;
+      status = trimmed === ""
+        ? t("search.noTagged", { tag: criteria.tag ?? "" })
+        : criteria.tag === null
+          ? t("search.noMatches", { query: trimmed })
+          : t("search.noTaggedMatches", { tag: criteria.tag, query: trimmed });
     else if (state.found.more)
-      status = `The best ${count} results. Add a word to narrow them down.`;
-    else status = count === 1 ? "1 result." : `${count} results.`;
+      status = plural(count, "search.bestOne", "search.bestOther");
+    else status = plural(count, "search.resultOne", "search.resultOther");
   }
 
   return (
@@ -181,10 +186,10 @@ export function SearchScreen({
       <div className="page-header">
         <div className="page-heading">
           <h2 id="search-heading" className="page-title">
-            Search
+            {t("search.title")}
           </h2>
           <p className="page-intro">
-            Every card in your decks, front and back, and every note, title and text, in one place.
+            {t("search.intro")}
           </p>
         </div>
       </div>
@@ -192,7 +197,7 @@ export function SearchScreen({
       <div className="card search-panel">
         <div className="field">
           <label htmlFor="search-everything" className="field-label">
-            Search for
+            {t("search.query")}
           </label>
           <div className="note-search-row">
             <input
@@ -222,22 +227,19 @@ export function SearchScreen({
                   inputRef.current?.focus();
                 }}
               >
-                Clear
+                {t("search.clear")}
               </button>
             )}
           </div>
           <p id="search-everything-hint" className="field-hint">
-            Finds words that start with what you type, ignoring capitals and accents; every word
-            must match. Type #bio, or choose a tag below, to find only what's tagged bio (or a
-            tag under it, such as bio::cells). Deleted cards and notes, and cards in archived
-            decks, aren't searched.
+            {t("search.hint")}
           </p>
         </div>
 
         <div className="search-filters">
           <div className="field">
             <label className="field-label" htmlFor={scopeId}>
-              Show
+              {t("search.show")}
             </label>
             <select
               id={scopeId}
@@ -247,7 +249,7 @@ export function SearchScreen({
             >
               {SCOPES.map((scope) => (
                 <option key={scope.value} value={scope.value}>
-                  {scope.label}
+                  {t(scope.label)}
                 </option>
               ))}
             </select>
@@ -255,7 +257,7 @@ export function SearchScreen({
           {criteria.scope === "cards" && decks.length > 0 && (
             <div className="field">
               <label className="field-label" htmlFor={deckId}>
-                Deck
+                {t("search.deck")}
               </label>
               <select
                 id={deckId}
@@ -267,7 +269,7 @@ export function SearchScreen({
                   })
                 }
               >
-                <option value="">All decks</option>
+                <option value="">{t("search.allDecks")}</option>
                 {decks.map((deck) => (
                   <option key={deck.id} value={deck.id}>
                     {deck.name}
@@ -279,7 +281,7 @@ export function SearchScreen({
           {(tags.length > 0 || criteria.tag !== null) && (
             <div className="field">
               <label className="field-label" htmlFor={tagId}>
-                Tag
+                {t("search.tag")}
               </label>
               <select
                 id={tagId}
@@ -289,7 +291,7 @@ export function SearchScreen({
                   change({ tag: event.target.value === "" ? null : event.target.value })
                 }
               >
-                <option value="">Any tag</option>
+                <option value="">{t("search.anyTag")}</option>
                 {criteria.tag !== null &&
                   !tags.some((tag) => tag.name === criteria.tag) && (
                     <option value={criteria.tag}>{criteria.tag}</option>
@@ -307,7 +309,7 @@ export function SearchScreen({
 
       {notice && (
         <p className="notice" role="status">
-          {notice}
+          {t(notice)}
         </p>
       )}
       <p className="form-status search-status" role="status">
@@ -320,7 +322,7 @@ export function SearchScreen({
       )}
 
       {state.status === "ready" && state.found.results.length > 0 && (
-        <ol className="card-list search-results" aria-label="Results">
+        <ol className="card-list search-results" aria-label={t("search.results")}>
           {state.found.results.map((hit) => {
             const key = hitKey(hit);
             return (
@@ -353,6 +355,7 @@ function SearchResult({
   focus: boolean;
   onOpen: () => void;
 }) {
+  const { t } = useT();
   const openRef = useFocusOnMount<HTMLButtonElement>(focus);
   const titleId = `search-${hitKey(hit)}-title`;
   const isCard = hit.kind === "card";
@@ -364,7 +367,7 @@ function SearchResult({
           {isCard ? <DeckIcon /> : <NoteIcon />}
         </span>
         <div className="search-hit-text">
-          <p className="item-meta">{isCard ? `Card in ${hit.deckName}` : "Note"}</p>
+          <p className="item-meta">{isCard ? t("search.cardIn", { name: hit.deckName }) : t("search.note")}</p>
           {/* A heading, so screen-reader users can move between results by heading. */}
           <h3 id={titleId} className="note-item-title">
             <Snippet pieces={isCard ? hit.front : hit.title} />
@@ -382,7 +385,7 @@ function SearchResult({
         aria-describedby={titleId}
         onClick={onOpen}
       >
-        {isCard ? "Open in deck" : "Open note"}
+        {isCard ? t("search.openDeck") : t("search.openNote")}
         <ArrowRightIcon />
       </button>
     </article>

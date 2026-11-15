@@ -10,6 +10,7 @@ import {
   type StudyCalendar,
 } from "./api";
 import { Message, useFocusOnMount } from "./ui";
+import { useT } from "./i18n";
 
 type StatsState =
   | { status: "loading" }
@@ -26,12 +27,13 @@ type Query = { deckId: number | null; attempt: number };
  * the sidebar, so it takes focus.
  */
 export function StatisticsScreen() {
+  const { t } = useT();
   // The decks to filter by. If they can't be read, the screen still shows
   // every deck's numbers, just without the filter.
   const [decks, setDecks] = useState<Deck[]>([]);
   const [query, setQuery] = useState<Query>({ deckId: null, attempt: 0 });
   const [state, setState] = useState<StatsState>({ status: "loading" });
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<"stats.archived" | null>(null);
   // The calendar covers every deck and is a side note: without it the rest shows.
   const [calendar, setCalendar] = useState<StudyCalendar | null>(null);
   const screenRef = useFocusOnMount<HTMLElement>(true);
@@ -73,7 +75,7 @@ export function StatisticsScreen() {
         if (error.kind === "stale" && query.deckId !== null) {
           // The chosen deck was archived since the list was read: go back to
           // every deck, with a fresh list, and say why.
-          setNotice("That deck was archived, so these are the numbers for all your decks.");
+          setNotice("stats.archived");
           setQuery((previous) => ({ deckId: null, attempt: previous.attempt + 1 }));
           return;
         }
@@ -101,18 +103,16 @@ export function StatisticsScreen() {
       <div className="page-header">
         <div className="page-heading">
           <h2 id="stats-heading" className="page-title">
-            Statistics
+            {t("stats.title")}
           </h2>
           <p className="page-intro">
-            Counted from your review history and your cards' schedules, by the days on this
-            computer's calendar. Reviews of cards you've since deleted or archived still count as
-            reviews; cards by state and what's due count only the cards you can study now.
+            {t("stats.intro")}
           </p>
         </div>
         {decks.length > 0 && (
           <div className="field stats-filter">
             <label className="field-label" htmlFor={filterId}>
-              Deck
+              {t("stats.deck")}
             </label>
             <select
               id={filterId}
@@ -120,7 +120,7 @@ export function StatisticsScreen() {
               value={query.deckId ?? ""}
               onChange={(e) => choose(e.target.value === "" ? null : Number(e.target.value))}
             >
-              <option value="">All decks</option>
+              <option value="">{t("stats.allDecks")}</option>
               {decks.map((deck) => (
                 <option key={deck.id} value={deck.id}>
                   {deck.name}
@@ -133,19 +133,19 @@ export function StatisticsScreen() {
 
       {notice && (
         <p className="notice" role="status">
-          {notice}
+          {t(notice)}
         </p>
       )}
 
       {state.status === "loading" && (
         <p className="loading" role="status">
-          Loading your statistics…
+          {t("stats.loading")}
         </p>
       )}
       {state.status === "error" && (
         <Message focus={false} tone="alert" text={state.message}>
           <button type="button" className="button" onClick={retry}>
-            Retry
+            {t("stats.retry")}
           </button>
         </Message>
       )}
@@ -156,6 +156,7 @@ export function StatisticsScreen() {
 }
 
 function StatsPanels({ stats }: { stats: Statistics }) {
+  const { t, plural } = useT();
   const totalReviews = sum(stats.reviewsByDay);
   const totalDue = sum(stats.forecast);
   const { reviews, recalled } = stats.retention;
@@ -167,30 +168,29 @@ function StatsPanels({ stats }: { stats: Statistics }) {
     <div className="stats-grid">
       <section className="panel stats-wide" aria-labelledby="stats-reviews">
         <h3 id="stats-reviews" className="section-title">
-          Reviews per day
+          {t("stats.reviewsTitle")}
         </h3>
         <p className="field-hint">
           {totalReviews === 0
-            ? "No reviews in the last 30 days."
-            : `${plural(totalReviews, "review")} in the last 30 days, every rating counted.`}
+            ? t("stats.noReviews30")
+            : plural(totalReviews, "stats.reviews30One", "stats.reviews30Other")}
         </p>
         <BarChart days={stats.reviewsByDay} unit="review" tone="primary" endsToday />
       </section>
 
       <section className="panel" aria-labelledby="stats-retention">
         <h3 id="stats-retention" className="section-title">
-          True retention
+          {t("stats.retentionTitle")}
         </h3>
         {reviews === 0 ? (
           <p className="field-hint">
-            Nothing to measure yet: no cards in the Review state were reviewed in the last 30 days.
+            {t("stats.retentionEmpty")}
           </p>
         ) : (
           <>
             <p className="stats-figure">{percent(recalled, reviews)}</p>
             <p className="field-hint">
-              {recalled} of {plural(reviews, "review")} of cards in the Review state in the last 30
-              days weren't rated Again. New and (re)learning cards aren't counted.
+              {plural(reviews, "stats.retentionOne", "stats.retentionOther", { recalled })}
             </p>
           </>
         )}
@@ -198,18 +198,18 @@ function StatsPanels({ stats }: { stats: Statistics }) {
 
       <section className="panel" aria-labelledby="stats-states">
         <h3 id="stats-states" className="section-title">
-          Cards by state
+          {t("stats.statesTitle")}
         </h3>
         {totalCards === 0 ? (
-          <p className="field-hint">No cards to count.</p>
+          <p className="field-hint">{t("stats.noCards")}</p>
         ) : (
           <dl className="stats-states">
-            <StateRow label="New" hint="not studied yet" count={cardStates.new} />
-            <StateRow label="Learning" hint="first steps" count={cardStates.learning} />
-            <StateRow label="Review" hint="learned, spaced out" count={cardStates.review} />
+            <StateRow label={t("stats.new")} hint={t("stats.newHint")} count={cardStates.new} />
+            <StateRow label={t("stats.learning")} hint={t("stats.learningHint")} count={cardStates.learning} />
+            <StateRow label={t("stats.review")} hint={t("stats.reviewHint")} count={cardStates.review} />
             <StateRow
-              label="Relearning"
-              hint="forgotten, relearning"
+              label={t("stats.relearning")}
+              hint={t("stats.relearningHint")}
               count={cardStates.relearning}
             />
           </dl>
@@ -218,12 +218,12 @@ function StatsPanels({ stats }: { stats: Statistics }) {
 
       <section className="panel stats-wide" aria-labelledby="stats-forecast">
         <h3 id="stats-forecast" className="section-title">
-          Due in the next 14 days
+          {t("stats.forecastTitle")}
         </h3>
         <p className="field-hint">
           {totalDue === 0
-            ? "Nothing falls due in the next 14 days."
-            : `${plural(totalDue, "card")} due. Today's bar also holds cards already overdue and new cards not yet studied.`}
+            ? t("stats.noDue")
+            : t("stats.due", { cards: plural(totalDue, "common.cardOne", "common.cardOther") })}
         </p>
         <BarChart days={stats.forecast} unit="card" tone="sage" startsToday />
       </section>
@@ -243,6 +243,7 @@ function level(count: number, max: number): number {
  * Each square says its date and count in its title and accessible label.
  */
 function CalendarPanel({ calendar }: { calendar: StudyCalendar }) {
+  const { t, plural } = useT();
   const { days, currentStreak, longestStreak } = calendar;
   const max = Math.max(1, ...days.map((d) => d.reviews));
   const total = days.reduce((n, d) => n + d.reviews, 0);
@@ -253,29 +254,29 @@ function CalendarPanel({ calendar }: { calendar: StudyCalendar }) {
   return (
     <section className="panel stats-calendar" aria-labelledby="stats-calendar">
       <h3 id="stats-calendar" className="section-title">
-        Study calendar
+        {t("stats.calendarTitle")}
       </h3>
       <dl className="stats-streaks">
         <div className="stats-state">
-          <dt>Current streak</dt>
-          <dd>{plural(currentStreak, "day")}</dd>
+          <dt>{t("stats.currentStreak")}</dt>
+          <dd>{plural(currentStreak, "stats.dayOne", "stats.dayOther")}</dd>
         </div>
         <div className="stats-state">
-          <dt>Longest streak</dt>
-          <dd>{plural(longestStreak, "day")}</dd>
+          <dt>{t("stats.longestStreak")}</dt>
+          <dd>{plural(longestStreak, "stats.dayOne", "stats.dayOther")}</dd>
         </div>
       </dl>
       <p className="field-hint">
         {total === 0
-          ? "No reviews in the last 365 days."
-          : `${plural(total, "review")} in the last 365 days. Darker squares are busier days.`}
+          ? t("stats.noReviews365")
+          : plural(total, "stats.reviews365One", "stats.reviews365Other")}
       </p>
-      <ol className="heatmap" aria-label="Reviews per day, last 365 days">
+      <ol className="heatmap" aria-label={t("stats.calendarLabel")}>
         {Array.from({ length: lead }, (_, i) => (
           <li key={`lead-${i}`} className="heat-cell heat-blank" aria-hidden="true" />
         ))}
         {days.map((d) => {
-          const label = `${plural(d.reviews, "review")} on ${d.date}`;
+          const label = t("stats.reviewsOn", { reviews: plural(d.reviews, "stats.reviewOne", "stats.reviewOther"), date: d.date });
           return (
             <li key={d.date} className="heat-cell-item">
               <span
@@ -289,11 +290,11 @@ function CalendarPanel({ calendar }: { calendar: StudyCalendar }) {
         })}
       </ol>
       <p className="chart-axis heat-legend" aria-hidden="true">
-        <span>Less</span>
+        <span>{t("stats.less")}</span>
         {[0, 1, 2, 3, 4].map((n) => (
           <span key={n} className={`heat-cell heat-${n}`} />
         ))}
-        <span>More</span>
+        <span>{t("stats.more")}</span>
       </p>
     </section>
   );
@@ -326,11 +327,15 @@ function BarChart({
   startsToday = false,
 }: {
   days: DayCount[];
-  unit: string;
+  unit: "review" | "card";
   tone: "primary" | "sage";
   endsToday?: boolean;
   startsToday?: boolean;
 }) {
+  const { t, plural } = useT();
+  const countText = (count: number) => unit === "card"
+    ? plural(count, "common.cardOne", "common.cardOther")
+    : plural(count, "stats.reviewOne", "stats.reviewOther");
   const max = Math.max(1, ...days.map((d) => d.count));
   const width = days.length * (BAR + GAP) - GAP;
   const first = days[0];
@@ -338,8 +343,8 @@ function BarChart({
   const busiest = days.reduce((top, d) => (d.count > top.count ? d : top), days[0]);
   const description =
     busiest.count === 0
-      ? `No ${unit}s on any day from ${formatDay(first.day)} to ${formatDay(last.day)}.`
-      : `From ${formatDay(first.day)} to ${formatDay(last.day)}. The most was ${plural(busiest.count, unit)}, on ${formatDay(busiest.day)}.`;
+      ? t(unit === "card" ? "stats.chartNoCards" : "stats.chartNoReviews", { first: formatDay(first.day), last: formatDay(last.day) })
+      : t("stats.chartDescription", { first: formatDay(first.day), last: formatDay(last.day), count: countText(busiest.count), date: formatDay(busiest.day) });
 
   return (
     <figure className="chart">
@@ -363,15 +368,15 @@ function BarChart({
               height={height}
               rx={3}
             >
-              <title>{`${formatDay(d.day)}: ${plural(d.count, unit)}`}</title>
+              <title>{`${formatDay(d.day)}: ${countText(d.count)}`}</title>
             </rect>
           );
         })}
       </svg>
       <figcaption className="chart-axis" aria-hidden="true">
-        <span>{startsToday ? "Today" : formatDay(first.day)}</span>
-        <span>Most: {busiest.count}</span>
-        <span>{endsToday ? "Today" : formatDay(last.day)}</span>
+        <span>{startsToday ? t("stats.today") : formatDay(first.day)}</span>
+        <span>{t("stats.most", { count: busiest.count })}</span>
+        <span>{endsToday ? t("stats.today") : formatDay(last.day)}</span>
       </figcaption>
     </figure>
   );
@@ -379,10 +384,6 @@ function BarChart({
 
 function sum(days: DayCount[]): number {
   return days.reduce((total, d) => total + d.count, 0);
-}
-
-function plural(count: number, unit: string): string {
-  return `${count} ${count === 1 ? unit : `${unit}s`}`;
 }
 
 /** A share as a whole percentage, e.g. "87%". */
