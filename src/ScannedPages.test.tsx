@@ -116,7 +116,7 @@ describe("reading a source's scanned pages", () => {
     expect(label.textContent).toContain(
       "Synapse's built-in reader read it from the page's picture",
     );
-    expect(label.textContent).toContain("It doesn't read accents: è comes out as e.");
+    expect(label.textContent).toContain("It may miss some accents: è comes out as e.");
     expect(screen.getByRole("button", { name: "Read this page again" })).toBeTruthy();
   });
 
@@ -179,7 +179,7 @@ describe("reading a source's scanned pages", () => {
     await user.click(screen.getByRole("button", { name: "Next page" }));
     expect(screen.getByText(/qwen2\.5vl:7b, a vision model in Ollama read it/)).toBeTruthy();
     // Only the built-in reader is said to miss accents.
-    expect(screen.queryByText(/doesn't read accents/)).toBeNull();
+    expect(screen.queryByText(/may miss some accents/)).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Read this page again" }));
     expect(await screen.findByText("Read page 2.")).toBeTruthy();

@@ -185,6 +185,13 @@ async fn insert_reading(
     reading: &Reading,
     now: DateTime<Utc>,
 ) -> Result<Recognition, DbError> {
+    let mut lines = reading.lines.clone();
+    for line in &mut lines {
+        line.text = crate::accents::restore_italian_accents(&line.text);
+        for word in &mut line.words {
+            word.text = crate::accents::restore_italian_accents(&word.text);
+        }
+    }
     let mut conn = pool.acquire().await?;
     insert(
         &mut conn,
@@ -192,8 +199,8 @@ async fn insert_reading(
         page,
         Engine::Ocrs,
         ocr::MODEL,
-        &reading.text(),
-        &reading.lines,
+        &crate::accents::restore_italian_accents(&reading.text()),
+        &lines,
         Some((reading.width, reading.height)),
         now,
     )
@@ -763,6 +770,55 @@ mod tests {
                 assert!(refused.is_err(), "{lines}");
             }
             assert_eq!(count(&pool, "SELECT COUNT(*) FROM recognitions").await, 2);
+            let _ = std::fs::remove_dir_all(store.dir());
+        });
+    }
+
+    #[test]
+    fn built_in_reading_restores_accents_in_text_lines_and_words() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let store = scratch_store("recognition-accents");
+            let picture = assets::add_picture(&pool, &store, &png(1), at(NOW))
+                .await
+                .unwrap();
+            let bounds = ocr::TextBox {
+                left: 0.1,
+                top: 0.2,
+                width: 0.3,
+                height: 0.4,
+            };
+            let reading = Reading {
+                width: 100,
+                height: 100,
+                lines: vec![ocr::Line {
+                    text: "perche citt?".into(),
+                    bounds,
+                    words: vec![
+                        ocr::Word {
+                            text: "perche".into(),
+                            bounds,
+                        },
+                        ocr::Word {
+                            text: "citt?".into(),
+                            bounds,
+                        },
+                    ],
+                }],
+            };
+            insert_reading(&pool, picture.id, 0, &reading, at(NOW))
+                .await
+                .unwrap();
+            let stored = latest(&pool, picture.id, 0).await.unwrap().unwrap();
+            assert_eq!(stored.text, "perché città");
+            assert_eq!(stored.lines[0].text, "perché città");
+            assert_eq!(stored.lines[0].words[0].text, "perché");
+            assert_eq!(stored.lines[0].words[1].text, "città");
+            assert_eq!(stored.lines[0].bounds, bounds);
+            assert!(stored.lines[0]
+                .words
+                .iter()
+                .all(|word| word.bounds == bounds));
             let _ = std::fs::remove_dir_all(store.dir());
         });
     }

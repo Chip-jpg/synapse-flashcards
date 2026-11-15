@@ -1,3 +1,4 @@
+mod accents;
 mod aid;
 mod anki;
 mod assets;
