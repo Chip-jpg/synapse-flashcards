@@ -1,5 +1,7 @@
 import { useRef, useState, type ClipboardEvent } from "react";
+import { useT } from "./i18n";
 import {
+  COMMAND_ERROR_FALLBACK,
   choosePicture,
   keptFileUrl,
   storePicture,
@@ -34,11 +36,12 @@ export function KeptPicture({
   alt: string;
   className?: string;
 }) {
+  const { t } = useT();
   const [failed, setFailed] = useState(false);
   if (failed) {
     return (
       <span className="picture-missing" role="img" aria-label={alt}>
-        This picture couldn't be shown.
+        {t("pictures.missing")}
       </span>
     );
   }
@@ -61,8 +64,8 @@ export function samePictures(a: Asset[], b: Asset[]): boolean {
 }
 
 /** "Picture 2 of 3" (or "Picture" alone), naming what it belongs to. */
-function pictureName(label: string, index: number, count: number): string {
-  return count === 1 ? label : `${label} ${index + 1} of ${count}`;
+function pictureName(label: string, index: number, count: number, t: ReturnType<typeof useT>["t"]): string {
+  return count === 1 ? label : t("pictures.position", { label, position: index + 1, count });
 }
 
 /**
@@ -86,9 +89,10 @@ export function PictureGallery({
   /** Offers *Text in picture* under each picture. */
   readText?: boolean;
 }) {
+  const { t } = useT();
   const reading = usePictureReading();
   if (!pictures || pictures.length === 0) return null;
-  const name = (index: number) => pictureName(label, index, pictures.length);
+  const name = (index: number) => pictureName(label, index, pictures.length, t);
   const readIndex = pictures.findIndex(
     (picture) => picture.id === readingAssetId(reading.state),
   );
@@ -163,6 +167,7 @@ export function usePictureAdder({
   onChange: (pictures: Asset[]) => void;
   max: number;
 }) {
+  const { t } = useT();
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Blocks a second add immediately, before the re-render lands.
@@ -180,7 +185,7 @@ export function usePictureAdder({
     );
     const room = max - current.length;
     if (fresh.length > room) {
-      setError(`At most ${max} pictures fit here.`);
+      setError(t("pictures.max", { max }));
     }
     if (fresh.length > 0 && room > 0)
       onChange([...current, ...fresh.slice(0, room)]);
@@ -189,7 +194,7 @@ export function usePictureAdder({
   async function run(work: () => Promise<Asset[]>) {
     if (addingRef.current) return;
     if (latest.current.length >= max) {
-      setError(`At most ${max} pictures fit here.`);
+      setError(t("pictures.max", { max }));
       return;
     }
     addingRef.current = true;
@@ -265,6 +270,7 @@ export function PictureField({
    */
   addText?: { label: string; done: string; onAdd: (text: string) => void };
 }) {
+  const { t } = useT();
   const reading = usePictureReading();
   const readIndex = pictures.findIndex(
     (picture) => picture.id === readingAssetId(reading.state),
@@ -307,7 +313,7 @@ export function PictureField({
       {pictures.length > 0 && (
         <ol className="picture-choices">
           {pictures.map((picture, index) => {
-            const name = pictureName("Picture", index, pictures.length);
+            const name = pictureName(t("occlusion.picture"), index, pictures.length, t);
             return (
               <li key={picture.id} className="picture-choice">
                 <KeptPicture
@@ -328,22 +334,22 @@ export function PictureField({
                     <button
                       type="button"
                       className="button button-small"
-                      aria-label={`Move ${name.toLowerCase()} earlier`}
+                      aria-label={t("pictures.moveLabel", { name: name.toLowerCase() })}
                       disabled={disabled}
                       onClick={() => move(index)}
                     >
-                      Move earlier
+                      {t("pictures.move")}
                     </button>
                   )}
                   <button
                     type="button"
                     className="button button-small button-quiet"
-                    aria-label={`Remove ${name.toLowerCase()}`}
+                    aria-label={t("pictures.removeLabel", { name: name.toLowerCase() })}
                     disabled={disabled}
                     onClick={() => remove(index)}
                   >
                     <TrashIcon />
-                    Remove
+                    {t("occlusion.remove")}
                   </button>
                 </div>
               </li>
@@ -354,7 +360,7 @@ export function PictureField({
       {addText && readIndex >= 0 && (
         <PictureTextPanel
           reading={reading}
-          name={pictureName("Picture", readIndex, pictures.length)}
+          name={pictureName(t("occlusion.picture"), readIndex, pictures.length, t)}
           add={addText}
         />
       )}
@@ -369,13 +375,13 @@ export function PictureField({
           onClick={adder.choose}
         >
           <PictureIcon />
-          {adder.adding ? "Adding picture…" : "Add picture"}
+          {adder.adding ? t("pictures.adding") : t("pictures.add")}
         </button>
-        <span className="field-hint">or paste one while writing</span>
+        <span className="field-hint">{t("pictures.paste")}</span>
       </div>
       {shownError && (
         <p id={errorId} className="field-error" role="alert">
-          {shownError}
+          {shownError === COMMAND_ERROR_FALLBACK ? t("common.somethingWrong") : shownError}
         </p>
       )}
     </div>

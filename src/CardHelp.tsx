@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useT, translate, type MessageKey } from "./i18n";
 import {
+  COMMAND_ERROR_FALLBACK,
   createNote,
   getCardHelp,
   getModels,
@@ -16,25 +18,30 @@ import { preferredModel, rememberModel } from "./SuggestCards";
 import { useFocusOnMount } from "./ui";
 
 /** The kinds of help, in the order offered, with what each is called. */
-const KINDS: { value: HelpKind; label: string; hint: string }[] = [
-  { value: "mnemonic", label: "Mnemonic", hint: "an acronym, rhyme or image to recall it by" },
-  { value: "explanation", label: "Simpler explanation", hint: "the answer in plainer words" },
-  { value: "analogy", label: "Analogy", hint: "the idea compared with something familiar" },
-  { value: "question", label: "Reframed question", hint: "the question asked another way" },
+const KINDS: { value: HelpKind; label: MessageKey; hint: MessageKey }[] = [
+  { value: "mnemonic", label: "cardHelp.mnemonic", hint: "cardHelp.mnemonicHint" },
+  { value: "explanation", label: "cardHelp.explanation", hint: "cardHelp.explanationHint" },
+  { value: "analogy", label: "cardHelp.analogy", hint: "cardHelp.analogyHint" },
+  { value: "question", label: "cardHelp.question", hint: "cardHelp.questionHint" },
 ];
 
-function kindLabel(kind: HelpKind): string {
-  return KINDS.find((each) => each.value === kind)?.label ?? kind;
+function kindLabel(kind: HelpKind, t: ReturnType<typeof useT>["t"]): string {
+  const entry = KINDS.find((each) => each.value === kind);
+  return entry ? t(entry.label) : kind;
 }
 
 /** A note's longest title, as Rust allows (`notes.rs`). */
 const NOTE_TITLE_MAX_CHARS = 200;
 
 /** The note that keeps help: titled after the card, with the card under the help. */
-export function helpNote(card: Flashcard, help: Help): { title: string; body: string } {
+export function helpNote(
+  card: Flashcard,
+  help: Help,
+  t: ReturnType<typeof useT>["t"] = (key, params) => translate("en", key, params),
+): { title: string; body: string } {
   const front = card.front.split(/\s+/).filter(Boolean).join(" ");
-  const title = Array.from(`Help: ${front}`).slice(0, NOTE_TITLE_MAX_CHARS).join("").trim();
-  const body = `${kindLabel(help.kind)}\n\n${help.text}\n\nFrom the card\nQuestion: ${card.front}\nAnswer: ${card.back}`;
+  const title = Array.from(t("cardHelp.noteTitle", { front })).slice(0, NOTE_TITLE_MAX_CHARS).join("").trim();
+  const body = t("cardHelp.noteBody", { kind: kindLabel(help.kind, t), text: help.text, front: card.front, back: card.back });
   return { title, body };
 }
 
@@ -74,6 +81,7 @@ export function CardHelp({
   againStreak: number;
   picture?: boolean;
 }) {
+  const { t } = useT();
   const loadModels = picture ? getVisionModels : getModels;
   const [stage, setStage] = useState<Stage>({ step: "closed" });
   const [model, setModel] = useState("");
@@ -139,20 +147,19 @@ export function CardHelp({
     return offered ? (
       <div className="confirm confirm-calm card-help-offer">
         <p className="confirm-question">
-          You've answered Again on this card {againStreak} times in a row. A model in Ollama on
-          this computer can help you remember it in another way.
+          {t("cardHelp.offer", { count: againStreak })}
         </p>
         <div className="deck-actions">
           <button type="button" className="button button-tonal button-small" onClick={open}>
             <SparkleIcon />
-            Get help with this card
+            {t("cardHelp.get")}
           </button>
         </div>
       </div>
     ) : (
       <button type="button" className="button button-quiet button-small" onClick={open}>
         <SparkleIcon />
-        Get help with this card
+        {t("cardHelp.get")}
       </button>
     );
   }
@@ -160,11 +167,11 @@ export function CardHelp({
   return (
     <section className="card-help" aria-labelledby="card-help-heading">
       <h3 id="card-help-heading" className="draft-label">
-        Help with this card
+        {t("cardHelp.title")}
       </h3>
       {stage.step === "loading" && (
         <p className="loading" role="status">
-          Checking Ollama…
+          {t("cardHelp.checking")}
         </p>
       )}
       {stage.step === "unavailable" && (
@@ -178,8 +185,8 @@ export function CardHelp({
         <Problem
           text={
             picture
-              ? "Ollama is running, but none of its models on this computer can see pictures, and a picture card's answer is in its picture. Download a vision model in Ollama (such as qwen2.5vl), then check again."
-              : "Ollama is running, but it has no models on this computer that can write. Download a model in Ollama, then check again."
+              ? t("cardHelp.noVision")
+              : t("cardHelp.noModels")
           }
           onRetry={open}
           onClose={() => setStage({ step: "closed" })}
@@ -228,18 +235,19 @@ function Problem({
   onRetry: () => void;
   onClose: () => void;
 }) {
+  const { t } = useT();
   const ref = useFocusOnMount<HTMLParagraphElement>(true);
   return (
     <>
       <p ref={ref} className="message-error" role="alert" tabIndex={-1}>
-        {text}
+        {text === COMMAND_ERROR_FALLBACK ? t("common.somethingWrong") : text}
       </p>
       <div className="deck-actions">
         <button type="button" className="button button-small" onClick={onRetry}>
-          Check again
+          {t("suggest.checkAgain")}
         </button>
         <button type="button" className="button button-quiet button-small" onClick={onClose}>
-          Close
+          {t("settings.close")}
         </button>
       </div>
     </>
@@ -267,29 +275,29 @@ function Choose({
   onWrite: (model: string, kind: HelpKind) => void;
   onClose: () => void;
 }) {
+  const { t } = useT();
   const [modelError, setModelError] = useState<string | null>(null);
   const errorRef = useFocusOnMount<HTMLParagraphElement>(error !== null);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (model === "") {
-      setModelError("Choose a model to write help with.");
+      setModelError(t("cardHelp.chooseModelError"));
       return;
     }
     onWrite(model, kind);
   }
 
   return (
-    <form className="suggest-step" aria-label="Choose help" noValidate onSubmit={submit}>
+    <form className="suggest-step" aria-label={t("cardHelp.chooseHelp")} noValidate onSubmit={submit}>
       <p id="card-help-hint" className="field-hint">
         {picture
-          ? "The model sees only this card's picture, with the part it asks about framed, and its labels, on this computer."
-          : "The model reads only this card's question and answer, on this computer."}{" "}
-        Nothing is saved unless you add the help as a note. Models still get things wrong, so
-        check what it writes against your material.
+          ? t("cardHelp.pictureInput")
+          : t("cardHelp.textInput")}{" "}
+        {t("cardHelp.checkHint")}
       </p>
       <fieldset className="field card-help-kinds">
-        <legend className="field-label">Kind of help</legend>
+        <legend className="field-label">{t("cardHelp.kind")}</legend>
         {KINDS.map((each) => (
           <label key={each.value} className="card-help-kind">
             <input
@@ -300,23 +308,23 @@ function Choose({
               onChange={() => onKind(each.value)}
             />
             <span>
-              <strong>{each.label}</strong>: {each.hint}
+              <strong>{t(each.label)}</strong>: {t(each.hint)}
             </span>
           </label>
         ))}
       </fieldset>
       <SelectField
         id="card-help-model"
-        label="Model"
+        label={t("suggest.model")}
         hint={
           picture
-            ? "One of the models in Ollama on this computer that can see pictures."
-            : "One of the models in Ollama on this computer."
+            ? t("cardHelp.visionHint")
+            : t("cardHelp.modelHint")
         }
         describedBy="card-help-hint"
         value={model}
         options={models.map((name) => ({ value: name, label: name }))}
-        placeholder="Choose a model"
+        placeholder={t("suggest.chooseModel")}
         error={modelError ?? undefined}
         required
         autoFocus={error === null}
@@ -328,15 +336,15 @@ function Choose({
       <div className="form-actions">
         <button type="submit" className="button button-primary button-small">
           <SparkleIcon />
-          Write help
+          {t("cardHelp.write")}
         </button>
         <button type="button" className="button button-quiet button-small" onClick={onClose}>
-          Close
+          {t("settings.close")}
         </button>
       </div>
       {error && (
         <p ref={errorRef} className="message-error" role="alert" tabIndex={-1}>
-          {error}
+          {error === COMMAND_ERROR_FALLBACK ? t("common.somethingWrong") : error}
         </p>
       )}
     </form>
@@ -345,14 +353,15 @@ function Choose({
 
 /** While the model works. Focus goes to the status, so a held Enter can't stop it. */
 function Writing({ model, kind, onStop }: { model: string; kind: HelpKind; onStop: () => void }) {
+  const { t } = useT();
   const statusRef = useFocusOnMount<HTMLParagraphElement>(true);
   const [stopping, setStopping] = useState(false);
   return (
     <div className="confirm confirm-calm suggest-waiting">
       <p ref={statusRef} className="confirm-question" role="status" tabIndex={-1}>
         {stopping
-          ? "Stopping…"
-          : `Writing a ${kindLabel(kind).toLowerCase()} with ${model}… You can rate the card meanwhile.`}
+          ? t("suggest.stopping")
+          : t("cardHelp.writing", { kind: kindLabel(kind, t).toLowerCase(), model })}
       </p>
       <div className="deck-actions">
         <button
@@ -365,7 +374,7 @@ function Writing({ model, kind, onStop }: { model: string; kind: HelpKind; onSto
             onStop();
           }}
         >
-          Stop
+          {t("settings.stop")}
         </button>
       </div>
     </div>
@@ -388,6 +397,7 @@ function Written({
   onAgain: () => void;
   onClose: () => void;
 }) {
+  const { t } = useT();
   const textRef = useFocusOnMount<HTMLDivElement>(true);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
@@ -399,7 +409,7 @@ function Written({
     savingRef.current = true;
     setSaving(true);
     setSaveError(null);
-    const note = helpNote(card, help);
+    const note = helpNote(card, help, t);
     try {
       const created = await createNote(note.title, note.body);
       setSaved(created.title);
@@ -412,22 +422,21 @@ function Written({
 
   return (
     <>
-      <div ref={textRef} className="draft-source" tabIndex={-1} aria-label={kindLabel(help.kind)}>
+      <div ref={textRef} className="draft-source" tabIndex={-1} aria-label={kindLabel(help.kind, t)}>
         <p className="draft-label">
-          {kindLabel(help.kind)} · {model}
+          {kindLabel(help.kind, t)} · {model}
         </p>
         <p className="draft-quote">{help.text}</p>
         {help.unfamiliar.length > 0 && (
-          <p className="draft-check">Not on the card: {help.unfamiliar.join(", ")}</p>
+          <p className="draft-check">{t("cardHelp.unfamiliar", { words: help.unfamiliar.join(", ") })}</p>
         )}
       </div>
       <p className="field-hint">
-        Written by a model from this card {picture ? "and its picture " : ""}only. It's a draft:
-        nothing is saved unless you add it as a note.
+        {t(picture ? "cardHelp.draftPicture" : "cardHelp.draft")}
       </p>
       {saved !== null ? (
         <p className="notice" role="status">
-          Added to your notes as “{saved}”.
+          {t("cardHelp.saved", { name: saved })}
         </p>
       ) : null}
       <div className="deck-actions">
@@ -438,19 +447,19 @@ function Written({
             aria-disabled={saving}
             onClick={addNote}
           >
-            {saving ? "Adding…" : "Add as a note"}
+            {saving ? t("cardHelp.adding") : t("cardHelp.addNote")}
           </button>
         )}
         <button type="button" className="button button-small" onClick={onAgain}>
-          Try another
+          {t("cardHelp.tryAnother")}
         </button>
         <button type="button" className="button button-quiet button-small" onClick={onClose}>
-          Close
+          {t("settings.close")}
         </button>
       </div>
       {saveError && (
         <p className="message-error" role="alert">
-          {saveError}
+          {saveError === COMMAND_ERROR_FALLBACK ? t("common.somethingWrong") : saveError}
         </p>
       )}
     </>

@@ -1425,12 +1425,14 @@ export function closeWindow(): Promise<void> {
   return getCurrentWindow().destroy();
 }
 
+export const COMMAND_ERROR_FALLBACK = "Something went wrong.";
+
 /** Normalizes anything a command rejected with into a `CommandError`. */
 export function toCommandError(err: unknown): CommandError {
   if (typeof err === "object" && err !== null && "kind" in err && "message" in err) {
     return err as CommandError;
   }
-  return { kind: "failed", message: "Something went wrong." };
+  return { kind: "failed", message: COMMAND_ERROR_FALLBACK };
 }
 
 /**

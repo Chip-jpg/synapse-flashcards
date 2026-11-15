@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { useT, translate } from "./i18n";
 import {
+  COMMAND_ERROR_FALLBACK,
   stopRecognition,
   toCommandError,
   type Asset,
@@ -108,10 +110,13 @@ export function usePictureReading() {
 export type PictureReading = ReturnType<typeof usePictureReading>;
 
 /** Who read the text, said plainly. */
-export function readBy(recognition: Recognition): string {
+export function readBy(
+  recognition: Recognition,
+  t: ReturnType<typeof useT>["t"] = (key, params) => translate("en", key, params),
+): string {
   return recognition.engine === "ocrs"
-    ? "Read by Synapse's built-in reader, which doesn't read accents or handwriting well."
-    : `Read by ${recognition.model} in Ollama.`;
+    ? t("notes.readerBuiltIn")
+    : t("notes.readerOllama", { model: recognition.model });
 }
 
 /** Text added to the end of `existing`, a blank line after what's there. */
@@ -135,6 +140,7 @@ export function PictureTextPanel({
   /** Puts the text into the form beside the picture: "Add to note". */
   add?: { label: string; done: string; onAdd: (text: string) => void };
 }) {
+  const { t } = useT();
   const { state } = reading;
   const [said, setSaid] = useState("");
   const assetId = readingAssetId(state);
@@ -146,9 +152,9 @@ export function PictureTextPanel({
   async function copy(text: string) {
     try {
       await navigator.clipboard.writeText(text);
-      setSaid("Copied.");
+      setSaid(t("pictures.copied"));
     } catch {
-      setSaid("Synapse couldn't copy it. Select the text and copy it instead.");
+      setSaid(t("pictures.copyFailed"));
     }
   }
 
@@ -158,39 +164,39 @@ export function PictureTextPanel({
       className="button button-small button-quiet"
       onClick={reading.clear}
     >
-      Close
+      {t("settings.close")}
     </button>
   );
 
   return (
     <section
       className="picture-text"
-      aria-label={`Text in ${name.toLowerCase()}`}
+      aria-label={t("pictures.textLabel", { name: name.toLowerCase() })}
     >
       {state.status === "reading" && (
         <div className="picture-text-row">
           <p className="form-status" role="status">
-            {`Reading the text in ${name.toLowerCase()}…`}
+            {t("pictures.reading", { name: name.toLowerCase() })}
           </p>
           <button
             type="button"
             className="button button-small"
             onClick={reading.stop}
           >
-            Stop
+            {t("settings.stop")}
           </button>
         </div>
       )}
       {state.status === "stopped" && (
         <div className="picture-text-row">
-          <p role="status">Stopped. Nothing was read.</p>
+          <p role="status">{t("pictures.stopped")}</p>
           {close}
         </div>
       )}
       {state.status === "error" && (
         <div className="picture-text-row">
           <p className="message-error" role="alert">
-            {state.message}
+            {state.message === COMMAND_ERROR_FALLBACK ? t("common.somethingWrong") : state.message}
           </p>
           {close}
         </div>
@@ -198,15 +204,15 @@ export function PictureTextPanel({
       {state.status === "read" &&
         (state.recognition.text.trim() === "" ? (
           <div className="picture-text-row">
-            <p role="status">No text found.</p>
+            <p role="status">{t("occlusion.noText")}</p>
             {close}
           </div>
         ) : (
           <>
             <p className="field-label" role="status">
-              Recognised text: check it for mistakes
+              {t("pictures.recognised")}
             </p>
-            <p className="field-hint">{readBy(state.recognition)}</p>
+            <p className="field-hint">{readBy(state.recognition, t)}</p>
             <Agreement percent={state.agreement} />
             <p className="picture-text-body">{state.recognition.text}</p>
             <div className="picture-text-row">
@@ -227,7 +233,7 @@ export function PictureTextPanel({
                 className="button button-small"
                 onClick={() => void copy(state.recognition.text)}
               >
-                Copy
+                {t("pictures.copy")}
               </button>
               {close}
             </div>
@@ -241,7 +247,7 @@ export function PictureTextPanel({
             className="button button-small"
             onClick={() => void reading.read(assetId)}
           >
-            Read again
+            {t("pictures.readAgain")}
           </button>
         </div>
       )}
@@ -264,17 +270,18 @@ export function TextInPictureButton({
   reading: PictureReading;
   disabled?: boolean;
 }) {
+  const { t } = useT();
   const busy =
     reading.state.status === "reading" && reading.state.assetId === picture.id;
   return (
     <button
       type="button"
       className="button button-small"
-      aria-label={`Text in ${name.toLowerCase()}`}
+      aria-label={t("pictures.textLabel", { name: name.toLowerCase() })}
       disabled={disabled || busy}
       onClick={() => void reading.read(picture.id)}
     >
-      Text in picture
+      {t("pictures.text")}
     </button>
   );
 }

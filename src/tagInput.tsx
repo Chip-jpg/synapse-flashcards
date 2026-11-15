@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useT } from "./i18n";
 import { getTags } from "./api";
 
 /**
@@ -105,7 +106,7 @@ const SUGGESTIONS_SHOWN = 8;
  */
 export function TagField({
   id,
-  label = "Tags",
+  label,
   hint,
   tags,
   onChange,
@@ -120,6 +121,7 @@ export function TagField({
   error?: string;
   disabled?: boolean;
 }) {
+  const { t } = useT();
   const [typed, setTyped] = useState("");
   const suggestions = useTagNames();
   const suggestionsRef = useRef<HTMLUListElement>(null);
@@ -169,7 +171,7 @@ export function TagField({
   return (
     <div className="field">
       <label htmlFor={id} className="field-label">
-        {label}
+        {label ?? t("nav.tags")}
       </label>
       {hint !== undefined && (
         <p id={hintId} className="field-hint">
@@ -178,14 +180,14 @@ export function TagField({
       )}
       <div className="tag-field">
         {tags.length > 0 && (
-          <ul className="tag-list" aria-label={`${label} added`}>
+          <ul className="tag-list" aria-label={t("tagInput.added", { label: label ?? t("nav.tags") })}>
             {tags.map((tag) => (
               <li key={tag} className="tag-chip">
                 <span className="tag-name">{tag}</span>
                 <button
                   type="button"
                   className="tag-remove"
-                  aria-label={`Remove tag ${tag}`}
+                  aria-label={t("tagInput.remove", { tag })}
                   disabled={disabled}
                   onClick={() => remove(tag)}
                 >
@@ -227,13 +229,13 @@ export function TagField({
         />
       </div>
       {offered.length > 0 && (
-        <ul ref={suggestionsRef} className="tag-list tag-suggestions" aria-label="Tags in use">
+        <ul ref={suggestionsRef} className="tag-list tag-suggestions" aria-label={t("tagInput.inUse")}>
           {offered.map((name) => (
             <li key={name}>
               <button
                 type="button"
                 className="tag-chip tag-suggestion"
-                aria-label={`Add tag ${name}`}
+                aria-label={t("tagInput.add", { name })}
                 disabled={disabled}
                 // Keeps focus in the box, so leaving it doesn't finish the
                 // half-typed tag first.
@@ -256,10 +258,11 @@ export function TagField({
 }
 
 /** A card's or note's tags, as small chips to read. Nothing for none. */
-export function TagChips({ tags, label = "Tags" }: { tags?: string[]; label?: string }) {
+export function TagChips({ tags, label }: { tags?: string[]; label?: string }) {
+  const { t } = useT();
   if (!tags || tags.length === 0) return null;
   return (
-    <ul className="tag-list" aria-label={label}>
+    <ul className="tag-list" aria-label={label ?? t("nav.tags")}>
       {tags.map((tag) => (
         <li key={tag} className="tag-chip">
           <span className="tag-name">{tag}</span>

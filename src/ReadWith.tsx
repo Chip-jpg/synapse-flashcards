@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
+import { useT } from "./i18n";
 import {
+  COMMAND_ERROR_FALLBACK,
   getPagesToRecognise,
   getPagesToRecogniseWithModel,
   getVisionModels,
@@ -110,6 +112,7 @@ export function ReadWith({
   disabled?: boolean;
   brief?: boolean;
 }) {
+  const { t } = useT();
   const { reader, models, choose, reload } = state;
   useEffect(() => {
     if (models.status === "idle") void reload();
@@ -121,14 +124,14 @@ export function ReadWith({
     reader.engine === "ollama" && !names.includes(reader.model) ? [reader.model, ...names] : names;
   const hint =
     reader.engine === "ocrs"
-      ? "The reader built into Synapse is quick, but reads letters without accents (è as e) and reads handwriting poorly."
-      : "A vision model in Ollama, on this computer, reads accents and handwriting, but takes much longer, and can misread or make up words.";
+      ? t("readWith.builtInHint")
+      : t("readWith.modelHint");
   const looking = models.status === "idle" || models.status === "loading";
   return (
     <div className="read-with">
       <div className="field">
         <label htmlFor={id} className="field-label">
-          Read with
+          {t("readWith.label")}
         </label>
         {!brief && (
           <p id={`${id}-hint`} className="field-hint">
@@ -146,7 +149,7 @@ export function ReadWith({
             choose(value === BUILT_IN_VALUE ? BUILT_IN : { engine: "ollama", model: value });
           }}
         >
-          <option value={BUILT_IN_VALUE}>Built in</option>
+          <option value={BUILT_IN_VALUE}>{t("readWith.builtIn")}</option>
           {offered.map((name) => (
             <option key={name} value={name}>
               {name} (Ollama)
@@ -156,16 +159,16 @@ export function ReadWith({
       </div>
       {looking && (
         <p className="field-hint" role="status">
-          Looking for vision models in Ollama…
+          {t("readWith.looking")}
         </p>
       )}
       {!looking && names.length === 0 && (
         <p className="field-hint">
           {models.status === "unavailable"
-            ? `${models.message} Until then, only the built-in reader is offered.`
-            : "Ollama has no models that can read pictures. To read accents and handwriting, download one in Ollama, such as qwen2.5vl or gemma3, then check again."}{" "}
+            ? t("readWith.unavailable", { message: models.message === COMMAND_ERROR_FALLBACK ? t("common.somethingWrong") : models.message })
+            : t("readWith.noModels")}{" "}
           <button type="button" className="button button-small" onClick={() => void reload()}>
-            Check again
+            {t("suggest.checkAgain")}
           </button>
         </p>
       )}
@@ -217,17 +220,17 @@ export async function readSourcePages(
  * there's nothing to compare.
  */
 export function Agreement({ percent }: { percent: number | null }) {
+  const { t } = useT();
   if (percent === null) return null;
   const note =
     percent >= 80
-      ? "they mostly agree."
+      ? t("readWith.agree")
       : percent >= 50
-        ? "check the text closely."
-        : "they disagree a lot: the model may have misread or made up text.";
+        ? t("readWith.check")
+        : t("readWith.disagree");
   return (
     <p className="field-hint read-agreement">
-      The model's text has {percent}% of the words the built-in reader found (ignoring accents):{" "}
-      {note}
+      {t("readWith.agreement", { percent, note })}
     </p>
   );
 }
