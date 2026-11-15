@@ -11,17 +11,18 @@ import {
 } from "./api";
 import { SelectField } from "./forms";
 import { DeckIcon, DownloadIcon, UploadIcon } from "./icons";
+import { useT } from "./i18n";
 import { useUnsavedChanges } from "./unsaved";
 
-function cardCount(count: number): string {
-  return count === 1 ? "1 card" : `${count.toLocaleString("en-US")} cards`;
+type T = ReturnType<typeof useT>["t"];
+
+function cardCount(count: number, t: T): string {
+  return t(count === 1 ? "common.cardOne" : "common.cardOther", { count: count.toLocaleString("en-US") });
 }
 
-function rowCount(count: number): string {
-  return count === 1 ? "1 row" : `${count.toLocaleString("en-US")} rows`;
+function rowCount(count: number, t: T): string {
+  return t(count === 1 ? "csv.rowOne" : "csv.rowOther", { count: count.toLocaleString("en-US") });
 }
-
-const DELIMITER_NAMES = { comma: "commas", semicolon: "semicolons", tab: "tabs" };
 
 /**
  * Cards in spreadsheet files, on the Backup & restore screen: importing
@@ -40,6 +41,7 @@ export function CardsCsv({
   /** Changes when decks were added elsewhere on the screen, to reload them. */
   decksChanged?: number;
 }) {
+  const { t } = useT();
   const [decks, setDecks] = useState<Deck[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -63,14 +65,11 @@ export function CardsCsv({
           <DeckIcon />
         </span>
         <h3 id="cards-csv-heading" className="section-title">
-          Cards in a spreadsheet
+          {t("csv.title")}
         </h3>
       </div>
       <p className="field-hint">
-        Add cards from a CSV or TSV file, with the front in the first column and the back in the
-        second, or save a deck's cards as a CSV file. A third column headed Tags gives each card its
-        tags, separated by spaces. Only the text and tags of each card are copied, not its schedule
-        or reviews, so this isn't a backup.
+        {t("csv.intro")}
       </p>
       {loadError ? (
         <p className="message-error" role="alert">
@@ -78,7 +77,7 @@ export function CardsCsv({
         </p>
       ) : decks === null ? (
         <p className="form-status" role="status">
-          Loading your decks…
+          {t("desk.loading")}
         </p>
       ) : (
         <>
@@ -130,6 +129,7 @@ function ImportCards({
   /** The decks on screen are out of date. */
   onStale: () => void;
 }) {
+  const { t } = useT();
   const [deckId, setDeckId] = useState("");
   const [deckError, setDeckError] = useState<string | undefined>();
   const [state, setState] = useState<ImportState>({ kind: "idle" });
@@ -170,7 +170,7 @@ function ImportCards({
     if (busyRef.current || blocked) return;
     const deck = decks.find((each) => String(each.id) === deckId);
     if (!deck) {
-      setDeckError("Choose the deck to add the cards to.");
+      setDeckError(t("csv.chooseDestination"));
       document.getElementById("cards-import-deck")?.focus();
       return;
     }
@@ -219,14 +219,14 @@ function ImportCards({
       const skipped =
         saved.skipped === 0
           ? ""
-          : ` ${cardCount(saved.skipped)} already in the deck ${saved.skipped === 1 ? "was" : "were"} left out.`;
+          : t(saved.skipped === 1 ? "csv.skippedOne" : "csv.skippedOther", { cards: cardCount(saved.skipped, t) });
       setDone(
-        `Added ${cardCount(saved.added)} to ${preview.deck.name}. It now has ${cardCount(saved.cardCount)}.${skipped}`
+        t("csv.added", { cards: cardCount(saved.added, t), name: preview.deck.name, total: cardCount(saved.cardCount, t), skipped })
       );
     } catch (err) {
       const refused = toCommandError(err);
       const row = refused.index === undefined ? undefined : rows[refused.index];
-      setError(row ? `Line ${row.line}: ${refused.message}` : refused.message);
+      setError(row ? t("csv.lineError", { line: row.line, message: refused.message }) : refused.message);
       setState({ ...preview, saving: false });
       if (refused.kind === "stale") onStale();
     }
@@ -260,19 +260,19 @@ function ImportCards({
   return (
     <div className="data-action" role="group" aria-labelledby="cards-import-title">
       <h4 id="cards-import-title" className="item-title">
-        Import cards
+        {t("csv.importTitle")}
       </h4>
       {decks.length === 0 ? (
-        <p className="field-hint">Create a deck on the Study Desk first, then add cards to it here.</p>
+        <p className="field-hint">{t("csv.empty")}</p>
       ) : (
         <>
           <SelectField
             id="cards-import-deck"
-            label="Deck"
-            hint="The cards are added to this deck as new cards, due for review straight away."
+            label={t("app.deck")}
+            hint={t("csv.importHint")}
             value={deckId}
             options={decks.map((deck) => ({ value: String(deck.id), label: deck.name }))}
-            placeholder="Choose a deck"
+            placeholder={t("exams.chooseDeck")}
             error={deckError}
             onChange={(value) => {
               setDeckId(value);
@@ -288,13 +288,13 @@ function ImportCards({
               onClick={choose}
             >
               <UploadIcon />
-              Choose a CSV file
+              {t("csv.chooseFile")}
             </button>
           </div>
         </>
       )}
       <p className="form-status" role="status">
-        {reading && "Reading the file…"}
+        {reading && t("csv.reading")}
       </p>
       {done && (
         <p ref={doneRef} className="notice" role="status" tabIndex={-1}>
@@ -311,16 +311,16 @@ function ImportCards({
 }
 
 /** What will happen to a row, as its last column says. */
-function rowStatus(row: CardsFileRow, skipDuplicates: boolean): string {
+function rowStatus(row: CardsFileRow, skipDuplicates: boolean, t: T): string {
   if (row.problem) return row.problem.message;
   if (!row.duplicate) {
-    return row.clozeCards ? `Ready: a cloze text making ${cardCount(row.clozeCards)}` : "Ready";
+    return row.clozeCards ? t("csv.readyCloze", { cards: cardCount(row.clozeCards, t) }) : t("csv.ready");
   }
   const why =
     row.duplicate.kind === "inDeck"
-      ? "Already in this deck"
-      : `Same front as line ${row.duplicate.line}`;
-  return skipDuplicates ? `${why}: left out` : `${why}: added anyway`;
+      ? t("csv.inDeck")
+      : t("csv.sameFront", { line: row.duplicate.line });
+  return t(skipDuplicates ? "csv.leftOut" : "csv.addedAnyway", { why });
 }
 
 /** The rows Rust read from a file, for the user to check before adding them. */
@@ -341,6 +341,7 @@ function CardsPreview({
   onAdd: () => void;
   onCancel: () => void;
 }) {
+  const { t } = useT();
   const { deck, file, skipDuplicates, saving } = preview;
   const problems = file.rows.filter((row) => row.problem).length;
   const duplicates = file.rows.filter((row) => !row.problem && row.duplicate).length;
@@ -350,11 +351,15 @@ function CardsPreview({
     0,
   );
 
-  const read = `Read ${rowCount(file.rows.length)} from ${file.fileName}, separated by ${DELIMITER_NAMES[file.delimiter]}${file.header ? ", after a header row" : ""}.`;
+  const read = t("csv.read", {
+    rows: rowCount(file.rows.length, t), name: file.fileName,
+    delimiter: t(file.delimiter === "comma" ? "csv.commas" : file.delimiter === "semicolon" ? "csv.semicolons" : "csv.tabs"),
+    header: file.header ? t("csv.afterHeader") : "",
+  });
   const counts = [
-    `${cardCount(file.rows.length - problems - duplicates)} ready to add`,
-    duplicates > 0 && `${duplicates.toLocaleString("en-US")} already in the deck or repeated`,
-    problems > 0 && `${rowCount(problems)} with problems, which won't be added`,
+    t("csv.readyCount", { cards: cardCount(file.rows.length - problems - duplicates, t) }),
+    duplicates > 0 && t("csv.duplicateCount", { count: duplicates.toLocaleString("en-US") }),
+    problems > 0 && t("csv.problemCount", { rows: rowCount(problems, t) }),
   ]
     .filter(Boolean)
     .join(", ");
@@ -362,18 +367,19 @@ function CardsPreview({
   return (
     <div className="data-action" role="group" aria-labelledby="cards-preview-summary">
       <p ref={previewRef} id="cards-preview-summary" className="notice" tabIndex={-1}>
-        {`${read} ${counts}. Nothing has been added to ${deck.name} yet.`}
+        {t("csv.preview", { read, counts, name: deck.name })}
       </p>
       {file.rowsWithExtraColumns > 0 && (
         <p className="field-hint">
-          {file.tagsColumn
-            ? `${rowCount(file.rowsWithExtraColumns)} ${file.rowsWithExtraColumns === 1 ? "has" : "have"} more than three columns. Only the front, back and tags are read.`
-            : `${rowCount(file.rowsWithExtraColumns)} ${file.rowsWithExtraColumns === 1 ? "has" : "have"} more than two columns. Only the first two are read. To add tags, head the third column Tags.`}
+          {t(file.tagsColumn
+            ? file.rowsWithExtraColumns === 1 ? "csv.extraThreeOne" : "csv.extraThreeOther"
+            : file.rowsWithExtraColumns === 1 ? "csv.extraTwoOne" : "csv.extraTwoOther",
+            { rows: rowCount(file.rowsWithExtraColumns, t) })}
         </p>
       )}
       {problems > 0 && (
         <p className="field-hint">
-          To add the rows with problems, fix them in the file and choose it again.
+          {t("csv.fixProblems")}
         </p>
       )}
       {duplicates > 0 && (
@@ -387,21 +393,21 @@ function CardsPreview({
             }}
           />
           <span>
-            Leave out cards whose front is already in the deck, or on an earlier row of the file
+            {t("csv.skipDuplicates")}
           </span>
         </label>
       )}
 
       {/* Scrolls by itself, so a long file doesn't push the buttons away. */}
-      <div className="csv-table-wrap" role="region" aria-label="Rows of the file" tabIndex={0}>
+      <div className="csv-table-wrap" role="region" aria-label={t("csv.rows")} tabIndex={0}>
         <table className="csv-table">
           <thead>
             <tr>
-              <th scope="col">Line</th>
-              <th scope="col">Front</th>
-              <th scope="col">Back</th>
-              {file.tagsColumn && <th scope="col">Tags</th>}
-              <th scope="col">What happens</th>
+              <th scope="col">{t("csv.line")}</th>
+              <th scope="col">{t("csv.front")}</th>
+              <th scope="col">{t("csv.back")}</th>
+              {file.tagsColumn && <th scope="col">{t("app.tags")}</th>}
+              <th scope="col">{t("csv.outcome")}</th>
             </tr>
           </thead>
           <tbody>
@@ -411,10 +417,10 @@ function CardsPreview({
                 <tr key={row.line} className={left ? "csv-row-left-out" : undefined}>
                   <td>{row.line}</td>
                   <td className="csv-cell">{row.front}</td>
-                  <td className="csv-cell">{row.clozeCards ? "(cloze text)" : row.back}</td>
+                  <td className="csv-cell">{row.clozeCards ? t("csv.clozeText") : row.back}</td>
                   {file.tagsColumn && <td className="csv-cell">{(row.tags ?? []).join(" ")}</td>}
                   <td className={row.problem ? "csv-status csv-status-problem" : "csv-status"}>
-                    {rowStatus(row, skipDuplicates)}
+                    {rowStatus(row, skipDuplicates, t)}
                   </td>
                 </tr>
               );
@@ -430,14 +436,14 @@ function CardsPreview({
           aria-disabled={saving || blocked || toAdd === 0}
           onClick={onAdd}
         >
-          {`Add ${cardCount(toAdd)} to ${deck.name}`}
+          {t("csv.add", { cards: cardCount(toAdd, t), name: deck.name })}
         </button>
         <button type="button" className="button" aria-disabled={saving} onClick={onCancel}>
-          Cancel
+          {t("common.cancel")}
         </button>
       </div>
       <p className="form-status" role="status">
-        {saving ? "Adding the cards…" : toAdd === 0 ? "There's nothing new to add from this file." : ""}
+        {saving ? t("csv.adding") : toAdd === 0 ? t("csv.nothingNew") : ""}
       </p>
       {error && (
         <p className="message-error" role="alert">
@@ -466,6 +472,7 @@ function ExportCards({
   blocked: boolean;
   onRunning: (running: boolean) => void;
 }) {
+  const { t } = useT();
   const [deckId, setDeckId] = useState("");
   const [deckError, setDeckError] = useState<string | undefined>();
   const [state, setState] = useState<ExportState>({ kind: "idle" });
@@ -475,7 +482,7 @@ function ExportCards({
     if (busyRef.current || blocked) return;
     const deck = decks.find((each) => String(each.id) === deckId);
     if (!deck) {
-      setDeckError("Choose the deck to export.");
+      setDeckError(t("csv.chooseExport"));
       document.getElementById("cards-export-deck")?.focus();
       return;
     }
@@ -499,15 +506,15 @@ function ExportCards({
   return (
     <div className="data-action" role="group" aria-labelledby="cards-export-title">
       <h4 id="cards-export-title" className="item-title">
-        Export cards
+        {t("csv.exportTitle")}
       </h4>
       <SelectField
         id="cards-export-deck"
-        label="Deck"
-        hint="Its cards are saved as a CSV file, with a front and a back column, that spreadsheets can open."
+        label={t("app.deck")}
+        hint={t("csv.exportHint")}
         value={deckId}
         options={decks.map((deck) => ({ value: String(deck.id), label: deck.name }))}
-        placeholder="Choose a deck"
+        placeholder={t("exams.chooseDeck")}
         error={deckError}
         onChange={(value) => {
           setDeckId(value);
@@ -522,12 +529,12 @@ function ExportCards({
           onClick={runExport}
         >
           <DownloadIcon />
-          Export as CSV
+          {t("csv.export")}
         </button>
       </div>
       <p className="form-status" role="status">
-        {state.kind === "busy" && "Preparing the file…"}
-        {state.kind === "saved" && `Cards saved as ${state.fileName}.`}
+        {state.kind === "busy" && t("csv.preparing")}
+        {state.kind === "saved" && t("csv.saved", { name: state.fileName })}
       </p>
       {state.kind === "error" && (
         <p className="message-error" role="alert">

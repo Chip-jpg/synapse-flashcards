@@ -9,15 +9,14 @@ import {
   type ReadAnkiFile,
 } from "./api";
 import { UploadIcon } from "./icons";
+import { useT } from "./i18n";
 import { useUnsavedChanges } from "./unsaved";
 
-function count(number: number, one: string, many: string): string {
-  return number === 1 ? `1 ${one}` : `${number.toLocaleString("en-US")} ${many}`;
-}
+type T = ReturnType<typeof useT>["t"];
 
-const cards = (number: number) => count(number, "card", "cards");
-const notes = (number: number) => count(number, "note", "notes");
-const decks = (number: number) => count(number, "new deck", "new decks");
+const cards = (number: number, t: T) => t(number === 1 ? "common.cardOne" : "common.cardOther", { count: number.toLocaleString("en-US") });
+const notes = (number: number, t: T) => t(number === 1 ? "anki.noteOne" : "anki.noteOther", { count: number.toLocaleString("en-US") });
+const decks = (number: number, t: T) => t(number === 1 ? "anki.deckOne" : "anki.deckOther", { count: number.toLocaleString("en-US") });
 
 /** The cards adding would create, plus the reversed ones. */
 function cardTotal(file: ReadAnkiFile, bothDirections: boolean): number {
@@ -28,36 +27,36 @@ function cardTotal(file: ReadAnkiFile, bothDirections: boolean): number {
 }
 
 /** Why notes were left out, as one sentence, or null when none were. */
-function leftOut(skipped: AnkiSkipped): string | null {
+function leftOut(skipped: AnkiSkipped, t: T): string | null {
   const reasons = [
     skipped.imageOcclusion > 0 &&
-      `${notes(skipped.imageOcclusion)} of image occlusion whose picture isn't in the file (export with media included) or whose boxes can't be read`,
+      t("anki.skippedImageOcclusion", { notes: notes(skipped.imageOcclusion, t) }),
     skipped.badCloze > 0 &&
-      `${notes(skipped.badCloze)} with cloze deletions Synapse can't read (nested, or with an empty answer)`,
+      t("anki.skippedBadCloze", { notes: notes(skipped.badCloze, t) }),
     skipped.otherNoteType > 0 &&
-      `${notes(skipped.otherNoteType)} of a type that isn't one front and one back, or cloze`,
-    skipped.empty > 0 && `${notes(skipped.empty)} with an empty side (perhaps only a picture)`,
-    skipped.tooLong > 0 && `${notes(skipped.tooLong)} with a side over 2,000 characters`,
-    skipped.noCard > 0 && `${notes(skipped.noCard)} with no card in Anki`,
+      t("anki.skippedOtherNoteType", { notes: notes(skipped.otherNoteType, t) }),
+    skipped.empty > 0 && t("anki.skippedEmpty", { notes: notes(skipped.empty, t) }),
+    skipped.tooLong > 0 && t("anki.skippedTooLong", { notes: notes(skipped.tooLong, t) }),
+    skipped.noCard > 0 && t("anki.skippedNoCard", { notes: notes(skipped.noCard, t) }),
   ].filter(Boolean);
-  return reasons.length === 0 ? null : `Left out: ${reasons.join(", ")}.`;
+  return reasons.length === 0 ? null : t("anki.leftOut", { reasons: reasons.join(", ") });
 }
 
 /** Which pictures of front/back cards are left out, as one sentence, or null when none are. */
-function picturesLeftOut(leftOut: AnkiPicturesLeftOut | undefined): string | null {
+function picturesLeftOut(leftOut: AnkiPicturesLeftOut | undefined, t: T): string | null {
   if (!leftOut) return null;
-  const pictures = (number: number) => count(number, "picture", "pictures");
+  const pictures = (number: number) => t(number === 1 ? "anki.pictureOne" : "anki.pictureOther", { count: number.toLocaleString("en-US") });
   const reasons = [
     leftOut.missing > 0 &&
-      `${pictures(leftOut.missing)} not in the file (export with media included) or given by a web address`,
-    leftOut.unsupported > 0 && `${pictures(leftOut.unsupported)} not a PNG, JPEG, GIF or WebP`,
-    leftOut.tooLarge > 0 && `${pictures(leftOut.tooLarge)} over 20 MB`,
+      t("anki.picturesMissing", { pictures: pictures(leftOut.missing) }),
+    leftOut.unsupported > 0 && t("anki.picturesUnsupported", { pictures: pictures(leftOut.unsupported) }),
+    leftOut.tooLarge > 0 && t("anki.picturesTooLarge", { pictures: pictures(leftOut.tooLarge) }),
     leftOut.tooMany > 0 &&
-      `${pictures(leftOut.tooMany)} past the 4 that one side of a card can show`,
+      t("anki.picturesTooMany", { pictures: pictures(leftOut.tooMany) }),
   ].filter(Boolean);
   return reasons.length === 0
     ? null
-    : `Pictures left out, so their cards come without them: ${reasons.join(", ")}.`;
+    : t("anki.picturesLeftOut", { reasons: reasons.join(", ") });
 }
 
 /** Where importing an Anki package is up to. */
@@ -84,6 +83,7 @@ export function AnkiImport({
   /** New decks were created. */
   onImported: () => void;
 }) {
+  const { t } = useT();
   const [state, setState] = useState<ImportState>({ kind: "idle" });
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -152,7 +152,7 @@ export function AnkiImport({
       setState({ kind: "idle" });
       const names = saved.decks.map((deck) => deck.name).join(", ");
       setDone(
-        `Added ${cards(saved.cards)} in ${decks(saved.decks.length)}: ${names}. They're on the Study Desk, ready to review.`,
+        t("anki.added", { cards: cards(saved.cards, t), decks: decks(saved.decks.length, t), names }),
       );
       onImported();
     } catch (err) {
@@ -182,14 +182,11 @@ export function AnkiImport({
           <UploadIcon />
         </span>
         <h3 id="anki-heading" className="section-title">
-          Decks from Anki
+          {t("anki.title")}
         </h3>
       </div>
       <p className="field-hint">
-        Add the cards of an Anki package (.apkg or .colpkg) as new decks. Notes with one front
-        and one back come with their text and pictures, cloze notes as text, and image occlusion
-        notes with their picture, when the package includes media. Anki's schedule, review
-        history, sounds and pictures in cloze notes aren't imported, so every card starts as new.
+        {t("anki.intro")}
       </p>
 
       {state.kind === "preview" ? (
@@ -205,7 +202,7 @@ export function AnkiImport({
       ) : (
         <div className="data-action" role="group" aria-labelledby="anki-import-title">
           <h4 id="anki-import-title" className="item-title">
-            Import from Anki
+            {t("anki.import")}
           </h4>
           <div>
             <button
@@ -216,11 +213,11 @@ export function AnkiImport({
               onClick={choose}
             >
               <UploadIcon />
-              Choose an Anki file
+              {t("anki.choose")}
             </button>
           </div>
           <p className="form-status" role="status">
-            {state.kind === "reading" && "Reading the Anki file…"}
+            {state.kind === "reading" && t("anki.reading")}
           </p>
           {done && (
             <p ref={doneRef} className="notice" role="status" tabIndex={-1}>
@@ -256,16 +253,17 @@ function AnkiPreview({
   onAdd: () => void;
   onCancel: () => void;
 }) {
+  const { t } = useT();
   const { file, bothDirections, saving } = preview;
   const total = cardTotal(file, bothDirections);
   const reversible = file.decks.reduce((sum, deck) => sum + deck.reversible, 0);
-  const skipped = leftOut(file.skipped);
-  const picturesSkipped = picturesLeftOut(file.picturesLeftOut);
+  const skipped = leftOut(file.skipped, t);
+  const picturesSkipped = picturesLeftOut(file.picturesLeftOut, t);
 
   const summary =
     file.decks.length === 0
-      ? `Read ${notes(file.notes)} from ${file.fileName}. None of them can become cards here, so there's nothing to add.`
-      : `Read ${notes(file.notes)} from ${file.fileName}. ${cards(total)} ready to add in ${decks(file.decks.length)}. Nothing has been added yet.`;
+      ? t("anki.empty", { notes: notes(file.notes, t), name: file.fileName })
+      : t("anki.preview", { notes: notes(file.notes, t), name: file.fileName, cards: cards(total, t), decks: decks(file.decks.length, t) });
 
   return (
     <div className="data-action" role="group" aria-labelledby="anki-preview-summary">
@@ -275,44 +273,40 @@ function AnkiPreview({
       {skipped && <p className="field-hint">{skipped}</p>}
       {(file.cardPictures ?? 0) > 0 && (
         <p className="field-hint">
-          {`${count(file.cardPictures, "picture comes", "pictures come")} with the cards, on the same side as in Anki.`}
+          {t(file.cardPictures === 1 ? "anki.picturesIncludedOne" : "anki.picturesIncludedOther", { count: file.cardPictures.toLocaleString("en-US") })}
         </p>
       )}
       {picturesSkipped && <p className="field-hint">{picturesSkipped}</p>}
       {(file.tags ?? 0) > 0 && (
         <p className="field-hint">
-          {`The cards keep their notes' tags: ${count(file.tags ?? 0, "tag", "tags")} in all.`}
+          {t((file.tags ?? 0) === 1 ? "anki.tagsOne" : "anki.tagsOther", { count: (file.tags ?? 0).toLocaleString("en-US") })}
         </p>
       )}
       {(file.tagsLeftOut ?? 0) > 0 && (
         <p className="field-hint">
-          {file.tagsLeftOut === 1
-            ? "1 tag is left out: it's over 60 characters, has a comma, or is past a card's 20 tags."
-            : `${count(file.tagsLeftOut ?? 0, "tag", "tags")} are left out: they're over 60 characters, have a comma, or are past a card's 20 tags.`}
+          {t((file.tagsLeftOut ?? 0) === 1 ? "anki.tagsLeftOutOne" : "anki.tagsLeftOutOther", { count: (file.tagsLeftOut ?? 0).toLocaleString("en-US") })}
         </p>
       )}
       {file.mediaRemoved > 0 && (
         <p className="field-hint">
-          {file.mediaRemoved === 1
-            ? "1 note has a sound, a video, or a picture in a cloze, which is left out. Its text is kept."
-            : `${count(file.mediaRemoved, "note", "notes")} have a sound, a video, or a picture in a cloze, which is left out. Their text is kept.`}
+          {t(file.mediaRemoved === 1 ? "anki.mediaRemovedOne" : "anki.mediaRemovedOther", { count: file.mediaRemoved.toLocaleString("en-US") })}
         </p>
       )}
       {file.extraRemoved > 0 && (
         <p className="field-hint">
-          {`${count(file.extraRemoved, "cloze or image occlusion note has", "cloze or image occlusion notes have")} text in another field, such as Back Extra, which is left out.`}
+          {t(file.extraRemoved === 1 ? "anki.extraRemovedOne" : "anki.extraRemovedOther", { count: file.extraRemoved.toLocaleString("en-US") })}
         </p>
       )}
       {(file.occlusions ?? 0) > 0 && (
         <p className="field-hint">
-          {`${count(file.occlusions, "image occlusion note comes", "image occlusion notes come")} with its picture, as picture cards with one card for each box.`}
+          {t(file.occlusions === 1 ? "anki.occlusionsOne" : "anki.occlusionsOther", { count: file.occlusions.toLocaleString("en-US") })}
           {(file.occlusionApproximated ?? 0) > 0 &&
-            ` In ${count(file.occlusionApproximated, "of them", "of them")}, round or many-sided shapes become rectangles around them, and text written on the picture is left out.`}
+            t("anki.approximated", { count: file.occlusionApproximated.toLocaleString("en-US") })}
         </p>
       )}
       {file.reviewed > 0 && (
         <p className="field-hint">
-          {`${count(file.reviewed, "of these notes was", "of these notes were")} studied in Anki. The cards still start as new here.`}
+          {t(file.reviewed === 1 ? "anki.reviewedOne" : "anki.reviewedOther", { count: file.reviewed.toLocaleString("en-US") })}
         </p>
       )}
       {reversible > 0 && (
@@ -326,21 +320,21 @@ function AnkiPreview({
             }}
           />
           <span>
-            {`Also add the reversed card, with the back as the question, for the ${notes(reversible)} that ${reversible === 1 ? "has" : "have"} one in Anki`}
+            {t(reversible === 1 ? "anki.reversedOne" : "anki.reversedOther", { count: reversible.toLocaleString("en-US") })}
           </span>
         </label>
       )}
 
       {file.decks.length > 0 && (
         // Scrolls by itself, so a long list doesn't push the buttons away.
-        <div className="csv-table-wrap" role="region" aria-label="Decks to add" tabIndex={0}>
+        <div className="csv-table-wrap" role="region" aria-label={t("anki.decksToAdd")} tabIndex={0}>
           <table className="csv-table">
             <thead>
               <tr>
-                <th scope="col">Anki deck</th>
-                <th scope="col">New deck</th>
-                <th scope="col">Cards</th>
-                <th scope="col">First card</th>
+                <th scope="col">{t("anki.ankiDeck")}</th>
+                <th scope="col">{t("anki.newDeck")}</th>
+                <th scope="col">{t("search.scopeCards")}</th>
+                <th scope="col">{t("anki.firstCard")}</th>
               </tr>
             </thead>
             <tbody>
@@ -365,15 +359,15 @@ function AnkiPreview({
             aria-disabled={saving || blocked}
             onClick={onAdd}
           >
-            {`Add ${cards(total)} in ${decks(file.decks.length)}`}
+            {t("anki.add", { cards: cards(total, t), decks: decks(file.decks.length, t) })}
           </button>
         )}
         <button type="button" className="button" aria-disabled={saving} onClick={onCancel}>
-          {file.decks.length > 0 ? "Cancel" : "Close"}
+          {t(file.decks.length > 0 ? "common.cancel" : "settings.close")}
         </button>
       </div>
       <p className="form-status" role="status">
-        {saving && "Adding the decks…"}
+        {saving && t("anki.adding")}
       </p>
       {error && (
         <p className="message-error" role="alert">
