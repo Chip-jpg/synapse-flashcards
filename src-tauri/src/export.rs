@@ -570,6 +570,20 @@ mod tests {
         tauri::async_runtime::block_on(async {
             let dir = scratch("export-payload");
             let pool = populated(&dir).await;
+            let note = crate::notes::create_note(&pool, "Source", "Some text", at(NOW))
+                .await
+                .unwrap();
+            let linked_card: i64 = sqlx::query_scalar(
+                "UPDATE flashcards SET source_note_id = ?1 WHERE id = (
+                    SELECT f.id FROM flashcards f JOIN decks d ON d.id = f.deck_id
+                    WHERE d.is_sample = 0 AND d.archived_at IS NULL AND f.deleted_at IS NULL
+                    ORDER BY f.id LIMIT 1
+                ) RETURNING id",
+            )
+            .bind(note.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
             let archive = dir.join("backup.zip");
 
             write_package(
@@ -583,6 +597,14 @@ mod tests {
             .unwrap();
 
             let restored = exported_database(&archive, &dir.join("restored.sqlite")).await;
+
+            let link: Option<i64> =
+                sqlx::query_scalar("SELECT source_note_id FROM flashcards WHERE id = ?1")
+                    .bind(linked_card)
+                    .fetch_one(&restored)
+                    .await
+                    .unwrap();
+            assert_eq!(link, Some(note.id));
 
             // The exported file stands on its own: no journal beside it, no
             // half-written page. This is the check an import runs first.

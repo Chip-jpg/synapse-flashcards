@@ -292,6 +292,8 @@ pub enum AuthoringError {
     TooManyCards,
     /// No deck has this id.
     DeckNotFound,
+    /// The source note is missing or deleted.
+    SourceNoteNotFound,
     /// The deck (or the card's deck) is the sample deck, which can't be edited.
     SampleDeck,
     /// The deck (or the card's deck) has been archived, so it can't change.
@@ -724,6 +726,30 @@ pub async fn create_flashcard_tagged(
     tag_names: Option<&[String]>,
     now: DateTime<Utc>,
 ) -> Result<DeckDetail, AuthoringError> {
+    create_flashcard_from_note(
+        pool,
+        deck_id,
+        front,
+        back,
+        picture_ids,
+        tag_names,
+        None,
+        now,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn create_flashcard_from_note(
+    pool: &SqlitePool,
+    deck_id: i64,
+    front: &str,
+    back: &str,
+    picture_ids: &CardPictureIds,
+    tag_names: Option<&[String]>,
+    source_note_id: Option<i64>,
+    now: DateTime<Utc>,
+) -> Result<DeckDetail, AuthoringError> {
     let card = validate_card(front, back)?;
     let tag_names = checked_tags(tag_names)?;
     let at = now;
@@ -734,7 +760,9 @@ pub async fn create_flashcard_tagged(
     // or the sample deck. Returning early drops `tx`, which rolls it back.
     active_normal_deck(&mut tx, deck_id).await?;
     let card_pictures = checked_card_pictures(&mut tx, picture_ids).await?;
+    checked_source_note(&mut tx, source_note_id).await?;
     let card_id = insert_new_card(&mut tx, deck_id, &card, &now).await?;
+    set_source_note(&mut tx, card_id, source_note_id).await?;
     if !card_pictures.is_empty() {
         pictures::set_card_pictures(&mut tx, card_id, &card_pictures).await?;
     }
@@ -758,6 +786,7 @@ pub async fn create_flashcards(
     pool: &SqlitePool,
     deck_id: i64,
     cards: &[CardText],
+    source_note_id: Option<i64>,
     now: DateTime<Utc>,
 ) -> Result<DeckDetail, AuthoringError> {
     if cards.is_empty() {
@@ -779,13 +808,46 @@ pub async fn create_flashcards(
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     // As in `create_flashcard`: refused here, before any card is written.
     active_normal_deck(&mut tx, deck_id).await?;
+    checked_source_note(&mut tx, source_note_id).await?;
     for card in &cards {
-        insert_new_card(&mut tx, deck_id, card, &now).await?;
+        let id = insert_new_card(&mut tx, deck_id, card, &now).await?;
+        set_source_note(&mut tx, id, source_note_id).await?;
     }
 
     let deck = load_deck_detail(&mut tx, deck_id, &now).await?;
     tx.commit().await?;
     Ok(deck)
+}
+
+async fn checked_source_note(
+    conn: &mut SqliteConnection,
+    source_note_id: Option<i64>,
+) -> Result<(), AuthoringError> {
+    if let Some(id) = source_note_id {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM notes WHERE id = ?1 AND deleted_at IS NULL)",
+        )
+        .bind(id)
+        .fetch_one(conn)
+        .await?;
+        if !exists {
+            return Err(AuthoringError::SourceNoteNotFound);
+        }
+    }
+    Ok(())
+}
+
+async fn set_source_note(
+    conn: &mut SqliteConnection,
+    card_id: i64,
+    source_note_id: Option<i64>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE flashcards SET source_note_id = ?1 WHERE id = ?2")
+        .bind(source_note_id)
+        .bind(card_id)
+        .execute(conn)
+        .await?;
+    Ok(())
 }
 
 /// Writes one checked card into `deck_id` as a brand-new FSRS card (see
@@ -2162,6 +2224,178 @@ mod tests {
     }
 
     #[test]
+    fn migration_adds_nullable_note_links_to_existing_cards() {
+        tauri::async_runtime::block_on(async {
+            let pool = memory_pool().await;
+            migrations_up_to(21).run(&pool).await.unwrap();
+            let deck: i64 = sqlx::query_scalar(
+                "INSERT INTO decks (name, is_sample) VALUES ('Biology', 0) RETURNING id",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO flashcards (deck_id, front, back, fsrs_state) VALUES (?1, 'Q', 'A', 'New')")
+                .bind(deck).execute(&pool).await.unwrap();
+            migrate_and_seed(&pool).await.unwrap();
+            let links: Vec<Option<i64>> =
+                sqlx::query_scalar("SELECT source_note_id FROM flashcards")
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+            assert!(!links.is_empty());
+            assert!(links.iter().all(Option::is_none));
+            let index: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'flashcards_by_source_note'",
+            ).fetch_one(&pool).await.unwrap();
+            assert_eq!(index, 1);
+        });
+    }
+
+    #[test]
+    fn cards_keep_source_notes_through_note_delete_and_restore() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let now = at(NOW);
+            let deck = deck_id(&pool, "Linked cards").await;
+            let note = crate::notes::create_note(&pool, "Source", "Some text", now)
+                .await
+                .unwrap();
+            let detail = create_flashcards(
+                &pool,
+                deck,
+                &[card("Question", "Answer")],
+                Some(note.id),
+                now,
+            )
+            .await
+            .unwrap();
+            let id = detail.cards[0].id;
+            let stored: Option<i64> =
+                sqlx::query_scalar("SELECT source_note_id FROM flashcards WHERE id = ?1")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(stored, Some(note.id));
+            let StartedSession::Started { session_id } =
+                study::start_session(&pool, deck, now).await.unwrap()
+            else {
+                panic!("expected session");
+            };
+            let next = study::session_card(&pool, session_id, now).await.unwrap();
+            assert!(
+                matches!(next, SessionCard::Due { source_note_id: Some(source), .. } if source == note.id)
+            );
+            let tag = sqlx::query("INSERT INTO tags (name) VALUES ('linked')")
+                .execute(&pool)
+                .await
+                .unwrap()
+                .last_insert_rowid();
+            sqlx::query("INSERT INTO card_tags (card_id, tag_id) VALUES (?1, ?2)")
+                .bind(id)
+                .bind(tag)
+                .execute(&pool)
+                .await
+                .unwrap();
+            let next = study::tag_card(&pool, tag, 0, now).await.unwrap();
+            assert_eq!(
+                serde_json::to_value(&next).unwrap()["sourceNoteId"],
+                note.id
+            );
+            assert!(
+                matches!(next, SessionCard::Due { source_note_id: Some(source), .. } if source == note.id)
+            );
+            crate::notes::delete_note(&pool, note.id, now)
+                .await
+                .unwrap();
+            let stored: Option<i64> =
+                sqlx::query_scalar("SELECT source_note_id FROM flashcards WHERE id = ?1")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(stored, Some(note.id));
+            for next in [
+                study::session_card(&pool, session_id, now).await.unwrap(),
+                study::tag_card(&pool, tag, 0, now).await.unwrap(),
+            ] {
+                assert!(matches!(
+                    next,
+                    SessionCard::Due {
+                        source_note_id: None,
+                        ..
+                    }
+                ));
+            }
+            crate::notes::restore_note(&pool, note.id).await.unwrap();
+            for next in [
+                study::session_card(&pool, session_id, now).await.unwrap(),
+                study::tag_card(&pool, tag, 0, now).await.unwrap(),
+            ] {
+                assert!(
+                    matches!(next, SessionCard::Due { source_note_id: Some(source), .. } if source == note.id)
+                );
+            }
+            assert_eq!(deck_detail(&pool, deck, now).await.unwrap().card_count, 1);
+        });
+    }
+
+    #[test]
+    fn invalid_or_deleted_source_notes_reject_all_cards() {
+        tauri::async_runtime::block_on(async {
+            let pool = seeded().await;
+            let now = at(NOW);
+            let deck = deck_id(&pool, "Linked cards").await;
+            let note = crate::notes::create_note(&pool, "Source", "Some text", now)
+                .await
+                .unwrap();
+            crate::notes::delete_note(&pool, note.id, now)
+                .await
+                .unwrap();
+            for source in [note.id, 999999, 0, -1] {
+                assert!(matches!(
+                    create_flashcards(&pool, deck, &[card("Q", "A")], Some(source), now).await,
+                    Err(AuthoringError::SourceNoteNotFound)
+                ));
+                assert!(matches!(
+                    create_flashcard_from_note(
+                        &pool,
+                        deck,
+                        "Q",
+                        "A",
+                        &CardPictureIds::default(),
+                        None,
+                        Some(source),
+                        now
+                    )
+                    .await,
+                    Err(AuthoringError::SourceNoteNotFound)
+                ));
+            }
+            assert!(card_ids(&pool, deck).await.is_empty());
+            let detail = create_flashcard_from_note(
+                &pool,
+                deck,
+                "Q",
+                "A",
+                &CardPictureIds::default(),
+                None,
+                None,
+                now,
+            )
+            .await
+            .unwrap();
+            let stored: Option<i64> =
+                sqlx::query_scalar("SELECT source_note_id FROM flashcards WHERE id = ?1")
+                    .bind(detail.cards[0].id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(stored, None);
+        });
+    }
+
+    #[test]
     fn several_cards_are_added_in_order_each_as_a_new_card() {
         tauri::async_runtime::block_on(async {
             let pool = seeded().await;
@@ -2181,6 +2415,7 @@ mod tests {
                         " Prophase, metaphase, anaphase, telophase.",
                     ),
                 ],
+                None,
                 now,
             )
             .await
@@ -2254,7 +2489,7 @@ mod tests {
                 ),
             ];
             for (cards, index, expected) in attempts {
-                let result = create_flashcards(&pool, deck, &cards, at(NOW)).await;
+                let result = create_flashcards(&pool, deck, &cards, None, at(NOW)).await;
                 assert!(
                     matches!(
                         result,
@@ -2274,19 +2509,19 @@ mod tests {
             let deck = deck_id(&pool, "Biology").await;
 
             assert!(matches!(
-                create_flashcards(&pool, deck, &[], at(NOW)).await,
+                create_flashcards(&pool, deck, &[], None, at(NOW)).await,
                 Err(AuthoringError::NoCards)
             ));
             let too_many = vec![card("q", "a"); CARD_BATCH_MAX + 1];
             assert!(matches!(
-                create_flashcards(&pool, deck, &too_many, at(NOW)).await,
+                create_flashcards(&pool, deck, &too_many, None, at(NOW)).await,
                 Err(AuthoringError::TooManyCards)
             ));
             assert!(card_ids(&pool, deck).await.is_empty());
 
             // Exactly at the limit is fine.
             let most = vec![card("q", "a"); CARD_BATCH_MAX];
-            let detail = create_flashcards(&pool, deck, &most, at(NOW))
+            let detail = create_flashcards(&pool, deck, &most, None, at(NOW))
                 .await
                 .unwrap();
             assert_eq!(detail.card_count, CARD_BATCH_MAX as i64);
@@ -2304,15 +2539,15 @@ mod tests {
             let cards = [card("q1", "a1"), card("q2", "a2")];
 
             assert!(matches!(
-                create_flashcards(&pool, 999, &cards, now).await,
+                create_flashcards(&pool, 999, &cards, None, now).await,
                 Err(AuthoringError::DeckNotFound)
             ));
             assert!(matches!(
-                create_flashcards(&pool, sample, &cards, now).await,
+                create_flashcards(&pool, sample, &cards, None, now).await,
                 Err(AuthoringError::SampleDeck)
             ));
             assert!(matches!(
-                create_flashcards(&pool, archived, &cards, now).await,
+                create_flashcards(&pool, archived, &cards, None, now).await,
                 Err(AuthoringError::DeckArchived)
             ));
             assert_eq!(count(&pool, "SELECT COUNT(*) FROM flashcards").await, 1);

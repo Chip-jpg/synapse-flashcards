@@ -303,6 +303,7 @@ fn authoring_error(err: AuthoringError, context: &str, failed: &'static str) -> 
         AuthoringError::TooManyCards => {
             CommandError::invalid("At most 100 cards can be saved at once.")
         }
+        AuthoringError::SourceNoteNotFound => CommandError::invalid("The source note no longer exists or was deleted."),
         AuthoringError::DeckNotFound => CommandError::invalid(DECK_NOT_FOUND),
         AuthoringError::SampleDeck => CommandError::invalid("The sample deck can't be edited."),
         // The screen is out of date: the deck was archived since it was shown.
@@ -689,6 +690,7 @@ pub async fn get_deck_detail(
 /// Arguments: `{ deckId, front, back }`. Returns the updated deck (same shape
 /// as `get_deck_detail`).
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn create_flashcard(
     app: AppHandle,
     database: State<'_, Database>,
@@ -697,19 +699,21 @@ pub async fn create_flashcard(
     back: String,
     pictures: Option<CardPictureIds>,
     tags: Option<Vec<String>>,
+    source_note_id: Option<i64>,
 ) -> Result<DeckDetail, CommandError> {
     if deck_id < 1 {
         return Err(CommandError::invalid(DECK_NOT_FOUND));
     }
     let pool = pool(&app, &database).await?;
     let pictures = pictures.unwrap_or_default();
-    authoring::create_flashcard_tagged(
+    authoring::create_flashcard_from_note(
         &pool,
         deck_id,
         &front,
         &back,
         &pictures,
         tags.as_deref(),
+        source_note_id,
         Utc::now(),
     )
     .await
@@ -729,12 +733,13 @@ pub async fn create_flashcards(
     database: State<'_, Database>,
     deck_id: i64,
     cards: Vec<CardText>,
+    source_note_id: Option<i64>,
 ) -> Result<DeckDetail, CommandError> {
     if deck_id < 1 {
         return Err(CommandError::invalid(DECK_NOT_FOUND));
     }
     let pool = pool(&app, &database).await?;
-    authoring::create_flashcards(&pool, deck_id, &cards, Utc::now())
+    authoring::create_flashcards(&pool, deck_id, &cards, source_note_id, Utc::now())
         .await
         .map_err(|err| authoring_error(err, "adding cards", "Synapse couldn't save the cards."))
 }

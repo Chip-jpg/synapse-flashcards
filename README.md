@@ -663,9 +663,10 @@ The Sample deck is read-only: you can study it, but not rename, archive, edit it
   accents and reads handwriting poorly. *Search sources* matches the start of words only (no fuzzy
   or meaning-based matching, words on two different pages don't match together) and has no index:
   each search reads every page of every source, so it slows down with very many long documents.
-  *Search* in the sidebar doesn't look in sources, and recognised text isn't searched there. A card doesn't remember the note it was written or suggested from — so
-  deleting a note leaves its cards exactly where they are. A deleted note can be read but not
-  edited; restore it first.
+  *Search* in the sidebar doesn't look in sources, and recognised text isn't searched there.
+  Cards created from a note remember it; after revealing an answer, *Show in note* opens it.
+  Deleting a note hides that link (the cards stay where they are), and restoring the note brings it
+  back. A deleted note can be read but not edited; restore it first.
 - **No sync, accounts, cloud, or collaboration.** By design.
 - **Personal scheduling is all or nothing.** One set of parameters is fitted to every review ever
   recorded (deleted cards and archived decks included) and used for every deck; there's no

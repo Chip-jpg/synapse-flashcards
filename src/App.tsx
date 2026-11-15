@@ -29,6 +29,7 @@ type View =
   | {
       screen: "notes";
       noteId?: number;
+      fromReview?: Extract<View, { screen: "session" | "tagReview" }>;
       search?: FromSearch;
       /** The source the note was opened from, to go back to. */
       fromSource?: number;
@@ -198,11 +199,17 @@ function App() {
             key={view.sessionId}
             sessionId={view.sessionId}
             deckName={view.deckName}
+            onOpenNote={(noteId) => show({ screen: "notes", noteId, fromReview: view })}
             onExit={() => show(DECKS)}
           />
         )}
         {view.screen === "tagReview" && (
-          <ReviewSession key={`tag:${view.tag.id}`} tag={view.tag} onExit={() => show(DECKS)} />
+          <ReviewSession
+            key={`tag:${view.tag.id}`}
+            tag={view.tag}
+            onExit={() => show(DECKS)}
+            onOpenNote={(noteId) => show({ screen: "notes", noteId, fromReview: view })}
+          />
         )}
         {view.screen === "search" && (
           <SearchScreen
@@ -230,19 +237,25 @@ function App() {
             onOpenDeck={(deckId) => show({ screen: "deck", deckId, justCreated: false })}
             onOpenSource={(sourceId) => show({ screen: "sources", sourceId })}
             openNote={
-              view.search && view.noteId !== undefined
+              view.fromReview && view.noteId !== undefined
                 ? {
                     noteId: view.noteId,
-                    backLabel: t("app.backSearch"),
-                    onBack: () => backToSearch(view.search!),
+                    backLabel: t("review.backReview"),
+                    onBack: () => show(view.fromReview!),
                   }
-                : view.fromSource !== undefined && view.noteId !== undefined
+                : view.search && view.noteId !== undefined
                   ? {
                       noteId: view.noteId,
-                      backLabel: t("app.backSource"),
-                      onBack: () => show({ screen: "sources", sourceId: view.fromSource }),
+                      backLabel: t("app.backSearch"),
+                      onBack: () => backToSearch(view.search!),
                     }
-                  : undefined
+                  : view.fromSource !== undefined && view.noteId !== undefined
+                    ? {
+                        noteId: view.noteId,
+                        backLabel: t("app.backSource"),
+                        onBack: () => show({ screen: "sources", sourceId: view.fromSource }),
+                      }
+                    : undefined
             }
             newFromSource={
               view.draft

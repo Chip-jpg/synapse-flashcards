@@ -381,6 +381,7 @@ function Suggester({
       {stage.step === "review" && (
         <QuotesFromSource noteId={note.id} quotes={stage.drafts.map((draft) => draft.source)}>
           <ReviewSuggestions
+            sourceNoteId={note.id}
             key={round}
             model={stage.model}
             drafts={stage.drafts}
@@ -537,6 +538,7 @@ type Removal = { count: number; text: string };
  * checks them as it checks typed cards, and saves all or none.
  */
 function ReviewSuggestions({
+  sourceNoteId,
   model,
   drafts: suggested,
   leftOut,
@@ -547,6 +549,7 @@ function ReviewSuggestions({
   onNoDecks,
   onAllRemoved,
 }: {
+  sourceNoteId: number;
   model: string;
   drafts: Draft[];
   leftOut: number;
@@ -601,7 +604,8 @@ function ReviewSuggestions({
       try {
         const deck = await createFlashcards(
           Number(deckId),
-          sent.map(({ front, back }) => ({ front, back }))
+          sent.map(({ front, back }) => ({ front, back })),
+          sourceNoteId
         );
         return { deck, count: sent.length };
       } catch (err) {

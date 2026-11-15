@@ -108,6 +108,7 @@ pub struct SessionProgress {
 pub enum SessionCard {
     Due {
         card: Flashcard,
+        source_note_id: Option<i64>,
         progress: SessionProgress,
         /// How many times in a row the card was last rated Again
         /// (`aid::again_streak`).
@@ -461,7 +462,16 @@ async fn due_card(
     let occlusion = occlusion::session_view(&mut *conn, card.id)
         .await?
         .map(Box::new);
+    let source_note_id: Option<i64> = sqlx::query_scalar(
+        "SELECT n.id FROM flashcards f
+         LEFT JOIN notes n ON n.id = f.source_note_id AND n.deleted_at IS NULL
+         WHERE f.id = ?1",
+    )
+    .bind(card.id)
+    .fetch_one(&mut *conn)
+    .await?;
     Ok(SessionCard::Due {
+        source_note_id,
         card,
         progress,
         again_streak,

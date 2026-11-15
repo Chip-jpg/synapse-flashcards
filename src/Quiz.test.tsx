@@ -129,7 +129,7 @@ describe("taking a quiz on a note", () => {
 
     expect(await screen.findByText("1 card added to Biology. It's due for review now.")).toBeTruthy();
     expect(argsOf("create_flashcards")).toEqual([
-      { deckId: 1, cards: [{ front: FIRST.question, back: "Prophase" }] },
+      { deckId: 1, cards: [{ front: FIRST.question, back: "Prophase" }], sourceNoteId: 5 },
     ]);
   });
 
@@ -191,7 +191,7 @@ describe("taking a quiz on a note", () => {
     await user.click(screen.getByRole("button", { name: "Add 1 card" }));
     await screen.findByText("1 card added to Biology. It's due for review now.");
     expect(argsOf("create_flashcards")).toEqual([
-      { deckId: 1, cards: [{ front: EQUATOR.question, back: EQUATOR.answer }] },
+      { deckId: 1, cards: [{ front: EQUATOR.question, back: EQUATOR.answer }], sourceNoteId: 5 },
     ]);
   });
 

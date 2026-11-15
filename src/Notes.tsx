@@ -2143,7 +2143,7 @@ function CardFromNoteForm({
         throw unchosen;
       }
       try {
-        return await createFlashcard(Number(deckId), front, back);
+        return await createFlashcard(Number(deckId), front, back, undefined, undefined, note.id);
       } catch (err) {
         const error = toCommandError(err);
         if (error.field || error.kind === "failed") throw err;

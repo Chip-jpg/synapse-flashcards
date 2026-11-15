@@ -209,6 +209,7 @@ export type SessionCard =
   | {
       status: "due";
       card: Flashcard;
+      sourceNoteId: number | null;
       progress: SessionProgress;
       /** How many times in a row the card was last rated Again. */
       againStreak: number;
@@ -478,9 +479,10 @@ export function createFlashcard(
   front: string,
   back: string,
   pictures?: CardPictureIds,
-  tags?: string[]
+  tags?: string[],
+  sourceNoteId?: number
 ): Promise<DeckDetail> {
-  return invoke<DeckDetail>("create_flashcard", { deckId, front, back, pictures, tags });
+  return invoke<DeckDetail>("create_flashcard", { deckId, front, back, pictures, tags, sourceNoteId });
 }
 
 /**
@@ -488,8 +490,8 @@ export function createFlashcard(
  * with the updated deck. All or nothing: a refused card rejects with its
  * `field` and `index`, and then no card is added.
  */
-export function createFlashcards(deckId: number, cards: CardText[]): Promise<DeckDetail> {
-  return invoke<DeckDetail>("create_flashcards", { deckId, cards });
+export function createFlashcards(deckId: number, cards: CardText[], sourceNoteId?: number): Promise<DeckDetail> {
+  return invoke<DeckDetail>("create_flashcards", { deckId, cards, sourceNoteId });
 }
 
 /**
