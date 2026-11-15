@@ -3,6 +3,7 @@ import { closeWindow, holdWindowClose } from "./api";
 import { ArchivedDecks } from "./ArchivedDecks";
 import { Backup } from "./Backup";
 import { Dashboard } from "./Dashboard";
+import { useT, type MessageKey } from "./i18n";
 import { DeckDetail } from "./DeckDetail";
 import { ExamPlanner } from "./ExamPlanner";
 import { NotesArea } from "./Notes";
@@ -59,45 +60,46 @@ const PLACE_VIEWS: Record<Place, View> = {
 };
 
 /** Which sidebar place a screen belongs to, and where it is within it. */
-function locate(view: View): { place: Place; atPlace: boolean; trail: string[] } {
+function locate(view: View, t: (key: MessageKey) => string): { place: Place; atPlace: boolean; trail: string[] } {
   switch (view.screen) {
     case "decks":
-      return { place: "desk", atPlace: true, trail: ["Synapse", "Study Desk"] };
+      return { place: "desk", atPlace: true, trail: ["Synapse", t("app.studyDesk")] };
     case "deck":
       return view.search
-        ? { place: "search", atPlace: false, trail: ["Search", "Deck"] }
-        : { place: "desk", atPlace: false, trail: ["Study Desk", "Deck"] };
+        ? { place: "search", atPlace: false, trail: [t("app.search"), t("app.deck")] }
+        : { place: "desk", atPlace: false, trail: [t("app.studyDesk"), t("app.deck")] };
     case "session":
     case "tagReview":
-      return { place: "desk", atPlace: false, trail: ["Study Desk", "Review"] };
+      return { place: "desk", atPlace: false, trail: [t("app.studyDesk"), t("app.review")] };
     case "search":
-      return { place: "search", atPlace: true, trail: ["Synapse", "Search"] };
+      return { place: "search", atPlace: true, trail: ["Synapse", t("app.search")] };
     case "tags":
-      return { place: "tags", atPlace: true, trail: ["Synapse", "Tags"] };
+      return { place: "tags", atPlace: true, trail: ["Synapse", t("app.tags")] };
     case "notes":
       return view.search
-        ? { place: "search", atPlace: false, trail: ["Search", "Note"] }
+        ? { place: "search", atPlace: false, trail: [t("app.search"), t("app.note")] }
         : view.fromSource !== undefined || view.draft
-          ? { place: "sources", atPlace: false, trail: ["Sources", "Note"] }
-          : { place: "notes", atPlace: true, trail: ["Synapse", "Notes"] };
+          ? { place: "sources", atPlace: false, trail: [t("app.sources"), t("app.note")] }
+          : { place: "notes", atPlace: true, trail: ["Synapse", t("app.notes")] };
     case "sources":
       return view.sourceId === undefined
-        ? { place: "sources", atPlace: true, trail: ["Synapse", "Sources"] }
-        : { place: "sources", atPlace: false, trail: ["Sources", "Source"] };
+        ? { place: "sources", atPlace: true, trail: ["Synapse", t("app.sources")] }
+        : { place: "sources", atPlace: false, trail: [t("app.sources"), t("app.source")] };
     case "exams":
-      return { place: "exams", atPlace: true, trail: ["Synapse", "Exams"] };
+      return { place: "exams", atPlace: true, trail: ["Synapse", t("app.exams")] };
     case "stats":
-      return { place: "stats", atPlace: true, trail: ["Synapse", "Statistics"] };
+      return { place: "stats", atPlace: true, trail: ["Synapse", t("app.statistics")] };
     case "archived":
-      return { place: "archived", atPlace: true, trail: ["Synapse", "Archived decks"] };
+      return { place: "archived", atPlace: true, trail: ["Synapse", t("app.archived")] };
     case "backup":
-      return { place: "backup", atPlace: true, trail: ["Synapse", "Backup & restore"] };
+      return { place: "backup", atPlace: true, trail: ["Synapse", t("app.backup")] };
     case "settings":
-      return { place: "settings", atPlace: true, trail: ["Synapse", "Settings"] };
+      return { place: "settings", atPlace: true, trail: ["Synapse", t("app.settings")] };
   }
 }
 
 function App() {
+  const { t } = useT();
   const [view, setView] = useState<View>(DECKS);
   // Every screen change after launch comes from a button press, so the new
   // screen takes focus; on first launch focus is left alone.
@@ -148,7 +150,7 @@ function App() {
     else if (leaving !== null) goTo(leaving);
   }
 
-  const { place, atPlace, trail } = locate(view);
+  const { place, atPlace, trail } = locate(view, t);
 
   return (
     <UnsavedChangesProvider value={report}>
@@ -179,15 +181,14 @@ function App() {
             deckId={view.deckId}
             justCreated={view.justCreated}
             focusCardId={view.cardId ?? null}
-            backLabel={view.search ? "Back to search" : undefined}
+            backLabel={view.search ? t("app.backSearch") : undefined}
             onBack={() => (view.search ? backToSearch(view.search) : show(DECKS))}
             onStart={startReview}
             onArchived={() =>
               show({
                 screen: "decks",
                 notice:
-                  "Deck archived. Its cards and review history are kept under Archived decks, " +
-                  "where you can unarchive it.",
+                  t("app.archivedNotice"),
               })
             }
           />
@@ -232,13 +233,13 @@ function App() {
               view.search && view.noteId !== undefined
                 ? {
                     noteId: view.noteId,
-                    backLabel: "Back to search",
+                    backLabel: t("app.backSearch"),
                     onBack: () => backToSearch(view.search!),
                   }
                 : view.fromSource !== undefined && view.noteId !== undefined
                   ? {
                       noteId: view.noteId,
-                      backLabel: "Back to source",
+                      backLabel: t("app.backSource"),
                       onBack: () => show({ screen: "sources", sourceId: view.fromSource }),
                     }
                   : undefined
@@ -295,7 +296,7 @@ function App() {
               setRestores((n) => n + 1);
               show({
                 screen: "decks",
-                notice: `Backup restored from ${fileName}. Everything shown now comes from that backup.`,
+                notice: t("app.backupNotice", { name: fileName }),
               });
             }}
           />

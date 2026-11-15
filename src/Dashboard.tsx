@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useT } from "./i18n";
 import {
   getDecks,
   getExamPlan,
@@ -13,7 +14,6 @@ import {
   type TodaySummary,
 } from "./api";
 import { CreateDeckForm } from "./CreateDeckForm";
-import { daysLeftText } from "./ExamPlanner";
 import {
   ArrowRightIcon,
   BookIcon,
@@ -101,6 +101,7 @@ export function Dashboard({
   /** Open the Exams screen. */
   onOpenExams?: () => void;
 }) {
+  const { t } = useT();
   const [state, setState] = useState<DecksState>({ status: "loading" });
   // Bumping this re-runs the load effect (Retry, or refreshing counts).
   const [attempt, setAttempt] = useState(0);
@@ -145,7 +146,7 @@ export function Dashboard({
   if (state.status === "loading") {
     return (
       <p className="loading" role="status">
-        Loading your decks…
+        {t("desk.loading")}
       </p>
     );
   }
@@ -154,7 +155,7 @@ export function Dashboard({
     return (
       <Message focus={moveFocus} tone="alert" text={state.message}>
         <button type="button" className="button" onClick={() => reload()}>
-          Retry
+          {t("desk.retry")}
         </button>
       </Message>
     );
@@ -224,6 +225,7 @@ function StudyDesk({
   onOpenExams: () => void;
   onChanged: () => void;
 }) {
+  const { t } = useT();
   const ref = useFocusOnMount<HTMLElement>(focus === "list");
   const createRef = useFocusOnMount<HTMLButtonElement>(focus === "create");
   const noticeRef = useFocusOnMount<HTMLParagraphElement>(focus === "notice");
@@ -236,16 +238,16 @@ function StudyDesk({
       <div className="page-header">
         <div className="page-heading">
           <h2 id="desk-heading" className="page-title">
-            Study Desk
+            {t("nav.desk")}
           </h2>
           <p className="page-intro">
-            Review the cards that are due, or open a deck you made to add and edit its cards.
+            {t("desk.intro")}
           </p>
           {today && <TodayLine today={today} />}
         </div>
         <button ref={createRef} type="button" className="button" onClick={onCreate}>
           <PlusIcon />
-          Create deck
+          {t("desk.createDeck")}
         </button>
       </div>
       {notice && (
@@ -258,7 +260,7 @@ function StudyDesk({
 
       {decks.length === 0 ? (
         <p className="empty" role="status">
-          No decks yet. Choose Create deck to make one.
+          {t("desk.empty")}
         </p>
       ) : (
         <>
@@ -270,7 +272,7 @@ function StudyDesk({
 
           <section className="deck-section" aria-labelledby="deck-list-heading">
             <h3 id="deck-list-heading" className="section-title">
-              Your decks <span className="count">{decks.length}</span>
+              {t("desk.decks")} <span className="count">{decks.length}</span>
             </h3>
             <ul className="deck-list">
               {decks.map((deck) => (
@@ -295,19 +297,22 @@ function StudyDesk({
  * they were for, which differ once a card is rated more than once.
  */
 function TodayLine({ today }: { today: TodaySummary }) {
+  const { t, plural } = useT();
   const { reviews, cards } = today;
   return (
     <p className="today-line">
       {reviews === 0
-        ? "No reviews yet today"
-        : `Today: ${reviews} ${reviews === 1 ? "review" : "reviews"} · ${cards} ${cards === 1 ? "card" : "cards"}`}
+        ? t("desk.reviewZero")
+        : t("desk.today", { reviews, reviewWord: t(reviews === 1 ? "desk.reviewOne" : "desk.reviewOther"), cardsText: plural(cards, "common.cardOne", "common.cardOther") })}
     </p>
   );
 }
 
 /** The soonest exam that isn't over, with its goal for today and its readiness. */
 function NextExam({ plan, onOpen }: { plan: ExamPlan; onOpen: () => void }) {
+  const { t } = useT();
   const readiness = Math.round(plan.readiness);
+  const days = plan.status === "today" ? t("desk.examToday") : plan.daysLeft === 1 ? t("desk.examTomorrow") : t("desk.examInDays", { count: plan.daysLeft });
   return (
     <section className="panel panel-row next-exam" aria-labelledby="next-exam-heading">
       <span className="section-icon section-icon-amber" aria-hidden="true">
@@ -315,15 +320,14 @@ function NextExam({ plan, onOpen }: { plan: ExamPlan; onOpen: () => void }) {
       </span>
       <div className="panel-row-text">
         <h3 id="next-exam-heading" className="section-title">
-          Next exam: {plan.title}
+          {t("desk.nextExam", { name: plan.title })}
         </h3>
         <p className="field-hint">
-          {daysLeftText(plan)} · goal today: {plan.dailyGoal}{" "}
-          {plan.dailyGoal === 1 ? "review" : "reviews"} · readiness {readiness}%
+          {t("desk.examGoal", { days, count: plan.dailyGoal, reviewWord: t(plan.dailyGoal === 1 ? "desk.reviewOne" : "desk.reviewOther"), readiness })}
         </p>
       </div>
       <button type="button" className="button button-small" onClick={onOpen}>
-        Open planner
+        {t("desk.openPlanner")}
         <ArrowRightIcon />
       </button>
     </section>
@@ -343,6 +347,7 @@ function NextReview({
   onChanged: () => void;
 }) {
   const { starting, error, start } = useStartReview(deck.id, deck.name, onStart, onChanged);
+  const { t, plural } = useT();
   const due = deck.dueCount;
 
   return (
@@ -356,10 +361,10 @@ function NextReview({
         {deck.description && <p className="focus-description">{deck.description}</p>}
       </div>
       <div className="focus-meta">
-        <p className="tag tag-primary">Ready to review</p>
+        <p className="tag tag-primary">{t("desk.ready")}</p>
         <p className="due-line">
           <span className="dot" aria-hidden="true" />
-          {`${due} ${due === 1 ? "card" : "cards"} due`}
+          {plural(due, "desk.cardDueOne", "desk.cardDueOther")}
         </p>
       </div>
       <div className="focus-actions">
@@ -371,7 +376,7 @@ function NextReview({
           onClick={start}
         >
           <PlayIcon />
-          Start review
+          {t("desk.startReview")}
         </button>
         {/* The sample deck can be reviewed but not opened for editing. */}
         {!deck.isSample && (
@@ -381,7 +386,7 @@ function NextReview({
             aria-describedby="next-review-name"
             onClick={() => onOpen(deck.id)}
           >
-            Open deck
+            {t("desk.openDeck")}
           </button>
         )}
       </div>
@@ -396,21 +401,21 @@ function NextReview({
 
 /** In place of the next review when no deck has cards due. */
 function NothingDue() {
+  const { t } = useT();
   return (
     <section className="focus-card focus-card-calm" aria-labelledby="nothing-due-heading">
       <div>
         <h3 id="nothing-due-heading" className="focus-title">
-          No cards are due right now
+          {t("desk.noCardsNow")}
         </h3>
         <p className="focus-description">
-          Cards become due again on the dates FSRS scheduled for them. In the meantime, you can
-          open a deck you made to add or edit cards.
+          {t("desk.nothingDueDescription")}
         </p>
       </div>
       <div className="focus-meta">
         <p className="tag tag-sage">
           <CheckIcon />
-          All caught up
+          {t("desk.allCaughtUp")}
         </p>
       </div>
     </section>
@@ -428,16 +433,17 @@ function TagReviews({
   tags: TagDue[];
   onStart: (tag: ReviewedTag) => void;
 }) {
+  const { t, plural } = useT();
   const due = tags.filter((tag) => tag.dueCount > 0);
   if (due.length === 0) return null;
 
   return (
     <section className="deck-section" aria-labelledby="tag-review-heading">
       <h3 id="tag-review-heading" className="section-title">
-        Review by tag <span className="count">{due.length}</span>
+        {t("desk.reviewByTag")} <span className="count">{due.length}</span>
       </h3>
       <p className="field-hint">
-        Review the due cards with one tag, from every deck that has them.
+        {t("desk.tagDescription")}
       </p>
       <ul className="deck-list">
         {due.map((tag) => {
@@ -451,7 +457,7 @@ function TagReviews({
                   </h4>
                   <p className="due-line">
                     <span className="dot" aria-hidden="true" />
-                    {`${tag.dueCount} ${tag.dueCount === 1 ? "card" : "cards"} due in ${tag.decks} ${tag.decks === 1 ? "deck" : "decks"}`}
+                    {t("desk.tagDue", { cards: plural(tag.dueCount, "common.cardOne", "common.cardOther"), decks: plural(tag.decks, "desk.deckOne", "desk.deckOther") })}
                   </p>
                 </div>
                 <div className="deck-actions">
@@ -462,7 +468,7 @@ function TagReviews({
                     onClick={() => onStart({ id: tag.id, name: tag.name })}
                   >
                     <PlayIcon />
-                    Review tag
+                    {t("desk.reviewTag")}
                   </button>
                 </div>
               </article>
@@ -476,6 +482,7 @@ function TagReviews({
 
 /** The way into the notes area. */
 function NotesLink({ focus, onOpen }: { focus: boolean; onOpen: () => void }) {
+  const { t } = useT();
   const openRef = useFocusOnMount<HTMLButtonElement>(focus);
 
   return (
@@ -485,10 +492,10 @@ function NotesLink({ focus, onOpen }: { focus: boolean; onOpen: () => void }) {
       </span>
       <div className="panel-row-text">
         <h3 id="notes-link-heading" className="section-title">
-          Notes
+          {t("desk.notes")}
         </h3>
         <p id="notes-link-hint" className="field-hint">
-          Type up your own study notes and keep them here, then write cards from them.
+          {t("desk.notesDescription")}
         </p>
       </div>
       <button
@@ -498,7 +505,7 @@ function NotesLink({ focus, onOpen }: { focus: boolean; onOpen: () => void }) {
         aria-describedby="notes-link-hint"
         onClick={onOpen}
       >
-        Open notes
+        {t("desk.openNotes")}
         <ArrowRightIcon />
       </button>
     </section>
@@ -517,6 +524,7 @@ function DeckRow({
   onChanged: () => void;
 }) {
   const { starting, error, start } = useStartReview(deck.id, deck.name, onStart, onChanged);
+  const { t, plural } = useT();
   const nameId = `deck-${deck.id}-name`;
   const due = deck.dueCount;
   // The sample deck can be reviewed but not opened for editing.
@@ -533,8 +541,8 @@ function DeckRow({
         <p className={due === 0 ? "due-line due-line-idle" : "due-line"}>
           {due > 0 && <span className="dot" aria-hidden="true" />}
           {due === 0
-            ? "No cards due right now"
-            : `${due} ${due === 1 ? "card" : "cards"} due`}
+            ? t("desk.noCardsNow")
+            : plural(due, "desk.cardDueOne", "desk.cardDueOther")}
         </p>
         {deck.description && <p className="deck-description">{deck.description}</p>}
       </div>
@@ -550,7 +558,7 @@ function DeckRow({
               onClick={start}
             >
               <PlayIcon />
-              Start review
+              {t("desk.startReview")}
             </button>
           )}
           {canOpen && (
@@ -560,7 +568,7 @@ function DeckRow({
               aria-describedby={nameId}
               onClick={() => onOpen(deck.id)}
             >
-              Open deck
+              {t("desk.openDeck")}
             </button>
           )}
         </div>

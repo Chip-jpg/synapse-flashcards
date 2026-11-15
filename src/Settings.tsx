@@ -12,6 +12,7 @@ import {
 } from "./api";
 import { RestoreIcon, SlidersIcon } from "./icons";
 import { Retention } from "./Retention";
+import { translate, useLang, useT, type Lang, type MessageKey } from "./i18n";
 import { formatDateTime, Message, useFocusOnMount } from "./ui";
 
 type SettingsState =
@@ -41,6 +42,8 @@ async function loadSettings(): Promise<SettingsState> {
  * applied, and keeps every change. Opened from the sidebar, so it takes focus.
  */
 export function Settings() {
+  const { lang, setLang } = useLang();
+  const { t } = useT();
   const [state, setState] = useState<SettingsState>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
   const [view, setView] = useState<SettingsView>({ key: 0, notice: null });
@@ -61,25 +64,44 @@ export function Settings() {
     setAttempt((n) => n + 1);
   }
 
+  const language = (
+    <section className="panel" aria-labelledby="language-heading">
+      <div className="section-heading">
+        <h3 id="language-heading" className="section-title">{t("settings.language")}</h3>
+      </div>
+      <label htmlFor="language">{t("settings.language")}</label>{" "}
+      <select id="language" value={lang} onChange={(event) => setLang(event.target.value as Lang)}>
+        <option value="en">{t("settings.english")}</option>
+        <option value="it">{t("settings.italian")}</option>
+      </select>
+    </section>
+  );
+
   if (state.status === "loading") {
     return (
-      <p className="loading" role="status">
-        Loading your settings…
-      </p>
+      <>
+        {language}
+        <p className="loading" role="status">{t("settings.loading")}</p>
+      </>
     );
   }
 
   if (state.status === "error") {
     return (
+      <>
+      {language}
       <Message focus tone="alert" text={state.message}>
         <button type="button" className="button" onClick={() => reload(null)}>
-          Retry
+          {t("settings.retry")}
         </button>
       </Message>
+      </>
     );
   }
 
   return (
+    <>
+    {language}
     <Scheduling
       key={view.key}
       settings={state.settings}
@@ -90,6 +112,7 @@ export function Settings() {
       }}
       onStale={(message) => reload(message)}
     />
+    </>
   );
 }
 
@@ -113,6 +136,7 @@ function Scheduling({
   /** What's shown is out of date: reload, explaining with `message`. */
   onStale: (message: string) => void;
 }) {
+  const { t } = useT();
   const screenRef = useFocusOnMount<HTMLElement>(notice === null);
   const noticeRef = useFocusOnMount<HTMLParagraphElement>(notice !== null);
   const [run, setRun] = useState<RunState>({ kind: "idle" });
@@ -152,7 +176,7 @@ function Scheduling({
       const outcome = await optimizeParameters();
       if (outcome.status === "stopped") {
         setRun({ kind: "idle" });
-        setStatus("Optimizing stopped. Nothing was changed.");
+        setStatus(t("settings.stopped"));
       } else {
         setRun({ kind: "result", outcome, applying: false });
       }
@@ -173,8 +197,7 @@ function Scheduling({
       const next = await applyParameters(outcome.token);
       onChanged(
         next,
-        "Your own parameters are in use. Every rating from now on is scheduled with them; " +
-          "cards keep the due dates they already have."
+        t("settings.applied")
       );
       return;
     } catch (err) {
@@ -192,7 +215,7 @@ function Scheduling({
   function discard() {
     if (busyRef.current) return;
     setRun({ kind: "idle" });
-    setStatus("The fitted parameters were discarded. Nothing was changed.");
+    setStatus(t("settings.discarded"));
     optimizeRef.current?.focus();
   }
 
@@ -205,8 +228,7 @@ function Scheduling({
       const next = await resetParameters(settings.version);
       onChanged(
         next,
-        "FSRS's default parameters are in use again for every rating from now on. Cards keep " +
-          "the due dates they already have."
+        t("settings.resetNotice")
       );
       return;
     } catch (err) {
@@ -228,9 +250,9 @@ function Scheduling({
       <div className="page-header">
         <div className="page-heading">
           <h2 id="settings-heading" className="page-title">
-            Settings
+            {t("settings.title")}
           </h2>
-          <p className="page-intro">How Synapse schedules your reviews.</p>
+          <p className="page-intro">{t("settings.intro")}</p>
         </div>
       </div>
 
@@ -246,31 +268,33 @@ function Scheduling({
             <SlidersIcon />
           </span>
           <h3 id="scheduling-heading" className="section-title">
-            Personal scheduling
+            {t("settings.personal")}
           </h3>
         </div>
 
         <p className="settings-text">
           {settings.personal
-            ? `Reviews are scheduled with FSRS parameters fitted to your own history` +
-              (settings.reviewsUsed !== null
-                ? ` (${settings.reviewsUsed.toLocaleString()} reviews)`
-                : "") +
-              (appliedOn ? `, applied ${appliedOn}.` : ".")
-            : "Reviews are scheduled with FSRS's default parameters, which fit the average " +
-              "learner. Fitting them to your own reviews can predict better when you'll forget."}
+            ? t("settings.personalHistory", {
+                reviews: settings.reviewsUsed !== null
+                  ? t(settings.reviewsUsed === 1 ? "settings.reviewCountOne" : "settings.reviewCount", {
+                      count: settings.reviewsUsed.toLocaleString(),
+                    })
+                  : "",
+                applied: appliedOn ? t("settings.appliedDate", { date: appliedOn }) : "",
+              })
+            : t("settings.defaultHistory")}
         </p>
 
         <div className="data-action">
           <p id="optimize-hint" className="field-hint">
             {enough
-              ? `${settings.usableReviews.toLocaleString()} of your reviews can be learned from. ` +
-                "Optimizing compares fitted parameters with the ones in use; nothing changes " +
-                "until you apply them."
-              : `${settings.usableReviews.toLocaleString()} of the ` +
-                `${settings.minimumReviews.toLocaleString()} reviews needed so far. Only ratings ` +
-                "made at least a day after the card's previous one count. With fewer, a fit " +
-                "mostly follows chance, and the defaults are the better guess."}
+              ? t("settings.learnable", {
+                  count: settings.usableReviews.toLocaleString(),
+                })
+              : t("settings.needMore", {
+                  count: settings.usableReviews.toLocaleString(),
+                  minimum: settings.minimumReviews.toLocaleString(),
+                })}
           </p>
           <div className="form-actions">
             <button
@@ -282,16 +306,16 @@ function Scheduling({
               onClick={optimize}
             >
               <SlidersIcon />
-              Optimize
+              {t("settings.optimize")}
             </button>
             {optimizing && (
               <button type="button" className="button" onClick={() => void stopOptimizing()}>
-                Stop
+                {t("settings.stop")}
               </button>
             )}
           </div>
           <p className="form-status" role="status">
-            {optimizing ? "Fitting FSRS to your reviews…" : status}
+            {optimizing ? t("settings.fitting") : status}
           </p>
         </div>
 
@@ -316,7 +340,7 @@ function Scheduling({
               }}
             >
               <RestoreIcon />
-              Reset to defaults
+              {t("settings.reset")}
             </button>
           </div>
         )}
@@ -324,9 +348,7 @@ function Scheduling({
         {run.kind === "confirmReset" && (
           <div className="confirm confirm-calm">
             <p ref={questionRef} className="confirm-question" tabIndex={-1}>
-              Go back to FSRS&apos;s default parameters? Every rating from now on is scheduled
-              with them. Cards keep the due dates they already have, and you can optimize again
-              at any time.
+              {t("settings.resetQuestion")}
             </p>
             <div className="form-actions">
               <button
@@ -335,7 +357,7 @@ function Scheduling({
                 aria-disabled={run.resetting}
                 onClick={reset}
               >
-                Reset to defaults
+                {t("settings.reset")}
               </button>
               <button
                 type="button"
@@ -345,11 +367,11 @@ function Scheduling({
                   if (!run.resetting) setRun({ kind: "idle" });
                 }}
               >
-                Keep my parameters
+                {t("settings.keep")}
               </button>
             </div>
             <p className="form-status" role="status">
-              {run.resetting ? "Resetting…" : ""}
+              {run.resetting ? t("settings.resetting") : ""}
             </p>
           </div>
         )}
@@ -361,8 +383,8 @@ function Scheduling({
         )}
 
         <details className="settings-details">
-          <summary>The parameters in use</summary>
-          <ParameterTable first={settings.parameters} firstLabel="In use" />
+          <summary>{t("settings.parametersInUse")}</summary>
+          <ParameterTable first={settings.parameters} firstLabel={t("settings.inUse")} />
         </details>
       </section>
 
@@ -371,12 +393,12 @@ function Scheduling({
   );
 }
 
-const CASES: { case: IntervalCase; label: string }[] = [
-  { case: "firstAgain", label: "Again on a new card" },
-  { case: "firstHard", label: "Hard on a new card" },
-  { case: "firstGood", label: "Good on a new card" },
-  { case: "firstEasy", label: "Easy on a new card" },
-  { case: "secondGood", label: "Good, then Good again when due" },
+const CASES: { case: IntervalCase; label: MessageKey }[] = [
+  { case: "firstAgain", label: "settings.caseAgain" },
+  { case: "firstHard", label: "settings.caseHard" },
+  { case: "firstGood", label: "settings.caseGood" },
+  { case: "firstEasy", label: "settings.caseEasy" },
+  { case: "secondGood", label: "settings.caseSecondGood" },
 ];
 
 /** Fitted parameters against the ones in use, and the choice to apply them. */
@@ -393,24 +415,28 @@ function Comparison({
   onApply: () => void;
   onDiscard: () => void;
 }) {
+  const { t } = useT();
   return (
     <div className="settings-result">
       <h4 ref={headingRef} className="item-title" tabIndex={-1}>
-        Fitted to {outcome.reviewsUsed.toLocaleString()} reviews
+        {t(outcome.reviewsUsed === 1 ? "settings.fittedCountOne" : "settings.fittedCount", {
+          count: outcome.reviewsUsed.toLocaleString(),
+        })}
       </h4>
       <p className="settings-text">
-        On your own reviews, FSRS&apos;s predictions of whether you&apos;d remember were off by{" "}
-        {formatPercent(outcome.currentError)} on average with the parameters in use, and{" "}
-        {formatPercent(outcome.proposedError)} with the fitted ones.
+        {t("settings.prediction", {
+          current: formatPercent(outcome.currentError).slice(0, -1),
+          proposed: formatPercent(outcome.proposedError).slice(0, -1),
+        })}
       </p>
 
       <table className="compare-table">
-        <caption>Next review after…</caption>
+        <caption>{t("settings.nextReview")}</caption>
         <thead>
           <tr>
-            <th scope="col">Rating</th>
-            <th scope="col">In use</th>
-            <th scope="col">Fitted</th>
+            <th scope="col">{t("settings.rating")}</th>
+            <th scope="col">{t("settings.inUse")}</th>
+            <th scope="col">{t("settings.fitted")}</th>
           </tr>
         </thead>
         <tbody>
@@ -419,9 +445,9 @@ function Comparison({
             if (!change) return null;
             return (
               <tr key={name}>
-                <th scope="row">{label}</th>
-                <td>{formatInterval(change.current)}</td>
-                <td>{formatInterval(change.proposed)}</td>
+                <th scope="row">{t(label)}</th>
+                <td>{formatInterval(change.current, t)}</td>
+                <td>{formatInterval(change.proposed, t)}</td>
               </tr>
             );
           })}
@@ -431,9 +457,7 @@ function Comparison({
       {outcome.better ? (
         <div className="confirm confirm-calm">
           <p className="confirm-question">
-            The fitted parameters predict your reviews better. Applying them changes how every
-            rating from now on is scheduled. Cards keep the due dates they already have, and you
-            can reset to the defaults at any time.
+            {t("settings.better")}
           </p>
           <div className="form-actions">
             <button
@@ -442,7 +466,7 @@ function Comparison({
               aria-disabled={applying}
               onClick={onApply}
             >
-              Apply
+              {t("settings.apply")}
             </button>
             <button
               type="button"
@@ -450,34 +474,33 @@ function Comparison({
               aria-disabled={applying}
               onClick={onDiscard}
             >
-              Discard
+              {t("settings.discard")}
             </button>
           </div>
           <p className="form-status" role="status">
-            {applying ? "Applying…" : ""}
+            {applying ? t("settings.applying") : ""}
           </p>
         </div>
       ) : (
         <div className="confirm">
           <p className="confirm-question">
-            The fitted parameters don&apos;t predict your reviews better than the ones in use, so
-            Synapse keeps those.
+            {t("settings.notBetter")}
           </p>
           <div className="form-actions">
             <button type="button" className="button button-small" onClick={onDiscard}>
-              Close
+              {t("settings.close")}
             </button>
           </div>
         </div>
       )}
 
       <details className="settings-details">
-        <summary>All 21 parameters</summary>
+        <summary>{t("settings.allParameters")}</summary>
         <ParameterTable
           first={outcome.current}
-          firstLabel="In use"
+          firstLabel={t("settings.inUse")}
           second={outcome.proposed}
-          secondLabel="Fitted"
+          secondLabel={t("settings.fitted")}
         />
       </details>
     </div>
@@ -495,11 +518,12 @@ function ParameterTable({
   second?: number[];
   secondLabel?: string;
 }) {
+  const { t } = useT();
   return (
     <table className="compare-table compare-table-numbers">
       <thead>
         <tr>
-          <th scope="col">Parameter</th>
+          <th scope="col">{t("settings.parameter")}</th>
           <th scope="col">{firstLabel}</th>
           {second && <th scope="col">{secondLabel}</th>}
         </tr>
@@ -523,17 +547,20 @@ export function formatPercent(share: number): string {
 }
 
 /** An interval in days as words, e.g. "10 min", "5 hours", "2.3 days", "36 days". */
-export function formatInterval(days: number): string {
+export function formatInterval(
+  days: number,
+  t: ReturnType<typeof useT>["t"] = (key, params) => translate("en", key, params)
+): string {
   const minutes = days * 24 * 60;
-  if (minutes < 60) return `${Math.max(1, Math.round(minutes))} min`;
+  if (minutes < 60) return t("settings.minute", { count: Math.max(1, Math.round(minutes)) });
   const hours = minutes / 60;
   if (hours < 23.5) {
     const rounded = Math.round(hours);
-    return `${rounded} ${rounded === 1 ? "hour" : "hours"}`;
+    return t(rounded === 1 ? "settings.hourOne" : "settings.hourOther", { count: rounded });
   }
   if (days < 10) {
     const rounded = Math.round(days * 10) / 10;
-    return `${rounded} ${rounded === 1 ? "day" : "days"}`;
+    return t(rounded === 1 ? "settings.dayOne" : "settings.dayOther", { count: rounded });
   }
-  return `${Math.round(days).toLocaleString()} days`;
+  return t("settings.dayOther", { count: Math.round(days).toLocaleString() });
 }

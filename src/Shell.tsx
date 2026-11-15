@@ -1,4 +1,5 @@
 import { Fragment, type ReactNode } from "react";
+import { useT, type MessageKey } from "./i18n";
 import {
   ArchiveIcon,
   BookIcon,
@@ -26,17 +27,17 @@ export type Place =
   | "backup"
   | "settings";
 
-const PLACES: { place: Place; label: string; icon: ReactNode }[] = [
-  { place: "desk", label: "Study Desk", icon: <DeskIcon /> },
-  { place: "search", label: "Search", icon: <SearchIcon /> },
-  { place: "tags", label: "Tags", icon: <TagIcon /> },
-  { place: "exams", label: "Exams", icon: <CalendarIcon /> },
-  { place: "notes", label: "Notes", icon: <BookIcon /> },
-  { place: "sources", label: "Sources", icon: <FileIcon /> },
-  { place: "stats", label: "Statistics", icon: <ChartIcon /> },
-  { place: "archived", label: "Archived decks", icon: <ArchiveIcon /> },
-  { place: "backup", label: "Backup & restore", icon: <DatabaseIcon /> },
-  { place: "settings", label: "Settings", icon: <SlidersIcon /> },
+const PLACES: { place: Place; label: MessageKey; icon: ReactNode }[] = [
+  { place: "desk", label: "nav.desk", icon: <DeskIcon /> },
+  { place: "search", label: "nav.search", icon: <SearchIcon /> },
+  { place: "tags", label: "nav.tags", icon: <TagIcon /> },
+  { place: "exams", label: "nav.exams", icon: <CalendarIcon /> },
+  { place: "notes", label: "nav.notes", icon: <BookIcon /> },
+  { place: "sources", label: "nav.sources", icon: <FileIcon /> },
+  { place: "stats", label: "nav.stats", icon: <ChartIcon /> },
+  { place: "archived", label: "nav.archived", icon: <ArchiveIcon /> },
+  { place: "backup", label: "nav.backup", icon: <DatabaseIcon /> },
+  { place: "settings", label: "nav.settings", icon: <SlidersIcon /> },
 ];
 
 /**
@@ -63,6 +64,7 @@ export function Shell({
   onNavigate: (place: Place) => void;
   children: ReactNode;
 }) {
+  const { t } = useT();
   return (
     <div className="app">
       <header className="sidebar">
@@ -72,7 +74,7 @@ export function Shell({
           </span>
           <div>
             <h1 className="app-title">Synapse</h1>
-            <p className="brand-tagline">Flashcards and notes</p>
+            <p className="brand-tagline">{t("common.tagline")}</p>
           </div>
         </div>
 
@@ -87,7 +89,7 @@ export function Shell({
                   onClick={() => onNavigate(item.place)}
                 >
                   {item.icon}
-                  {item.label}
+                  {t(item.label)}
                 </button>
               </li>
             ))}
@@ -97,9 +99,9 @@ export function Shell({
         <div className="sidebar-note">
           <p className="sidebar-note-title">
             <span className="dot" aria-hidden="true" />
-            Local database
+            {t("common.localDatabase")}
           </p>
-          <p>Your decks, cards, reviews, and notes are saved on this computer.</p>
+          <p>{t("common.localDescription")}</p>
         </div>
       </header>
 
@@ -122,7 +124,7 @@ export function Shell({
           </p>
           <p className="local-badge">
             <span className="dot" aria-hidden="true" />
-            Stored on this computer
+            {t("common.stored")}
           </p>
         </div>
 
