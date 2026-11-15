@@ -23,7 +23,6 @@ import {
 import {
   CardSearchField,
   CardTagFilter,
-  cardCount,
   matchingCards,
   RestoreSelected,
   SelectionActions,
@@ -46,6 +45,7 @@ import { useUnsavedChanges } from "./unsaved";
 import { appendText } from "./pictureText";
 import { PictureField, PictureGallery, samePictures, usePictureAdder } from "./pictures";
 import { sameTags, TagChips, TagField } from "./tagInput";
+import { useT } from "./i18n";
 
 /** A card with no pictures, as cards from before pictures (and tests) arrive. */
 const NO_PICTURES: CardPictures = { front: [], back: [] };
@@ -95,7 +95,7 @@ export function DeckDetail({
   deckId,
   justCreated,
   focusCardId = null,
-  backLabel = "Back to Study Desk",
+  backLabel,
   onBack,
   onStart,
   onArchived,
@@ -111,6 +111,8 @@ export function DeckDetail({
   /** The deck was archived, so this screen can't show it any more. */
   onArchived: () => void;
 }) {
+  const { t, plural } = useT();
+  const resolvedBackLabel = backLabel ?? t("review.backDesk");
   const [state, setState] = useState<DetailState>({ status: "loading" });
   // Bumping this re-runs the load effect (Retry, or refreshing counts).
   const [attempt, setAttempt] = useState(0);
@@ -118,7 +120,7 @@ export function DeckDetail({
   // A confirmation after a save takes focus, so it's announced.
   const [view, setView] = useState<ViewState>({
     key: 0,
-    notice: justCreated ? "Deck created. Add your first card." : null,
+    notice: justCreated ? t("deck.created") : null,
     focus: justCreated
       ? { to: "notice" }
       : focusCardId !== null
@@ -163,7 +165,7 @@ export function DeckDetail({
   if (state.status === "loading") {
     return (
       <p className="loading" role="status">
-        Loading the deck…
+        {t("deck.loading")}
       </p>
     );
   }
@@ -174,10 +176,10 @@ export function DeckDetail({
       <Message focus tone="alert" text={state.message}>
         <div className="actions">
           <button type="button" className="button" onClick={() => reload()}>
-            Retry
+            {t("settings.retry")}
           </button>
           <button type="button" className="button" onClick={onBack}>
-            {backLabel}
+            {resolvedBackLabel}
           </button>
         </div>
       </Message>
@@ -212,7 +214,7 @@ export function DeckDetail({
       <RenameDeckForm
         deck={state.deck}
         onCancel={() => showView(null, { to: "renameDeck" })}
-        onSaved={(deck) => showSaved(deck, "Deck renamed.")}
+        onSaved={(deck) => showSaved(deck, t("deck.renamed"))}
       />
     );
   }
@@ -227,62 +229,62 @@ export function DeckDetail({
       onAdd={() => setMode({ kind: "add" })}
       onEdit={(card) => setMode({ kind: "edit", card })}
       onDeleted={(deck) =>
-        showSaved(deck, "Card deleted. It's kept under Deleted cards, where you can restore it.")
+        showSaved(deck, t("deck.deletedNotice"))
       }
       onRestored={(deck) =>
-        showSaved(deck, "Card restored. It's back in this deck, with its schedule unchanged.")
+        showSaved(deck, t("deck.restoredNotice"))
       }
       onRestoreStale={() =>
         // The card wasn't deleted after all, or the deck was archived since
         // this screen loaded. Say so, rather than reloading silently and
         // leaving the press unexplained.
-        reload("That card couldn't be restored. Here's this deck as it is now.")
+        reload(t("deck.restoreStale"))
       }
       onRestoredAll={(deck, restored) =>
         showSaved(
           deck,
-          `${restored} cards restored. They're back in this deck, with their schedules unchanged.`,
+          plural(restored, "deck.restoredOne", "deck.restoredOther"),
         )
       }
       onRestoreAllStale={() =>
         // The deleted cards on screen aren't the ones the deck has now, or
         // the deck was archived meanwhile. Nothing was restored.
-        reload("The deleted cards couldn't be restored. Here's this deck as it is now.")
+        reload(t("deck.restoreAllStale"))
       }
       onRestoredSelected={(deck, restored) =>
         showSaved(
           deck,
-          `${cardCount(restored)} restored. ${restored === 1 ? "It's" : "They're"} back in this deck, with ${restored === 1 ? "its schedule" : "their schedules"} unchanged.`,
+          plural(restored, "deck.restoredOne", "deck.restoredOther"),
         )
       }
       onBulkDeleted={(deck, deleted) =>
         showSaved(
           deck,
-          `${cardCount(deleted)} deleted. ${deleted === 1 ? "It's" : "They're"} kept under Deleted cards, where you can restore ${deleted === 1 ? "it" : "them"}.`,
+          plural(deleted, "deck.bulkDeletedOne", "deck.bulkDeletedOther"),
         )
       }
       onBulkMoved={(deck, moved, toDeckName) =>
         showSaved(
           deck,
-          `${cardCount(moved)} moved to ${toDeckName}, with ${moved === 1 ? "its schedule" : "their schedules"} unchanged.`,
+          plural(moved, "deck.movedOne", "deck.movedOther", { name: toDeckName }),
         )
       }
       onBulkTagged={(deck, changed) =>
         showSaved(
           deck,
           changed === 0
-            ? "No card's tags changed: the selected cards already had them as asked."
-            : `Tags changed on ${cardCount(changed)}. Nothing else about ${changed === 1 ? "it" : "them"} changed.`,
+            ? t("deck.tagsUnchanged")
+            : plural(changed, "deck.taggedOne", "deck.taggedOther"),
         )
       }
       onBulkStale={(message) =>
         // The selected cards aren't all in this deck any more, or a deck was
         // archived meanwhile. Nothing was changed; say why, and reload.
-        reload(`${message} Nothing was changed. Here's this deck as it is now.`)
+        reload(t("deck.bulkStale", { message }))
       }
       onRename={() => setMode({ kind: "rename" })}
       onArchived={onArchived}
-      backLabel={backLabel}
+      backLabel={resolvedBackLabel}
       onBack={onBack}
       onStart={onStart}
       onChanged={reload}
@@ -346,6 +348,7 @@ function DeckView({
   onStart: (sessionId: number, deckName: string) => void;
   onChanged: () => void;
 }) {
+  const { t, plural } = useT();
   const screenRef = useFocusOnMount<HTMLElement>(focus.to === "screen");
   const noticeRef = useFocusOnMount<HTMLParagraphElement>(focus.to === "notice");
   const addRef = useFocusOnMount<HTMLButtonElement>(focus.to === "addCard");
@@ -449,16 +452,18 @@ function DeckView({
         {deck.description && <p className="page-intro">{deck.description}</p>}
         <div className="stat-row">
           <p className="pill">
-            {cards === 0 ? "No cards yet" : `${cards} ${cards === 1 ? "card" : "cards"} in total`}
+            {cards === 0 ? t("deck.noCards") : plural(cards, "deck.totalOne", "deck.totalOther")}
           </p>
           <p className={due === 0 ? "pill" : "pill pill-due"}>
             {due > 0 && <span className="dot" aria-hidden="true" />}
             {due === 0
-              ? "No cards due right now"
-              : `${due} ${due === 1 ? "card" : "cards"} due`}
+              ? t("deck.noneDue")
+              : plural(due, "desk.cardDueOne", "desk.cardDueOther")}
           </p>
           {deleted > 0 && (
-            <p className="pill">{`${deleted} deleted ${deleted === 1 ? "card" : "cards"}`}</p>
+            <p className="pill">
+              {plural(deleted, "deck.deletedCountOne", "deck.deletedCountOther")}
+            </p>
           )}
         </div>
       </div>
@@ -481,7 +486,7 @@ function DeckView({
             onClick={start}
           >
             <PlayIcon />
-            Start review
+            {t("desk.startReview")}
           </button>
         )}
         <button
@@ -491,7 +496,7 @@ function DeckView({
           onClick={onAdd}
         >
           <PlusIcon />
-          Add card
+          {t("deck.addCard")}
         </button>
       </div>
 
@@ -503,7 +508,7 @@ function DeckView({
 
       <section className="cards" aria-labelledby="cards-heading">
         <h3 id="cards-heading" className="section-title">
-          Cards <span className="count">{cards}</span>
+          {t("search.scopeCards")} <span className="count">{cards}</span>
         </h3>
         {deck.cards.length >= 2 && (
           <CardSearchField query={query} shown={shown.length} onChange={setQuery} />
@@ -519,21 +524,23 @@ function DeckView({
               onChange={toggleShown}
             />
             {!searching && !filtering
-              ? "Select all cards"
+              ? t("deck.selectAll")
               : !searching
-                ? `Select all ${cardCount(shown.length)} tagged ${tagFilter}`
-                : `Select all ${shown.length === 1 ? "matching card" : `${shown.length} matching cards`}`}
+                ? plural(shown.length, "deck.selectTaggedOne", "deck.selectTaggedOther", {
+                    tag: tagFilter,
+                  })
+                : plural(shown.length, "deck.selectMatchingOne", "deck.selectMatchingOther")}
           </label>
         )}
         {deck.cards.length === 0 ? (
-          <p className="empty">Choose Add card to write this deck's first card.</p>
+          <p className="empty">{t("deck.empty")}</p>
         ) : shown.length === 0 ? (
           <p className="empty">
             {searching && filtering
-              ? `No cards tagged ${tagFilter} match “${query.trim()}”. Try other words, or another tag.`
+              ? t("deck.noTaggedMatches", { tag: tagFilter, query: query.trim() })
               : searching
-                ? `No cards in this deck match “${query.trim()}”. Try other words, or clear the search.`
-                : `No cards in this deck are tagged ${tagFilter}.`}
+                ? t("deck.noMatches", { query: query.trim() })
+                : t("deck.noTagged", { tag: tagFilter })}
           </p>
         ) : (
           <ul className="card-list">
@@ -562,10 +569,10 @@ function DeckView({
             hidden={selectedIds.length - shownSelected}
             hiddenBy={
               searching && filtering
-                ? "the search and tag filter"
+                ? t("bulk.bothHider")
                 : filtering
-                  ? "the tag filter"
-                  : "the search"
+                  ? t("bulk.tagHider")
+                  : t("bulk.searchHider")
             }
             onClear={() => setSelected(new Set())}
             onDeleted={onBulkDeleted}
@@ -613,6 +620,7 @@ function ManageDeck({
   onRename: () => void;
   onArchived: () => void;
 }) {
+  const { t } = useT();
   const [confirming, setConfirming] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -662,14 +670,13 @@ function ManageDeck({
   return (
     <section className="cards section-quiet" aria-labelledby="manage-deck-heading">
       <h3 id="manage-deck-heading" className="section-title section-title-quiet">
-        Manage deck
+        {t("deck.manage")}
       </h3>
 
       {confirming ? (
         <div className="confirm">
           <p ref={questionRef} className="confirm-question" tabIndex={-1}>
-            Archive this deck? It will leave your deck list and can't be reviewed or changed. Its
-            cards and review history are kept, and you can unarchive it from Archived decks later.
+            {t("deck.archiveQuestion")}
           </p>
           <div className="deck-actions">
             <button
@@ -679,7 +686,7 @@ function ManageDeck({
               aria-disabled={archiving}
               onClick={confirmArchive}
             >
-              Archive deck
+              {t("deck.archive")}
             </button>
             <button
               type="button"
@@ -689,11 +696,11 @@ function ManageDeck({
                 if (!archiving) setConfirming(false);
               }}
             >
-              Keep deck
+              {t("deck.keepDeck")}
             </button>
           </div>
           <p className="form-status" role="status">
-            {archiving ? "Archiving…" : ""}
+            {archiving ? t("deck.archiving") : ""}
           </p>
         </div>
       ) : (
@@ -706,7 +713,7 @@ function ManageDeck({
             onClick={onRename}
           >
             <PencilIcon />
-            Rename deck
+            {t("deck.rename")}
           </button>
           <button
             ref={archiveRef}
@@ -716,7 +723,7 @@ function ManageDeck({
             onClick={() => setConfirming(true)}
           >
             <ArchiveIcon />
-            Archive deck
+            {t("deck.archive")}
           </button>
         </div>
       )}
@@ -740,6 +747,7 @@ function RenameDeckForm({
   onCancel: () => void;
   onSaved: (deck: Deck) => void;
 }) {
+  const { t } = useT();
   const [name, setName] = useState(deck.name);
   useUnsavedChanges(name !== deck.name);
   const { saving, submit, fieldError, formError, edited } = useFormSave(
@@ -751,13 +759,13 @@ function RenameDeckForm({
   return (
     <form className="card" aria-labelledby="rename-deck-heading" noValidate onSubmit={submit}>
       <h2 id="rename-deck-heading" className="form-title">
-        Rename {deck.name}
+        {t("deck.renameTitle", { name: deck.name })}
       </h2>
 
       <TextField
         id="rename-deck-name"
-        label="Deck name"
-        hint="Required. Up to 100 characters."
+        label={t("createDeck.name")}
+        hint={t("createDeck.nameHint")}
         value={name}
         error={fieldError("name")}
         required
@@ -768,7 +776,7 @@ function RenameDeckForm({
         }}
       />
 
-      <FormActions saveLabel="Save name" saving={saving} error={formError} onCancel={onCancel} />
+      <FormActions saveLabel={t("deck.saveName")} saving={saving} error={formError} onCancel={onCancel} />
     </form>
   );
 }
@@ -805,28 +813,31 @@ function CardText({
   /** The card's tags, shown as chips under its back. */
   tags?: string[];
 }) {
+  const { t } = useT();
   return (
     <div className="card-sides">
-      {clozeNumber !== undefined && <p className="card-kind-tag">{`Cloze ${clozeNumber}`}</p>}
-      {pictureNumber !== undefined && (
-        <p className="card-kind-tag">{`Picture, box ${pictureNumber}`}</p>
+      {clozeNumber !== undefined && (
+        <p className="card-kind-tag">{t("deck.clozeNumber", { number: clozeNumber })}</p>
       )}
-      <p className="side-label">Front</p>
+      {pictureNumber !== undefined && (
+        <p className="card-kind-tag">{t("deck.pictureNumber", { number: pictureNumber })}</p>
+      )}
+      <p className="side-label">{t("csv.front")}</p>
       <p id={frontId} className="card-item-text card-item-front">
         {front}
       </p>
       <PictureGallery
         pictures={pictures?.front}
-        label="Picture on the front"
-        listLabel="Pictures on the front"
+        label={t("deck.frontPicture")}
+        listLabel={t("deck.frontPictures")}
         compact
       />
-      <p className="side-label">Back</p>
+      <p className="side-label">{t("csv.back")}</p>
       <p className="card-item-text card-item-back">{back}</p>
       <PictureGallery
         pictures={pictures?.back}
-        label="Picture on the back"
-        listLabel="Pictures on the back"
+        label={t("deck.backPicture")}
+        listLabel={t("deck.backPictures")}
         compact
       />
       {tags && tags.length > 0 && (
@@ -880,6 +891,7 @@ function CardItem({
   onDeleted: (deck: Deck) => void;
   onStale: () => void;
 }) {
+  const { t } = useT();
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -942,12 +954,11 @@ function CardItem({
       {confirming ? (
         <div className="confirm">
           <p ref={questionRef} className="confirm-question" tabIndex={-1}>
-            Delete this card? It will leave this deck and won't appear in reviews. Its schedule and
-            review history are kept, and you can restore it from Deleted cards below.
+            {t("deck.deleteQuestion")}
             {card.cloze &&
-              ` The other cards of its cloze text stay, and this one stays deleted while {{c${card.cloze.number}::…}} is in the text.`}
+              t("deck.deleteClozeNote", { marker: `{{c${card.cloze.number}::…}}` })}
             {card.occlusion &&
-              " The other cards of its picture stay, and this one stays deleted while its box is on the picture."}
+              t("deck.deletePictureNote")}
           </p>
           <div className="deck-actions">
             <button
@@ -957,7 +968,7 @@ function CardItem({
               aria-disabled={deleting}
               onClick={confirmDelete}
             >
-              Delete card
+              {t("deck.deleteCard")}
             </button>
             <button
               type="button"
@@ -967,11 +978,11 @@ function CardItem({
                 if (!deleting) setConfirming(false);
               }}
             >
-              Keep card
+              {t("deck.keepCard")}
             </button>
           </div>
           <p className="form-status" role="status">
-            {deleting ? "Deleting…" : ""}
+            {deleting ? t("bulk.deleting") : ""}
           </p>
         </div>
       ) : (
@@ -983,7 +994,7 @@ function CardItem({
               aria-describedby={frontId}
               onChange={onToggle}
             />
-            Select
+            {t("deck.select")}
           </label>
           <button
             ref={editRef}
@@ -993,7 +1004,7 @@ function CardItem({
             onClick={onEdit}
           >
             <PencilIcon />
-            Edit card
+            {t("deck.editCard")}
           </button>
           <button
             ref={deleteRef}
@@ -1003,7 +1014,7 @@ function CardItem({
             onClick={() => setConfirming(true)}
           >
             <TrashIcon />
-            Delete card
+            {t("deck.deleteCard")}
           </button>
         </div>
       )}
@@ -1050,6 +1061,7 @@ function DeletedCardList({
   /** *Restore selected* was refused because this screen is out of date. */
   onSelectionStale: (message: string) => void;
 }) {
+  const { t } = useT();
   // A cloze card whose number has left its text (or a picture card whose box
   // was removed) can't come back yet, so it can't be selected either.
   const restorableIds = cards.filter(canRestore).map((card) => card.id);
@@ -1077,13 +1089,11 @@ function DeletedCardList({
           <RestoreIcon />
         </span>
         <h3 id="deleted-cards-heading" className="section-title section-title-quiet">
-          Deleted cards <span className="count">{cards.length}</span>
+          {t("deck.deletedCards")} <span className="count">{cards.length}</span>
         </h3>
       </div>
       <p className="field-hint">
-        Kept for your history. A deleted card isn't in this deck's counts or reviews, but restoring
-        it brings it back with its text, schedule, and review history unchanged — it becomes due
-        again only on the date it already had.
+        {t("deck.deletedHint")}
       </p>
       {restorable >= 2 && (
         <RestoreAll
@@ -1102,8 +1112,8 @@ function DeletedCardList({
             onChange={toggleAll}
           />
           {restorable === cards.length
-            ? "Select all deleted cards"
-            : `Select all ${restorable} cards that can be restored`}
+            ? t("deck.selectAllDeleted")
+            : t("deck.selectRestorable", { count: restorable })}
         </label>
       )}
       <ul className="card-list">
@@ -1149,6 +1159,7 @@ function RestoreAll({
   onRestored: (deck: Deck, restored: number) => void;
   onStale: () => void;
 }) {
+  const { t } = useT();
   const [confirming, setConfirming] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1200,7 +1211,7 @@ function RestoreAll({
       {confirming ? (
         <div className="confirm confirm-calm">
           <p ref={questionRef} className="confirm-question" tabIndex={-1}>
-            {`${all ? `Restore all ${count} deleted cards?` : `Restore the ${count} deleted cards that can be restored?`} They go back into this deck with the same schedules and review history they had, and each becomes due again only on the date it already had.`}
+            {t(all ? "deck.restoreAllQuestion" : "deck.restoreAvailableQuestion", { count })}
           </p>
           <div className="deck-actions">
             <button
@@ -1209,7 +1220,7 @@ function RestoreAll({
               aria-disabled={restoring}
               onClick={confirmRestore}
             >
-              {`Restore ${count} cards`}
+              {t("deck.restoreCount", { count })}
             </button>
             <button
               type="button"
@@ -1219,11 +1230,11 @@ function RestoreAll({
                 if (!restoring) setConfirming(false);
               }}
             >
-              Keep deleted
+              {t("bulk.keepDeleted")}
             </button>
           </div>
           <p className="form-status" role="status">
-            {restoring ? "Restoring…" : ""}
+            {restoring ? t("bulk.restoring") : ""}
           </p>
         </div>
       ) : (
@@ -1235,7 +1246,7 @@ function RestoreAll({
             onClick={() => setConfirming(true)}
           >
             <RestoreIcon />
-            {all ? "Restore all" : `Restore ${count} cards`}
+            {all ? t("deck.restoreAll") : t("deck.restoreCount", { count })}
           </button>
         </div>
       )}
@@ -1273,6 +1284,7 @@ function DeletedCardItem({
   onRestored: (deck: Deck) => void;
   onStale: () => void;
 }) {
+  const { t } = useT();
   const [confirming, setConfirming] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1330,25 +1342,24 @@ function DeletedCardItem({
         pictureNumber={card.occlusion?.number}
         tags={card.tags}
       />
-      <p className="item-meta">{`Deleted ${formatDateTime(card.deletedAt)}`}</p>
+      <p className="item-meta">{t("deck.deletedAt", { date: formatDateTime(card.deletedAt) })}</p>
 
       {card.cloze?.blocked ? (
         <p className="item-meta">
           {card.cloze.blocked === "numberGone"
-            ? `It can't be restored while {{c${card.cloze.number}::…}} isn't in its cloze text. Put it back in the text, and this card returns with its schedule.`
-            : "It can't be restored here: the other cards of its cloze text are in another deck now."}
+            ? t("deck.clozeNumberGone", { marker: `{{c${card.cloze.number}::…}}` })
+            : t("deck.clozeMoved")}
         </p>
       ) : card.occlusion?.blocked ? (
         <p className="item-meta">
           {card.occlusion.blocked === "numberGone"
-            ? "It can't be restored while its box isn't on the picture. Draw a box for it again (edit the picture's cards and choose its card), and this card returns with its schedule."
-            : "It can't be restored here: the other cards of its picture are in another deck now."}
+            ? t("deck.boxGone")
+            : t("deck.pictureMoved")}
         </p>
       ) : confirming ? (
         <div className="confirm confirm-calm">
           <p ref={questionRef} className="confirm-question" tabIndex={-1}>
-            Restore this card? It goes back into this deck with the same schedule and review
-            history it had, and becomes due again only on the date it already had.
+            {t("bulk.restoreQuestionOne")}
           </p>
           <div className="deck-actions">
             <button
@@ -1358,7 +1369,7 @@ function DeletedCardItem({
               aria-disabled={restoring}
               onClick={confirmRestore}
             >
-              Restore card
+              {t("deck.restoreCard")}
             </button>
             <button
               type="button"
@@ -1368,11 +1379,11 @@ function DeletedCardItem({
                 if (!restoring) setConfirming(false);
               }}
             >
-              Keep deleted
+              {t("bulk.keepDeleted")}
             </button>
           </div>
           <p className="form-status" role="status">
-            {restoring ? "Restoring…" : ""}
+            {restoring ? t("bulk.restoring") : ""}
           </p>
         </div>
       ) : (
@@ -1385,7 +1396,7 @@ function DeletedCardItem({
                 aria-describedby={frontId}
                 onChange={onToggle}
               />
-              Select
+              {t("deck.select")}
             </label>
           )}
           <button
@@ -1396,7 +1407,7 @@ function DeletedCardItem({
             onClick={() => setConfirming(true)}
           >
             <RestoreIcon />
-            Restore card
+            {t("deck.restoreCard")}
           </button>
         </div>
       )}
@@ -1412,32 +1423,41 @@ function DeletedCardItem({
 
 type CardKind = "basic" | "cloze" | "picture";
 
-/** "a, b and c". */
-function listed(items: string[]): string {
-  return items.length <= 1
-    ? (items[0] ?? "")
-    : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
-}
-
 /**
  * What saving a cloze text does (`saved` false: will do, for the live
  * count) or did, in words.
  */
-function describeChanges(changes: ClozeChanges, editing: boolean, saved: boolean): string {
+function describeChanges(
+  changes: ClozeChanges,
+  editing: boolean,
+  saved: boolean,
+  { t, plural }: ReturnType<typeof useT>,
+): string {
+  const cards = (count: number) => plural(count, "common.cardOne", "common.cardOther");
   if (!editing) {
     return saved
-      ? `Cloze text added: it made ${cardCount(changes.added)}.`
-      : `This text makes ${cardCount(changes.cards)}.`;
+      ? t("deck.clozeAdded", { cards: cards(changes.added) })
+      : t("deck.clozeMakes", { cards: cards(changes.cards) });
   }
   const parts = [
-    changes.kept > 0 && `${saved ? "kept" : "keeps"} ${cardCount(changes.kept)}`,
+    changes.kept > 0 &&
+      t(saved ? "occlusion.kept" : "deck.clozeKeeps", { cards: cards(changes.kept) }),
     changes.restored > 0 &&
-      `${saved ? "brought back" : "brings back"} ${cardCount(changes.restored)} from Deleted cards`,
-    changes.added > 0 && `${saved ? "added" : "adds"} ${changes.added} new`,
+      t(saved ? "occlusion.restored" : "deck.clozeRestores", { cards: cards(changes.restored) }),
+    changes.added > 0 &&
+      (saved
+        ? plural(changes.added, "occlusion.newOne", "occlusion.newOther")
+        : plural(changes.added, "deck.clozeAddsOne", "deck.clozeAddsOther")),
     changes.deleted > 0 &&
-      `${saved ? "deleted" : "deletes"} ${cardCount(changes.deleted)} whose number left the text`,
+      t(saved ? "deck.clozeDeleted" : "deck.clozeDeletes", { cards: cards(changes.deleted) }),
   ].filter((part): part is string => typeof part === "string");
-  return saved ? `Cloze text saved: it ${listed(parts)}.` : `Saving ${listed(parts)}.`;
+  const changesText = parts.length <= 1
+    ? (parts[0] ?? "")
+    : t("occlusion.list", {
+        first: parts.slice(0, -1).join(", "),
+        last: parts[parts.length - 1],
+      });
+  return t(saved ? "deck.clozeSaved" : "deck.clozeSaving", { changes: changesText });
 }
 
 /** The live count under a cloze text, or why the text can't be saved yet. */
@@ -1464,6 +1484,7 @@ function CardForm({
   /** Saved: the deck Rust returned, and what to tell the user. */
   onSaved: (deck: Deck, notice: string) => void;
 }) {
+  const { t, plural } = useT();
   const cloze = card?.cloze ?? null;
   const occlusion = card?.occlusion ?? null;
   const [kind, setKind] = useState<CardKind>(cloze ? "cloze" : occlusion ? "picture" : "basic");
@@ -1499,7 +1520,10 @@ function CardForm({
       if (kind === "cloze") {
         if (card) {
           const saved = await updateCloze(card.id, text, sentTags);
-          return { deck: saved.deck, notice: describeChanges(saved.changes, true, true) };
+          return {
+            deck: saved.deck,
+            notice: describeChanges(saved.changes, true, true, { t, plural }),
+          };
         }
         const saved = await createCloze(deck.id, text, sentTags);
         const added = saved.cardCount - deck.cardCount;
@@ -1509,6 +1533,7 @@ function CardForm({
             { cards: added, kept: 0, restored: 0, added, deleted: 0 },
             false,
             true,
+            { t, plural },
           ),
         };
       }
@@ -1519,7 +1544,7 @@ function CardForm({
       const saved = card
         ? await updateFlashcard(card.id, front, back, pictures, sentTags)
         : await createFlashcard(deck.id, front, back, pictures, sentTags);
-      return { deck: saved, notice: card ? "Card updated." : "Card added." };
+      return { deck: saved, notice: card ? t("deck.updated") : t("deck.added") };
     },
     (saved) => onSaved(saved.deck, saved.notice),
     {
@@ -1577,7 +1602,7 @@ function CardForm({
 
   const kindChoice = (
       <fieldset className="field kind-choice">
-        <legend className="field-label">Kind of card</legend>
+        <legend className="field-label">{t("deck.kind")}</legend>
         <label className="kind-choice-option">
           <input
             type="radio"
@@ -1590,7 +1615,7 @@ function CardForm({
             }}
           />
           <span>
-            <strong>Basic</strong>: a front and a back.
+            <strong>{t("deck.basic")}</strong>{t("deck.basicDescription")}
           </span>
         </label>
         <label className="kind-choice-option">
@@ -1605,7 +1630,7 @@ function CardForm({
             }}
           />
           <span>
-            <strong>Cloze</strong>: a text with parts hidden, one card for each part.
+            <strong>{t("deck.cloze")}</strong>{t("deck.clozeDescription")}
           </span>
         </label>
         <label className="kind-choice-option">
@@ -1620,7 +1645,7 @@ function CardForm({
             }}
           />
           <span>
-            <strong>Picture</strong>: boxes drawn over a picture, one card for each box.
+            <strong>{t("occlusion.picture")}</strong>{t("deck.pictureDescription")}
           </span>
         </label>
       </fieldset>
@@ -1641,7 +1666,7 @@ function CardForm({
   return (
     <form className="card" aria-labelledby="card-form-heading" noValidate onSubmit={submit}>
       <h2 id="card-form-heading" className="form-title">
-        {card ? (cloze ? "Edit a cloze text in " : "Edit a card in ") : "Add a card to "}
+        {card ? (cloze ? t("deck.editClozeTitle") : t("deck.editTitle")) : t("occlusion.addTitle")}
         {deck.name}
       </h2>
 
@@ -1651,15 +1676,8 @@ function CardForm({
         <>
           <TextField
             id="card-text"
-            label="Text"
-            hint={
-              "Hide a part as {{c1::answer}}, or {{c1::answer::hint}} to show a hint in its place. " +
-              "Each number is its own card; give parts the same number to hide them together. " +
-              (cloze
-                ? "Numbers you keep keep their schedules; a number you take out deletes its card. "
-                : "") +
-              "Up to 2,000 characters."
-            }
+            label={t("deck.text")}
+            hint={t(cloze ? "deck.clozeEditHint" : "deck.clozeHint")}
             value={text}
             error={fieldError("text")}
             required
@@ -1677,7 +1695,7 @@ function CardForm({
             role="status"
           >
             {preview.status === "ready"
-              ? describeChanges(preview.changes, cloze !== null, false)
+              ? describeChanges(preview.changes, cloze !== null, false, { t, plural })
               : preview.status === "problem"
                 ? preview.message
                 : ""}
@@ -1688,8 +1706,8 @@ function CardForm({
           <div className="card-form-side" onPaste={frontAdder.onPaste}>
             <TextField
               id="card-front"
-              label="Front"
-              hint="The question. Required. Up to 2,000 characters."
+              label={t("csv.front")}
+              hint={t("deck.frontHint")}
               value={front}
               error={fieldError("front")}
               required
@@ -1702,16 +1720,16 @@ function CardForm({
             />
             <PictureField
               id="card-front-pictures"
-              label="Pictures on the front"
-              hint="Optional. Up to 4, shown under the question."
+              label={t("deck.frontPictures")}
+              hint={t("deck.frontPicturesHint")}
               pictures={frontPictures}
               onChange={changeFrontPictures}
               adder={frontAdder}
               error={fieldError("frontPictures")}
               disabled={saving}
               addText={{
-                label: "Add to front",
-                done: "Added to the end of the front.",
+                label: t("deck.addFront"),
+                done: t("deck.addedFront"),
                 onAdd: (text) => {
                   setFront((current) => appendText(current, text));
                   edited("front");
@@ -1722,8 +1740,8 @@ function CardForm({
           <div className="card-form-side" onPaste={backAdder.onPaste}>
             <TextField
               id="card-back"
-              label="Back"
-              hint="The answer. Required. Up to 2,000 characters."
+              label={t("csv.back")}
+              hint={t("deck.backHint")}
               value={back}
               error={fieldError("back")}
               required
@@ -1735,16 +1753,16 @@ function CardForm({
             />
             <PictureField
               id="card-back-pictures"
-              label="Pictures on the back"
-              hint="Optional. Up to 4, shown with the answer."
+              label={t("deck.backPictures")}
+              hint={t("deck.backPicturesHint")}
               pictures={backPictures}
               onChange={changeBackPictures}
               adder={backAdder}
               error={fieldError("backPictures")}
               disabled={saving}
               addText={{
-                label: "Add to back",
-                done: "Added to the end of the back.",
+                label: t("deck.addBack"),
+                done: t("deck.addedBack"),
                 onAdd: (text) => {
                   setBack((current) => appendText(current, text));
                   edited("back");
@@ -1757,10 +1775,7 @@ function CardForm({
 
       <TagField
         id="card-tags"
-        hint={
-          (kind === "cloze" ? "Optional. Given to every card of this text. " : "Optional. ") +
-          "One word each, such as exam or bio::cells; a space or comma starts the next."
-        }
+        hint={t(kind === "cloze" ? "deck.clozeTagsHint" : "deck.tagsHint")}
         tags={tags}
         onChange={(next) => {
           setTags(next);
@@ -1771,7 +1786,9 @@ function CardForm({
       />
 
       <FormActions
-        saveLabel={card ? "Save changes" : kind === "cloze" ? "Save cards" : "Save card"}
+        saveLabel={
+          card ? t("occlusion.saveChanges") : kind === "cloze" ? t("occlusion.saveCards") : t("deck.saveCard")
+        }
         saving={saving}
         error={formError}
         onCancel={onCancel}
