@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useT } from "./i18n";
 import { toCommandError, type CommandError, type Field } from "./api";
 
 /**
@@ -220,6 +221,7 @@ export function FormActions({
   error: string | null;
   onCancel: () => void;
 }) {
+  const { t } = useT();
   return (
     <>
       <div className="form-actions">
@@ -235,11 +237,11 @@ export function FormActions({
             if (!saving) onCancel();
           }}
         >
-          Cancel
+          {t("common.cancel")}
         </button>
       </div>
       <p className="form-status" role="status">
-        {saving ? "Saving…" : ""}
+        {saving ? t("common.saving") : ""}
       </p>
       {error && (
         <p className="message-error" role="alert">

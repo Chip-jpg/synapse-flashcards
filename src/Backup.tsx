@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useT } from "./i18n";
 import { cancelImport, confirmImport, exportData, prepareImport, toCommandError } from "./api";
 import { AnkiImport } from "./AnkiImport";
 import { CardsCsv } from "./CardsCsv";
@@ -24,6 +25,7 @@ export function Backup({
   onLock: (locked: boolean) => void;
   onRestored: (fileName: string) => void;
 }) {
+  const { t } = useT();
   const screenRef = useFocusOnMount<HTMLElement>(true);
   const [running, setRunning] = useState<"export" | "import" | "cards" | "anki" | null>(null);
   // Counts Anki imports, so the spreadsheet panel reloads its decks after one.
@@ -43,11 +45,10 @@ export function Backup({
       <div className="page-header">
         <div className="page-heading">
           <h2 id="backup-heading" className="page-title">
-            Backup &amp; restore
+            {t("backup.title")}
           </h2>
           <p className="page-intro">
-            Everything Synapse stores is kept on this computer: one database, and the files it keeps
-            beside it. Save a copy of both, or replace them with a copy you saved before.
+            {t("backup.intro")}
           </p>
         </div>
       </div>
@@ -58,7 +59,7 @@ export function Backup({
             <DownloadIcon />
           </span>
           <h3 id="export-heading" className="section-title">
-            Export a backup
+            {t("backup.exportTitle")}
           </h3>
         </div>
         <ExportData
@@ -73,7 +74,7 @@ export function Backup({
             <UploadIcon />
           </span>
           <h3 id="import-heading" className="section-title">
-            Restore a backup
+            {t("backup.restoreTitle")}
           </h3>
         </div>
         <ImportData
@@ -116,6 +117,7 @@ function ExportData({
   blocked: boolean;
   onRunning: (running: boolean) => void;
 }) {
+  const { t } = useT();
   const [state, setState] = useState<ExportState>({ kind: "idle" });
   // The button stays focusable while exporting (so focus is never lost), so
   // this guards against a second export starting on a repeated Enter.
@@ -145,8 +147,7 @@ function ExportData({
   return (
     <div className="data-action">
       <p id="export-hint" className="field-hint">
-        Save a copy of every deck, card, review, and note, and every file Synapse keeps, as a .zip
-        file you keep.
+        {t("backup.exportHint")}
       </p>
       <button
         type="button"
@@ -156,12 +157,12 @@ function ExportData({
         onClick={runExport}
       >
         <DownloadIcon />
-        Export data
+        {t("backup.export")}
       </button>
       {/* Announced as it changes; empty between attempts (see `.form-status:empty`). */}
       <p className="form-status" role="status">
-        {state.kind === "busy" && "Preparing your export…"}
-        {state.kind === "saved" && `Export saved as ${state.fileName}.`}
+        {state.kind === "busy" && t("backup.preparing")}
+        {state.kind === "saved" && t("backup.saved", { name: state.fileName })}
       </p>
       {state.kind === "error" && (
         <p className="message-error" role="alert">
@@ -199,6 +200,7 @@ function ImportData({
   onRestored: (fileName: string) => void;
 }) {
   const [state, setState] = useState<ImportState>({ kind: "idle" });
+  const { t } = useT();
   // Blocks a second check or restore immediately, before the re-render lands.
   const busyRef = useRef(false);
   const importRef = useRef<HTMLButtonElement>(null);
@@ -313,16 +315,16 @@ function ImportData({
   return (
     <div className="data-action">
       <p id="import-hint" className="field-hint">
-        Replace everything in Synapse with a backup made by Export data. Synapse checks the file and
-        asks you to confirm before anything changes.
+        {t("backup.importHint")}
       </p>
 
       {state.kind === "confirm" ? (
         <div className="confirm confirm-danger">
           <p ref={questionRef} id="import-question" className="confirm-question" tabIndex={-1}>
-            {`Replace all your study data with ${state.backup.fileName}, exported ${formatDateTime(
-              state.backup.exportedAt
-            )}? Every deck, card, review, session, and note in Synapse now will be replaced by the backup's, and this can't be undone. To keep a copy of your current data, choose Keep current data and export it first.`}
+            {t("backup.confirm", {
+              name: state.backup.fileName,
+              date: formatDateTime(state.backup.exportedAt),
+            })}
           </p>
           <div className="deck-actions">
             <button
@@ -332,7 +334,7 @@ function ImportData({
               aria-disabled={restoring || blocked}
               onClick={() => restore(state.backup)}
             >
-              Replace my data
+              {t("backup.replace")}
             </button>
             <button
               type="button"
@@ -340,7 +342,7 @@ function ImportData({
               aria-disabled={restoring}
               onClick={() => keep(state.backup)}
             >
-              Keep current data
+              {t("backup.keep")}
             </button>
           </div>
         </div>
@@ -354,14 +356,14 @@ function ImportData({
           onClick={choose}
         >
           <UploadIcon />
-          Import data
+          {t("backup.import")}
         </button>
       )}
 
       {/* Announced as it changes; empty between attempts (see `.form-status:empty`). */}
       <p className="form-status" role="status">
-        {checking && "Checking the backup…"}
-        {restoring && "Restoring your backup…"}
+        {checking && t("backup.checking")}
+        {restoring && t("backup.restoring")}
       </p>
       {state.kind === "error" && (
         <p className="message-error" role="alert">

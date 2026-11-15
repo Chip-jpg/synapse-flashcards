@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useT } from "./i18n";
 import { createDeck, type DeckDetail } from "./api";
 import { FormActions, TextField, useFormSave } from "./forms";
 import { useUnsavedChanges } from "./unsaved";
@@ -11,6 +12,7 @@ export function CreateDeckForm({
   onCancel: () => void;
   onCreated: (deck: DeckDetail) => void;
 }) {
+  const { t } = useT();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   useUnsavedChanges(name !== "" || description !== "");
@@ -23,13 +25,13 @@ export function CreateDeckForm({
   return (
     <form className="card" aria-labelledby="create-deck-heading" noValidate onSubmit={submit}>
       <h2 id="create-deck-heading" className="form-title">
-        Create a deck
+        {t("createDeck.title")}
       </h2>
 
       <TextField
         id="deck-name"
-        label="Deck name"
-        hint="Required. Up to 100 characters."
+        label={t("createDeck.name")}
+        hint={t("createDeck.nameHint")}
         value={name}
         error={fieldError("name")}
         required
@@ -41,8 +43,8 @@ export function CreateDeckForm({
       />
       <TextField
         id="deck-description"
-        label="Description"
-        hint="Optional. Up to 500 characters."
+        label={t("createDeck.description")}
+        hint={t("createDeck.descriptionHint")}
         value={description}
         error={fieldError("description")}
         onChange={(value) => {
@@ -51,7 +53,7 @@ export function CreateDeckForm({
         }}
       />
 
-      <FormActions saveLabel="Save deck" saving={saving} error={formError} onCancel={onCancel} />
+      <FormActions saveLabel={t("createDeck.save")} saving={saving} error={formError} onCancel={onCancel} />
     </form>
   );
 }

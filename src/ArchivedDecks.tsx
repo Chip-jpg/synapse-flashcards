@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useT } from "./i18n";
 import { getArchivedDecks, toCommandError, unarchiveDeck, type ArchivedDeck } from "./api";
 import { RestoreIcon } from "./icons";
 import { Message, useFocusOnMount } from "./ui";
@@ -29,6 +30,7 @@ async function loadArchived(): Promise<ArchivedState> {
  * Desk exactly as it was. Opened from the sidebar, so it takes focus.
  */
 export function ArchivedDecks() {
+  const { t } = useT();
   const [state, setState] = useState<ArchivedState>({ status: "loading" });
   // Bumping this re-runs the load effect (Retry, or after unarchiving).
   const [attempt, setAttempt] = useState(0);
@@ -59,7 +61,7 @@ export function ArchivedDecks() {
   if (state.status === "loading") {
     return (
       <p className="loading" role="status">
-        Loading your archived decks…
+        {t("archived.loading")}
       </p>
     );
   }
@@ -68,7 +70,7 @@ export function ArchivedDecks() {
     return (
       <Message focus tone="alert" text={state.message}>
         <button type="button" className="button" onClick={() => reload(null)}>
-          Retry
+          {t("archived.retry")}
         </button>
       </Message>
     );
@@ -80,12 +82,12 @@ export function ArchivedDecks() {
       decks={state.decks}
       notice={view.notice}
       onUnarchived={(name) =>
-        reload(`${name} unarchived. It's back on your Study Desk with its cards and review history.`)
+        reload(t("archived.restored", { name }))
       }
       onStale={() =>
         // Unarchiving failed because the deck isn't archived after all. Say
         // so, rather than reloading silently and leaving the press unexplained.
-        reload("That deck wasn't archived after all. Here are your archived decks as they are now.")
+        reload(t("archived.stale"))
       }
     />
   );
@@ -102,6 +104,7 @@ function ArchivedDeckList({
   onUnarchived: (deckName: string) => void;
   onStale: () => void;
 }) {
+  const { t } = useT();
   const screenRef = useFocusOnMount<HTMLElement>(notice === null);
   const noticeRef = useFocusOnMount<HTMLParagraphElement>(notice !== null);
 
@@ -115,13 +118,10 @@ function ArchivedDeckList({
       <div className="page-header">
         <div className="page-heading">
           <h2 id="archived-heading" className="page-title">
-            Archived decks
+            {t("archived.title")}
           </h2>
           <p className="page-intro">
-            Kept for your history. An archived deck isn't on your Study Desk and can't be reviewed
-            or changed, but unarchiving it brings it back with its cards and review history
-            unchanged. Cards you deleted stay deleted, and can be restored from the deck once it's
-            back.
+            {t("archived.intro")}
           </p>
         </div>
       </div>
@@ -132,8 +132,7 @@ function ArchivedDeckList({
       )}
       {decks.length === 0 ? (
         <p className="empty" role="status">
-          No archived decks. Archiving a deck from its own screen keeps it here, with its cards and
-          review history.
+          {t("archived.empty")}
         </p>
       ) : (
         <ul className="card-list">
@@ -158,6 +157,7 @@ function ArchivedDeckItem({
   onUnarchived: (deckName: string) => void;
   onStale: () => void;
 }) {
+  const { t, plural } = useT();
   const [confirming, setConfirming] = useState(false);
   const [unarchiving, setUnarchiving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -221,7 +221,7 @@ function ArchivedDeckItem({
         </h3>
         {deck.description && <p className="deck-description">{deck.description}</p>}
         <p className="item-meta">
-          {`Archived ${archivedOn} · ${cards} ${cards === 1 ? "card" : "cards"} kept`}
+          {plural(cards, "archived.metaOne", "archived.metaOther", { date: archivedOn })}
         </p>
       </div>
 
@@ -233,9 +233,7 @@ function ArchivedDeckItem({
             className="confirm-question"
             tabIndex={-1}
           >
-            {`Unarchive ${deck.name}? It goes back on your Study Desk with the same cards and ` +
-              "review history, and its cards become due again on the dates they already had. " +
-              "No review starts, and cards you deleted stay deleted until you restore them."}
+            {t("archived.confirm", { name: deck.name })}
           </p>
           <div className="deck-actions">
             {/* Both buttons name the deck as well as the question: several
@@ -248,7 +246,7 @@ function ArchivedDeckItem({
               aria-disabled={unarchiving}
               onClick={confirmUnarchive}
             >
-              Unarchive deck
+              {t("archived.restore")}
             </button>
             <button
               type="button"
@@ -259,11 +257,11 @@ function ArchivedDeckItem({
                 if (!unarchiving) setConfirming(false);
               }}
             >
-              Keep archived
+              {t("archived.keep")}
             </button>
           </div>
           <p className="form-status" role="status">
-            {unarchiving ? "Unarchiving…" : ""}
+            {unarchiving ? t("archived.restoring") : ""}
           </p>
         </div>
       ) : (
@@ -276,7 +274,7 @@ function ArchivedDeckItem({
             onClick={() => setConfirming(true)}
           >
             <RestoreIcon />
-            Unarchive deck
+            {t("archived.restore")}
           </button>
         </div>
       )}
