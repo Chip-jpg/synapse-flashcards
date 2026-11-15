@@ -1,3 +1,4 @@
+import { useT, translate } from "./i18n";
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   getQuotedPage,
@@ -14,19 +15,19 @@ import { RecognisedLabel } from "./ScannedPages";
 
 /** "PDF", "Word document": what kind of file a source is, said plainly. */
 export const KIND_NAMES = {
-  pdf: "PDF",
-  text: "Text file",
-  markdown: "Markdown file",
-  word: "Word document",
-  powerPoint: "PowerPoint presentation",
+  pdf: "pages.kindPdf",
+  text: "pages.kindText",
+  markdown: "pages.kindMarkdown",
+  word: "pages.kindWord",
+  powerPoint: "pages.kindPowerPoint",
 } as const;
 
 /** "page 7", "slides 3–4": where a quote is, in the words for its kind. */
-export function pagesText(spot: QuoteSpot, slides: boolean): string {
-  const thing = slides ? "slide" : "page";
-  return spot.page === spot.lastPage
-    ? `${thing} ${spot.page}`
-    : `${thing}s ${spot.page}–${spot.lastPage}`;
+export function pagesText(spot: QuoteSpot, slides: boolean, t: ReturnType<typeof useT>["t"] = (key, params) => translate("en", key, params)): string {
+  return t(slides
+    ? spot.page === spot.lastPage ? "pages.slideSingle" : "pages.slideRange"
+    : spot.page === spot.lastPage ? "pages.pageSingle" : "pages.pageRange",
+    { page: spot.page, last: spot.lastPage });
 }
 
 /** A page's text as pieces, the quoted part marked. Never read as HTML. */
@@ -99,6 +100,7 @@ export function QuotesFromSource({
  * can't be placed on a page.
  */
 export function QuotePageLink({ quote }: { quote: string }) {
+  const { t } = useT();
   const located = useContext(LocatedQuotes);
   const [open, setOpen] = useState(false);
   const spot = located?.spots.get(quote) ?? null;
@@ -113,7 +115,7 @@ export function QuotePageLink({ quote }: { quote: string }) {
         onClick={() => setOpen(true)}
       >
         <NoteIcon />
-        {`From ${pagesText(spot, slides)} of ${located.source.title}`}
+        {t("pages.from", { pages: pagesText(spot, slides, t), title: located.source.title })}
       </button>
       {open && (
         <SourcePageDialog
@@ -157,13 +159,14 @@ export function SourcePageDialog({
   quote: string;
   onClose: () => void;
 }) {
+  const { t } = useT();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [page, setPage] = useState(firstPage);
   const [state, setState] = useState<PageState>({ status: "loading" });
   // The text recognised on each page without text of its own, so a scanned
   // page's text is labelled as recognised. Unlabelled if they can't be had.
   const [recognised, setRecognised] = useState<Map<number, RecognisedText>>(new Map());
-  const thing = slides ? "Slide" : "Page";
+  const thing = t(slides ? "pages.slide" : "pages.page");
 
   useEffect(() => {
     let current = true;
@@ -218,17 +221,17 @@ export function SourcePageDialog({
     >
       <div>
         <h2 id="source-page-title" className="form-title">
-          {`${thing} ${page} of ${pageCount}`}
+          {t("pages.position", { thing, page, total: pageCount })}
         </h2>
         <p className="item-meta">{title}</p>
       </div>
       {recognised.has(page) && !empty && (
         <RecognisedLabel recognised={recognised.get(page) as RecognisedText} />
       )}
-      <div className="source-page-scroll" tabIndex={0} aria-label={`${thing} ${page} text`}>
+      <div className="source-page-scroll" tabIndex={0} aria-label={t("pages.textLabel", { thing: thing.toLowerCase(), page })}>
         {state.status === "loading" && (
           <p className="loading" role="status">
-            {`Loading ${thing.toLowerCase()} ${page}…`}
+            {t("pages.loading", { thing: thing.toLowerCase(), page })}
           </p>
         )}
         {state.status === "error" && (
@@ -239,7 +242,7 @@ export function SourcePageDialog({
         {state.status === "ready" &&
           (empty ? (
             <p className="empty">
-              {`Synapse found no text on this ${thing.toLowerCase()}. It may be a scanned image.`}
+              {t("pages.empty", { thing: thing.toLowerCase() })}
             </p>
           ) : (
             <PageText pieces={state.pieces} />
@@ -255,7 +258,7 @@ export function SourcePageDialog({
           }}
         >
           <ArrowLeftIcon />
-          {`Previous ${thing.toLowerCase()}`}
+          {t("pages.previous", { thing: thing.toLowerCase() })}
         </button>
         <button
           type="button"
@@ -265,7 +268,7 @@ export function SourcePageDialog({
             if (page < pageCount) setPage(page + 1);
           }}
         >
-          {`Next ${thing.toLowerCase()}`}
+          {t("pages.next", { thing: thing.toLowerCase() })}
           <ArrowRightIcon />
         </button>
         <button
@@ -273,7 +276,7 @@ export function SourcePageDialog({
           className="button button-small"
           onClick={() => dialogRef.current?.close()}
         >
-          Close
+          {t("settings.close")}
         </button>
       </div>
     </dialog>

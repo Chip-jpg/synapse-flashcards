@@ -1,3 +1,4 @@
+import { useT } from "./i18n";
 import { Fragment, useEffect, useRef, useState } from "react";
 import {
   searchSources,
@@ -65,32 +66,29 @@ export function useSourceSearch(): SourceSearchState {
   return { query, found, error, setQuery, refresh: () => setQuery(query) };
 }
 
-function counted(count: number, thing: string): string {
-  return `${count} ${thing}${count === 1 ? "" : "s"}`;
-}
-
 /** The search field over the source list, and what it says it found. */
 export function SourceSearchField({ search }: { search: SourceSearchState }) {
+  const { t, plural } = useT();
   const { query, found, error, setQuery } = search;
   const trimmed = query.trim();
   const inputRef = useRef<HTMLInputElement>(null);
 
   let status = "";
   if (trimmed !== "" && error === null) {
-    if (found?.query !== trimmed) status = "Searching…";
-    else if (found.found.sources.length === 0) status = "No sources match.";
+    if (found?.query !== trimmed) status = t("search.searching");
+    else if (found.found.sources.length === 0) status = t("sourceSearch.empty");
     else {
       const count = found.found.sources.length;
       status = found.found.more
-        ? `The first ${count} sources that match. Add words to narrow it down.`
-        : `${counted(count, "source")} ${count === 1 ? "matches" : "match"}.`;
+        ? t("sourceSearch.first", { count })
+        : plural(count, "sourceSearch.matchesOne", "sourceSearch.matchesOther");
     }
   }
 
   return (
     <div className="field note-search">
       <label htmlFor="source-search" className="field-label">
-        Search sources
+        {t("sourceSearch.title")}
       </label>
       <div className="note-search-row">
         <input
@@ -119,14 +117,12 @@ export function SourceSearchField({ search }: { search: SourceSearchState }) {
               inputRef.current?.focus();
             }}
           >
-            Clear
+            {t("search.clear")}
           </button>
         )}
       </div>
       <p id="source-search-hint" className="field-hint">
-        Finds sources by title, file name, or the words on a page, including text recognised on
-        scanned pages. Every word you type must start a word in the same place, ignoring capitals
-        and accents. Deleted sources aren't searched.
+        {t("sourceSearch.hint")}
       </p>
       <p className="form-status" role="status">
         {status}
@@ -199,11 +195,12 @@ function SourceResult({
   focusOpen: boolean;
   onOpen: (page: number | null) => void;
 }) {
+  const { t, plural } = useT();
   const { source } = hit;
   const openRef = useFocusOnMount<HTMLButtonElement>(focusOpen);
   const titleId = `source-hit-${source.id}-title`;
-  const thing = source.kind === "powerPoint" ? "slide" : "page";
-  const Thing = thing === "slide" ? "Slide" : "Page";
+  const slides = source.kind === "powerPoint";
+  const thing = t(slides ? "pages.slide" : "pages.page");
   const left = hit.pageHits - hit.pages.length;
 
   return (
@@ -219,8 +216,8 @@ function SourceResult({
           <p className="item-meta">
             {[
               `${source.fileName} · ${describe(source)}`,
-              hit.titleHit ? "Title or file name matches" : null,
-              hit.pageHits > 0 ? `Found on ${counted(hit.pageHits, thing)}` : null,
+              hit.titleHit ? t("sourceSearch.titleMatch") : null,
+              hit.pageHits > 0 ? plural(hit.pageHits, slides ? "sourceSearch.foundSlideOne" : "sourceSearch.foundPageOne", slides ? "sourceSearch.foundSlideOther" : "sourceSearch.foundPageOther") : null,
             ]
               .filter(Boolean)
               .join(" · ")}
@@ -234,7 +231,7 @@ function SourceResult({
         aria-describedby={titleId}
         onClick={() => onOpen(null)}
       >
-        Open source
+        {t("notes.openSource")}
         <ArrowRightIcon />
       </button>
       {hit.pages.length > 0 && (
@@ -244,19 +241,19 @@ function SourceResult({
               <button
                 type="button"
                 className="button button-small"
-                aria-label={`Open ${thing} ${page.number} of ${source.title}`}
+                aria-label={t("sourceSearch.openPage", { thing: thing.toLowerCase(), page: page.number, title: source.title })}
                 onClick={() => onOpen(page.number)}
               >
-                {`${Thing} ${page.number}`}
+                {`${thing} ${page.number}`}
               </button>
               <p className="search-snippet">
-                {page.recognised && <span className="source-hit-label">Recognised text: </span>}
+                {page.recognised && <span className="source-hit-label">{t("sourceSearch.recognised")}</span>}
                 <Snippet pieces={page.snippet} />
               </p>
             </li>
           ))}
           {left > 0 && (
-            <li className="field-hint">{`And ${counted(left, `more ${thing}`)}: open the source to see them.`}</li>
+            <li className="field-hint">{plural(left, slides ? "sourceSearch.moreSlideOne" : "sourceSearch.morePageOne", slides ? "sourceSearch.moreSlideOther" : "sourceSearch.morePageOther")}</li>
           )}
         </ul>
       )}
