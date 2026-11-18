@@ -11,6 +11,7 @@ import {
   type Note,
   type QuizQuestion,
 } from "./api";
+import { useT, useLang } from "./i18n";
 import { loadDeckChoices, type DeckChoices } from "./deckChoices";
 import { SelectField, useFormSave } from "./forms";
 import { CheckIcon, SparkleIcon } from "./icons";
@@ -22,16 +23,6 @@ import { useUnsavedChanges } from "./unsaved";
 
 /** The keys that choose an option, in the order the options are shown. */
 const OPTION_KEYS = ["1", "2", "3", "4"];
-
-/** "1 card", "3 cards". */
-function cardCount(count: number): string {
-  return count === 1 ? "1 card" : `${count} cards`;
-}
-
-/** "1 question", "3 questions". */
-function questionCount(count: number): string {
-  return count === 1 ? "1 question" : `${count} questions`;
-}
 
 /** A question as it's asked: its options in a shuffled order, and which is correct. */
 export type AskedQuestion = QuizQuestion & { options: string[]; correct: number };
@@ -88,6 +79,7 @@ export function Quiz({
   /** Missed questions were added as cards: `count` of them, into `deck`. */
   onSaved: (deck: DeckDetail, count: number) => void;
 }) {
+  const { t } = useT();
   const [setup, setSetup] = useState<Setup>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
 
@@ -112,14 +104,14 @@ export function Quiz({
   if (setup.status === "loading") {
     return (
       <p className="loading" role="status">
-        Looking for Ollama…
+        {t("suggest.looking")}
       </p>
     );
   }
 
   const back = (
     <button type="button" className="button" onClick={onCancel}>
-      Back to note
+      {t("notes.backNote")}
     </button>
   );
 
@@ -128,7 +120,7 @@ export function Quiz({
       <Message focus tone="alert" text={setup.message}>
         <div className="actions">
           <button type="button" className="button" onClick={retry}>
-            Try again
+            {t("suggest.retry")}
           </button>
           {back}
         </div>
@@ -141,11 +133,11 @@ export function Quiz({
       <Message
         focus
         tone="status"
-        text="Ollama is running, but it has no models on this computer that can write a quiz. Download a model in Ollama, then check again."
+        text={t("quiz.noModels")}
       >
         <div className="actions">
           <button type="button" className="button" onClick={retry}>
-            Check again
+            {t("suggest.checkAgain")}
           </button>
           {back}
         </div>
@@ -216,6 +208,7 @@ function Quizzer({
   onSaved: (deck: DeckDetail, count: number) => void;
   onNoModels: () => void;
 }) {
+  const { t, plural } = useT();
   // A note too long to use whole is offered in parts, as for suggestions.
   const parts = useMemo(() => noteParts(note.body), [note.body]);
   const split = parts.length > 1;
@@ -270,7 +263,7 @@ function Quizzer({
     event.preventDefault();
     if (writingRef.current) return;
     if (model === "") {
-      show(choose("model", { modelError: "Choose a model to write the quiz with." }));
+      show(choose("model", { modelError: t("quiz.chooseModelError") }));
       return;
     }
     writingRef.current = true;
@@ -280,7 +273,7 @@ function Quizzer({
     try {
       const outcome = await quizNote(note.id, model, part ?? undefined);
       if (outcome.status === "stopped") {
-        next = choose("notice", { notice: "Stopped. No quiz was written." });
+        next = choose("notice", { notice: t("quiz.stopped") });
       } else {
         rememberModel(model);
         next = {
@@ -308,29 +301,26 @@ function Quizzer({
   return (
     <section className="card" aria-labelledby="quiz-heading">
       <h2 id="quiz-heading" className="form-title">
-        {`Quiz on ${note.title}`}
+        {t("quiz.title", { title: note.title })}
       </h2>
 
       {stage.step === "choose" && (
         <>
           <section className="note-context" tabIndex={0} aria-labelledby="quiz-context-label">
             <p id="quiz-context-label" className="side-label">
-              {part ? `Your note, part ${partIndex + 1} of ${parts.length}` : "Your note"}
+              {part ? t("suggest.notePart", { part: partIndex + 1, total: parts.length }) : t("notes.yourNote")}
             </p>
             <p className="note-body">{part ? part.text : note.body}</p>
           </section>
           <p id="quiz-hint" className="field-hint">
-            A model in Ollama, on this computer, reads the note and writes up to 8 multiple-choice
-            questions about it, each with the passage of your note its answer comes from.
-            Questions that can't be traced back to your note are left out. The note doesn't leave
-            this computer, and nothing is saved, though you can add questions you miss as cards.
+            {t("quiz.hint")}
           </p>
           <ChooseModel
             key={round}
             parts={
               split
                 ? {
-                    labels: parts.map((each, index) => partLabel(each, index, parts.length)),
+                    labels: parts.map((each, index) => partLabel(each, index, parts.length, t)),
                     index: partIndex,
                     noteLength: Array.from(note.body).length,
                     onChoose: setPartIndex,
@@ -355,7 +345,7 @@ function Quizzer({
         <Writing
           key={round}
           model={stage.model}
-          part={part ? `part ${partIndex + 1} of your note` : null}
+          part={part ? t("suggest.writingPart", { part: partIndex + 1 }) : null}
           onStop={() => stopQuiz().catch(() => {})}
         />
       )}
@@ -369,7 +359,7 @@ function Quizzer({
             key={`${round}-${stage.current}`}
             intro={
               stage.current === 0
-                ? introText(stage.model, stage.questions.length, stage.leftOut, stage.unsupported)
+                ? introText(stage.model, stage.questions.length, stage.leftOut, stage.unsupported, t, plural)
                 : null
             }
             question={stage.questions[stage.current]}
@@ -414,20 +404,16 @@ function Quizzer({
 }
 
 /** What the model wrote, and what was left out, said before the first question. */
-function introText(model: string, count: number, leftOut: number, unsupported: number): string {
-  const unsupportedText =
-    unsupported === 0
-      ? ""
-      : unsupported === 1
-        ? " 1 more question was left out because it couldn't be traced back to your note."
-        : ` ${unsupported} more questions were left out because they couldn't be traced back to your note.`;
-  const leftOutText =
-    leftOut === 0
-      ? ""
-      : leftOut === 1
-        ? " 1 more was left out because it was empty, too long, a repeat, or didn't have four different answers."
-        : ` ${leftOut} more were left out because they were empty, too long, repeats, or didn't have four different answers.`;
-  return `${model} wrote ${questionCount(count)}.${unsupportedText}${leftOutText}`;
+function introText(
+  model: string, count: number, leftOut: number, unsupported: number,
+  t: ReturnType<typeof useT>["t"], plural: ReturnType<typeof useT>["plural"]
+): string {
+  const unsupportedText = unsupported === 0 ? "" : plural(unsupported, "quiz.unsupportedOne", "quiz.unsupportedOther");
+  const leftOutText = leftOut === 0 ? "" : plural(leftOut, "quiz.leftOutOne", "quiz.leftOutOther");
+  return t("quiz.intro", {
+    model, questions: plural(count, "quiz.questionOne", "quiz.questionOther"),
+    unsupported: unsupportedText, leftOut: leftOutText,
+  });
 }
 
 type PartChoice = {
@@ -454,13 +440,15 @@ function ChooseModel({
   onStart: (event: FormEvent<HTMLFormElement>) => void;
   onCancel: () => void;
 }) {
+  const { t } = useT();
+  const { lang } = useLang();
   const noticeRef = useFocusOnMount<HTMLParagraphElement>(
     stage.focus === "notice" && stage.notice !== null
   );
   const startRef = useFocusOnMount<HTMLButtonElement>(stage.focus === "start");
 
   return (
-    <form className="suggest-step" aria-label="Choose a model" noValidate onSubmit={onStart}>
+    <form className="suggest-step" aria-label={t("suggest.chooseModel")} noValidate onSubmit={onStart}>
       {stage.notice && (
         <p ref={noticeRef} className="notice" role="status" tabIndex={-1}>
           {stage.notice}
@@ -469,11 +457,11 @@ function ChooseModel({
       {parts && (
         <SelectField
           id="quiz-part"
-          label="Part of the note"
-          hint={`This note is ${parts.noteLength.toLocaleString("en-US")} characters long, more than the ${SUGGESTION_NOTE_MAX_CHARS.toLocaleString("en-US")} a model reads at once, so it's split into ${parts.labels.length} parts where paragraphs end. A quiz covers one part at a time; come back for the others.`}
+          label={t("suggest.part")}
+          hint={t("quiz.partHint", { length: parts.noteLength.toLocaleString(lang === "it" ? "it-IT" : "en-US"), max: SUGGESTION_NOTE_MAX_CHARS.toLocaleString(lang === "it" ? "it-IT" : "en-US"), count: parts.labels.length })}
           value={String(parts.index)}
           options={parts.labels.map((label, index) => ({ value: String(index), label }))}
-          placeholder="Choose a part"
+          placeholder={t("suggest.choosePart")}
           required
           autoFocus={stage.focus === "part"}
           onChange={(value) => {
@@ -483,12 +471,12 @@ function ChooseModel({
       )}
       <SelectField
         id="quiz-model"
-        label="Model"
-        hint="One of the models in Ollama on this computer. Larger models usually write better questions, but take longer."
+        label={t("suggest.model")}
+        hint={t("quiz.modelHint")}
         describedBy="quiz-hint"
         value={model}
         options={models.map((name) => ({ value: name, label: name }))}
-        placeholder="Choose a model"
+        placeholder={t("suggest.chooseModel")}
         error={stage.modelError ?? undefined}
         required
         autoFocus={stage.focus === "model"}
@@ -497,10 +485,10 @@ function ChooseModel({
       <div className="form-actions">
         <button ref={startRef} type="submit" className="button button-primary">
           <SparkleIcon />
-          Start quiz
+          {t("quiz.start")}
         </button>
         <button type="button" className="button" onClick={onCancel}>
-          Cancel
+          {t("common.cancel")}
         </button>
       </div>
       {stage.error && (
@@ -522,6 +510,7 @@ function Writing({
   part: string | null;
   onStop: () => void;
 }) {
+  const { t } = useT();
   const statusRef = useFocusOnMount<HTMLParagraphElement>(true);
   const [stopping, setStopping] = useState(false);
 
@@ -529,8 +518,8 @@ function Writing({
     <div className="confirm confirm-calm suggest-waiting">
       <p ref={statusRef} className="confirm-question" role="status" tabIndex={-1}>
         {stopping
-          ? "Stopping…"
-          : `Writing a quiz${part ? ` on ${part}` : ""} with ${model}… This can take a minute or more, depending on the model and this computer.`}
+          ? t("suggest.stopping")
+          : t(part ? "quiz.writingPart" : "quiz.writing", { part: part ?? "", model })}
       </p>
       <div className="deck-actions">
         <button
@@ -543,7 +532,7 @@ function Writing({
             onStop();
           }}
         >
-          Stop
+          {t("settings.stop")}
         </button>
       </div>
     </div>
@@ -574,6 +563,7 @@ function TakeQuestion({
   onPick: (option: number) => void;
   onNext: () => void;
 }) {
+  const { t } = useT();
   const questionRef = useFocusOnMount<HTMLElement>(intro === null);
   const introRef = useFocusOnMount<HTMLParagraphElement>(intro !== null);
   const feedbackRef = useRef<HTMLParagraphElement>(null);
@@ -623,13 +613,13 @@ function TakeQuestion({
       )}
       <div className="progress">
         <p id="quiz-progress" className="progress-label">
-          {`Question ${position + 1} of ${count}`}
+          {t("quiz.position", { position: position + 1, count })}
         </p>
         <progress
           className="progress-bar"
           value={position + (answered ? 1 : 0)}
           max={count}
-          aria-label={`${position + (answered ? 1 : 0)} of ${count} questions answered`}
+          aria-label={t("quiz.progress", { answered: position + (answered ? 1 : 0), count })}
         />
       </div>
 
@@ -641,7 +631,7 @@ function TakeQuestion({
           aria-labelledby="quiz-progress quiz-question-label"
         >
           <h3 id="quiz-question-label" className="side-label">
-            Question
+            {t("review.question")}
           </h3>
           <p className="card-text">{question.question}</p>
         </section>
@@ -649,7 +639,7 @@ function TakeQuestion({
 
       <div className="rating" role="group" aria-labelledby="quiz-prompt">
         <p id="quiz-prompt" className="rating-prompt">
-          {answered ? "Your answer" : "Choose the right answer"}
+          {answered ? t("quiz.yourAnswer") : t("quiz.chooseAnswer")}
         </p>
         <div className="quiz-options">
           {question.options.map((option, index) => {
@@ -680,11 +670,11 @@ function TakeQuestion({
                 {answered && index === question.correct && (
                   <span className="quiz-option-mark">
                     <CheckIcon />
-                    Right answer
+                    {t("quiz.rightAnswer")}
                   </span>
                 )}
                 {answered && index === chosen && !right && (
-                  <span className="quiz-option-mark">Your answer</span>
+                  <span className="quiz-option-mark">{t("quiz.yourAnswer")}</span>
                 )}
               </button>
             );
@@ -692,7 +682,7 @@ function TakeQuestion({
         </div>
         {!answered && (
           <p className="shortcut-hint" aria-hidden="true">
-            Press <span className="kbd">1</span>–<span className="kbd">4</span> to answer
+            {t("quiz.answerHintBefore")} <span className="kbd">1</span>–<span className="kbd">4</span> {t("quiz.answerHintAfter")}
           </p>
         )}
       </div>
@@ -705,15 +695,15 @@ function TakeQuestion({
             role="status"
             tabIndex={-1}
           >
-            {right ? "Right." : `Not quite. The right answer is: ${question.answer}`}
+            {right ? t("quiz.right") : t("quiz.wrong", { answer: question.answer })}
           </p>
           <figure className="draft-source">
-            <figcaption className="side-label">From your note</figcaption>
+            <figcaption className="side-label">{t("suggest.fromNote")}</figcaption>
             <blockquote className="draft-quote">{question.source}</blockquote>
             <QuotePageLink quote={question.source} />
             {question.unfamiliar.length > 0 && (
               <p className="draft-check">
-                {`Not in your note: ${question.unfamiliar.join(", ")}. The answer may say more than your note does.`}
+                {t("quiz.unfamiliar", { words: question.unfamiliar.join(", ") })}
               </p>
             )}
           </figure>
@@ -724,10 +714,10 @@ function TakeQuestion({
               aria-keyshortcuts="Enter Space"
               onClick={onNext}
             >
-              {last ? "See results" : "Next question"}
+              {last ? t("quiz.results") : t("quiz.next")}
             </button>
             <p className="shortcut-hint" aria-hidden="true">
-              or press <span className="kbd">Enter</span>
+              {t("quiz.nextHint")} <span className="kbd">{t("quiz.enter")}</span>
             </p>
           </div>
         </div>
@@ -756,6 +746,7 @@ function Summary({
   onAgain: () => void;
   onDone: () => void;
 }) {
+  const { t, plural } = useT();
   const scoreRef = useFocusOnMount<HTMLParagraphElement>(true);
   const missed = questions
     .map((question, index) => ({ question, index, chosen: picked[index] }))
@@ -766,16 +757,16 @@ function Summary({
     <div className="suggest-step quiz-summary">
       <p ref={scoreRef} className="notice" role="status" tabIndex={-1}>
         {missed.length === 0
-          ? `You got all ${questionCount(questions.length)} right.`
-          : `You got ${right} of ${questionCount(questions.length)} right.`}
+          ? plural(questions.length, "quiz.allRightOne", "quiz.allRightOther")
+          : t("quiz.score", { right, questions: plural(questions.length, "quiz.questionOne", "quiz.questionOther") })}
       </p>
       {missed.length > 0 && <AddMissed noteId={noteId} missed={missed} onSaved={onSaved} />}
       <div className="form-actions">
         <button type="button" className="button" onClick={onAgain}>
-          New quiz
+          {t("quiz.new")}
         </button>
         <button type="button" className="button" onClick={onDone}>
-          Back to note
+          {t("notes.backNote")}
         </button>
       </div>
     </div>
@@ -793,6 +784,7 @@ function AddMissed({
   missed: Missed[];
   onSaved: (deck: DeckDetail, count: number) => void;
 }) {
+  const { t, plural } = useT();
   const [choices, setChoices] = useState<DeckChoices>({ status: "loading" });
   // Every missed question is ticked to start with.
   const [ticked, setTicked] = useState<Set<number>>(() => new Set(missed.map((each) => each.index)));
@@ -818,14 +810,14 @@ function AddMissed({
       if (chosen.length === 0) {
         const none: CommandError = {
           kind: "invalid",
-          message: "Tick at least one question to add as a card.",
+          message: t("quiz.tickQuestion"),
         };
         throw none;
       }
       if (deckId === "") {
         const unchosen: CommandError = {
           kind: "invalid",
-          message: "Choose a deck for these cards.",
+          message: t("suggest.chooseDeckError"),
           field: "deck",
         };
         throw unchosen;
@@ -845,7 +837,7 @@ function AddMissed({
           const position = missed.indexOf(sent[error.index]) + 1;
           const refused: CommandError = {
             kind: error.kind,
-            message: `Missed question ${position}: ${error.message}`,
+            message: t("quiz.missedError", { position, message: error.message }),
           };
           throw refused;
         }
@@ -872,8 +864,8 @@ function AddMissed({
   }
 
   return (
-    <form className="suggest-step" aria-label="Missed questions" noValidate onSubmit={submit}>
-      <h3 className="draft-label">Missed questions</h3>
+    <form className="suggest-step" aria-label={t("quiz.missed")} noValidate onSubmit={submit}>
+      <h3 className="draft-label">{t("quiz.missed")}</h3>
       <ol className="card-list">
         {missed.map(({ question, index, chosen: answer }, position) => {
           const labelId = `missed-${index}-label`;
@@ -884,13 +876,13 @@ function AddMissed({
                   {`${position + 1}. ${question.question}`}
                 </p>
                 <dl className="quiz-answers">
-                  <dt>Your answer</dt>
+                  <dt>{t("quiz.yourAnswer")}</dt>
                   <dd>{question.options[answer]}</dd>
-                  <dt>Right answer</dt>
+                  <dt>{t("quiz.rightAnswer")}</dt>
                   <dd>{question.answer}</dd>
                 </dl>
                 <figure className="draft-source">
-                  <figcaption className="side-label">From your note</figcaption>
+                  <figcaption className="side-label">{t("suggest.fromNote")}</figcaption>
                   <blockquote className="draft-quote">{question.source}</blockquote>
                   <QuotePageLink quote={question.source} />
                 </figure>
@@ -901,7 +893,7 @@ function AddMissed({
                     aria-disabled={saving}
                     onChange={(event) => toggle(index, event.target.checked)}
                   />
-                  <span>Add as a card</span>
+                  <span>{t("quiz.addCard")}</span>
                 </label>
               </div>
             </li>
@@ -911,7 +903,7 @@ function AddMissed({
 
       {choices.status === "loading" && (
         <p className="loading" role="status">
-          Loading your decks…
+          {t("desk.loading")}
         </p>
       )}
       {choices.status === "error" && (
@@ -921,19 +913,18 @@ function AddMissed({
       )}
       {choices.status === "ready" && choices.decks.length === 0 && (
         <p className="field-hint">
-          You don't have a deck to add cards to yet. Create one on the Study Desk first; the Sample
-          deck can't take new cards.
+          {t("notes.noDeck")}
         </p>
       )}
       {choices.status === "ready" && choices.decks.length > 0 && (
         <>
           <SelectField
             id="quiz-deck"
-            label="Deck"
-            hint="Each card has the question on the front and the right answer on the back, and is due for review straight away."
+            label={t("stats.deck")}
+            hint={t("quiz.deckHint")}
             value={deckId}
             options={choices.decks.map((deck: Deck) => ({ value: String(deck.id), label: deck.name }))}
-            placeholder="Choose a deck"
+            placeholder={t("exams.chooseDeck")}
             error={fieldError("deck")}
             required
             onChange={(value) => {
@@ -944,11 +935,11 @@ function AddMissed({
           <div className="form-actions">
             {/* `aria-disabled` rather than `disabled`, so keyboard focus stays put. */}
             <button type="submit" className="button button-primary" aria-disabled={saving}>
-              {`Add ${cardCount(chosen.length)}`}
+              {t("quiz.add", { cards: plural(chosen.length, "common.cardOne", "common.cardOther") })}
             </button>
           </div>
           <p className="form-status" role="status">
-            {saving ? "Saving…" : ""}
+            {saving ? t("common.saving") : ""}
           </p>
         </>
       )}
