@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { getTags, mergeTags, renameTag, toCommandError, type MergedTags, type TagSummary } from "./api";
+import { useT, translate } from "./i18n";
+import { COMMAND_ERROR_FALLBACK, getTags, mergeTags, renameTag, toCommandError, type MergedTags, type TagSummary } from "./api";
 import { FormActions, SelectField, TextField, useFormSave } from "./forms";
 import { ArrowRightIcon } from "./icons";
 import { useUnsavedChanges } from "./unsaved";
@@ -33,6 +34,7 @@ async function loadTags(): Promise<TagsState> {
  * cards and notes are written; one nothing uses any more just isn't listed.
  */
 export function TagsScreen({ onFind }: { onFind: (tag: string) => void }) {
+  const { t } = useT();
   const [state, setState] = useState<TagsState>({ status: "loading" });
   // Bumping this re-runs the load effect (Retry, or after a stale rename).
   const [attempt, setAttempt] = useState(0);
@@ -57,7 +59,7 @@ export function TagsScreen({ onFind }: { onFind: (tag: string) => void }) {
   if (state.status === "loading") {
     return (
       <p className="loading" role="status">
-        Loading your tags…
+        {t("tags.loading")}
       </p>
     );
   }
@@ -66,7 +68,7 @@ export function TagsScreen({ onFind }: { onFind: (tag: string) => void }) {
     return (
       <Message focus tone="alert" text={state.message}>
         <button type="button" className="button" onClick={() => reload(null)}>
-          Retry
+          {t("stats.retry")}
         </button>
       </Message>
     );
@@ -82,18 +84,18 @@ export function TagsScreen({ onFind }: { onFind: (tag: string) => void }) {
         setState({ status: "ready", tags });
         setView((previous) => ({
           key: previous.key + 1,
-          notice: `${from} is now ${to}, on every card and note that had it.`,
+          notice: t("tags.renamed", { from, to }),
         }));
       }}
       onMerged={(merged, from, into) => {
         setState({ status: "ready", tags: merged.tags });
         setView((previous) => ({
           key: previous.key + 1,
-          notice: mergedNotice(merged, from, into),
+          notice: mergedNotice(merged, from, into, t),
         }));
       }}
       onStale={() =>
-        reload("That tag has changed or is no longer used. Here are your tags as they are now.")
+        reload(t("tags.stale"))
       }
     />
   );
@@ -114,6 +116,7 @@ function TagList({
   onMerged: (merged: MergedTags, from: string, into: string) => void;
   onStale: () => void;
 }) {
+  const { t } = useT();
   const screenRef = useFocusOnMount<HTMLElement>(notice === null);
   const noticeRef = useFocusOnMount<HTMLParagraphElement>(notice !== null);
   // One tag is renamed or merged at a time.
@@ -130,13 +133,10 @@ function TagList({
       <div className="page-header">
         <div className="page-heading">
           <h2 id="tags-heading" className="page-title">
-            Tags
+            {t("app.tags")}
           </h2>
           <p className="page-intro">
-            Every tag on your cards and notes, with how many have it. Add or take off tags where
-            you write a card or note. Renaming a tag changes it everywhere, deleted cards and notes
-            included; a name another tag already has is refused. To make two tags one, use Merge
-            into on the tag you no longer want.
+            {t("tags.intro")}
           </p>
         </div>
       </div>
@@ -147,7 +147,7 @@ function TagList({
       )}
       {tags.length === 0 ? (
         <p className="empty" role="status">
-          No tags yet. Give a note tags when you write or edit it, and they're listed here.
+          {t("tags.empty")}
         </p>
       ) : (
         <ul className="card-list">
@@ -190,41 +190,35 @@ function TagList({
 /** Which tag's form is open, renaming it or merging it into another. */
 type Editing = { kind: "rename" | "merge"; id: number };
 
-/** "1 card", "3 notes". */
-function count(n: number, one: string, many: string): string {
-  return n === 1 ? `1 ${one}` : `${n} ${many}`;
-}
-
-/** "3 cards and 1 note", leaving out a kind there are none of ("" for none). */
-function cardsAndNotes(cards: number, notes: number, cardWord = "card"): string {
+/** Counts only the kinds that are present. */
+function cardsAndNotes(cards: number, notes: number, t: ReturnType<typeof useT>["t"]): string {
   const parts = [];
-  if (cards > 0) parts.push(count(cards, cardWord, `${cardWord}s`));
-  if (notes > 0) parts.push(count(notes, "note", "notes"));
-  return parts.join(" and ");
+  if (cards > 0) parts.push(t(cards === 1 ? "common.cardOne" : "common.cardOther", { count: cards }));
+  if (notes > 0) parts.push(t(notes === 1 ? "tags.noteOne" : "tags.noteOther", { count: notes }));
+  return parts.join(t("tags.and"));
 }
 
 /** What the screen says after a merge, including what kept the old tag. */
-export function mergedNotice(merged: MergedTags, from: string, into: string): string {
-  const moved = cardsAndNotes(merged.cards, merged.notes);
-  let notice = `${from} is merged into ${into}: ${moved} now ${
-    merged.cards + merged.notes === 1 ? "has" : "have"
-  } ${into} instead.`;
+export function mergedNotice(
+  merged: MergedTags, from: string, into: string,
+  t: ReturnType<typeof useT>["t"] = (key, params) => translate("en", key, params),
+): string {
+  const moved = cardsAndNotes(merged.cards, merged.notes, t);
+  let notice = t(merged.cards + merged.notes === 1 ? "tags.mergedOne" : "tags.mergedOther", { from, into, moved });
   const kept = [];
   if (merged.keptCards > 0) {
-    kept.push(`${count(merged.keptCards, "card", "cards")} that are deleted or in archived decks`);
+    kept.push(t(merged.keptCards === 1 ? "tags.keptCardOne" : "tags.keptCardOther", { cards: t(merged.keptCards === 1 ? "common.cardOne" : "common.cardOther", { count: merged.keptCards }) }));
   }
-  if (merged.keptNotes > 0) kept.push(count(merged.keptNotes, "deleted note", "deleted notes"));
-  if (kept.length > 0) {
-    notice += ` ${kept.join(" and ")} keep ${from}, since they can't be changed: if you restore them, they come back with ${from}.`;
-  }
+  if (merged.keptNotes > 0) kept.push(t(merged.keptNotes === 1 ? "tags.deletedNoteOne" : "tags.deletedNoteOther", { count: merged.keptNotes }));
+  if (kept.length > 0) notice += t("tags.kept", { kept: kept.join(t("tags.and")), from });
   return notice;
 }
 
-/** "3 cards · 1 note", leaving out a kind no active card or note has. */
-function usedBy(tag: TagSummary): string {
+/** Counts for a tag's metadata. */
+function usedBy(tag: TagSummary, t: ReturnType<typeof useT>["t"]): string {
   const parts = [];
-  if (tag.cards > 0) parts.push(tag.cards === 1 ? "1 card" : `${tag.cards} cards`);
-  if (tag.notes > 0) parts.push(tag.notes === 1 ? "1 note" : `${tag.notes} notes`);
+  if (tag.cards > 0) parts.push(t(tag.cards === 1 ? "common.cardOne" : "common.cardOther", { count: tag.cards }));
+  if (tag.notes > 0) parts.push(t(tag.notes === 1 ? "tags.noteOne" : "tags.noteOther", { count: tag.notes }));
   return parts.join(" · ");
 }
 
@@ -248,6 +242,7 @@ function TagItem({
   onMerge: () => void;
   onFind: () => void;
 }) {
+  const { t } = useT();
   const renameRef = useFocusOnMount<HTMLButtonElement>(focus === "rename");
   const mergeRef = useFocusOnMount<HTMLButtonElement>(focus === "merge");
   const nameId = `tag-${tag.id}-name`;
@@ -259,7 +254,7 @@ function TagItem({
             <span className="tag-name">{tag.name}</span>
           </span>
         </h3>
-        <p className="item-meta">{usedBy(tag)}</p>
+        <p className="item-meta">{usedBy(tag, t)}</p>
       </div>
       <div className="deck-actions">
         <button
@@ -272,7 +267,7 @@ function TagItem({
             if (!busy) onRename();
           }}
         >
-          Rename
+          {t("sources.rename")}
         </button>
         {canMerge && (
           <button
@@ -285,7 +280,7 @@ function TagItem({
               if (!busy) onMerge();
             }}
           >
-            Merge into…
+            {t("tags.mergeInto")}
           </button>
         )}
         <button
@@ -294,7 +289,7 @@ function TagItem({
           aria-describedby={nameId}
           onClick={onFind}
         >
-          Find in Search
+          {t("tags.find")}
           <ArrowRightIcon />
         </button>
       </div>
@@ -318,6 +313,7 @@ function RenameTag({
   onRenamed: (tags: TagSummary[], name: string) => void;
   onStale: () => void;
 }) {
+  const { t } = useT();
   const [name, setName] = useState(tag.name);
   const inputId = `tag-${tag.id}-rename`;
   useUnsavedChanges(name !== tag.name);
@@ -337,14 +333,14 @@ function RenameTag({
   return (
     <form
       className="card-item tag-rename"
-      aria-label={`Rename tag ${tag.name}`}
+      aria-label={t("tags.renameLabel", { name: tag.name })}
       noValidate
       onSubmit={submit}
     >
       <TextField
         id={inputId}
-        label={`New name for ${tag.name}`}
-        hint="One word, up to 60 characters: no spaces or commas. Use - or :: to join words."
+        label={t("tags.newName", { name: tag.name })}
+        hint={t("tags.nameHint")}
         value={name}
         error={fieldError("tags")}
         required
@@ -354,7 +350,7 @@ function RenameTag({
           edited("tags");
         }}
       />
-      <FormActions saveLabel="Rename tag" saving={saving} error={formError} onCancel={onCancel} />
+      <FormActions saveLabel={t("tags.renameTag")} saving={saving} error={formError === COMMAND_ERROR_FALLBACK ? t("common.somethingWrong") : formError} onCancel={onCancel} />
     </form>
   );
 }
@@ -379,6 +375,7 @@ function MergeTag({
   onMerged: (merged: MergedTags, into: string) => void;
   onStale: () => void;
 }) {
+  const { t } = useT();
   const [into, setInto] = useState("");
   const selectId = `tag-${tag.id}-merge`;
   const target = others.find((other) => String(other.id) === into);
@@ -386,7 +383,7 @@ function MergeTag({
   const { saving, submit, fieldError, formError, edited } = useFormSave(
     async () => {
       if (!target) {
-        throw { kind: "invalid", message: "Choose the tag to merge into.", field: "tags" };
+        throw { kind: "invalid", message: t("tags.chooseTarget"), field: "tags" };
       }
       try {
         return { merged: await mergeTags(tag.id, target.id), into: target.name };
@@ -402,16 +399,16 @@ function MergeTag({
   return (
     <form
       className="card-item tag-rename"
-      aria-label={`Merge tag ${tag.name}`}
+      aria-label={t("tags.mergeLabel", { name: tag.name })}
       noValidate
       onSubmit={submit}
     >
       <SelectField
         id={selectId}
-        label={`Merge ${tag.name} into`}
-        hint={`Every card and note with ${tag.name} gets the tag you choose instead, and ${tag.name} is no longer listed. Tags below it, such as ${tag.name}::more, stay as they are. This can't be undone.`}
+        label={t("tags.mergeTarget", { name: tag.name })}
+        hint={t("tags.mergeHint", { name: tag.name })}
         value={into}
-        placeholder="Choose a tag"
+        placeholder={t("exams.chooseTag")}
         options={others.map((other) => ({ value: String(other.id), label: other.name }))}
         error={fieldError("tags")}
         required
@@ -423,11 +420,10 @@ function MergeTag({
       />
       {target && (
         <p className="field-hint" role="status">
-          {cardsAndNotes(tag.cards, tag.notes)} will have {target.name} instead of {tag.name}.
-          Deleted cards and notes, and cards in archived decks, keep {tag.name}.
+          {t(tag.cards + tag.notes === 1 ? "tags.previewOne" : "tags.previewOther", { items: cardsAndNotes(tag.cards, tag.notes, t), into: target.name, from: tag.name })}
         </p>
       )}
-      <FormActions saveLabel="Merge tags" saving={saving} error={formError} onCancel={onCancel} />
+      <FormActions saveLabel={t("tags.mergeTags")} saving={saving} error={formError === COMMAND_ERROR_FALLBACK ? t("common.somethingWrong") : formError} onCancel={onCancel} />
     </form>
   );
 }

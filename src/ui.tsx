@@ -1,4 +1,6 @@
 import { useEffect, useRef, type ReactNode } from "react";
+import { COMMAND_ERROR_FALLBACK } from "./api";
+import { useT } from "./i18n";
 import { AlertIcon, CheckIcon, InfoIcon } from "./icons";
 
 /** A stored ISO-8601 time as a short local date and time, e.g. "Sep 16, 2026, 12:50 PM". */
@@ -34,6 +36,7 @@ export function Message({
   text: ReactNode;
   children?: ReactNode;
 }) {
+  const { t } = useT();
   const ref = useFocusOnMount<HTMLParagraphElement>(focus);
   const iconClass =
     tone === "alert"
@@ -53,7 +56,7 @@ export function Message({
         role={tone}
         tabIndex={-1}
       >
-        {text}
+        {text === COMMAND_ERROR_FALLBACK ? t("common.somethingWrong") : text}
       </p>
       {children}
     </div>
