@@ -1,3 +1,4 @@
+import { useT, useLang } from "./i18n";
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from "react";
 import {
   choosePicture,
@@ -57,7 +58,7 @@ import {
 } from "./Sources";
 import { formatDateTime, Message, useFocusOnMount } from "./ui";
 import { useUnsavedChanges } from "./unsaved";
-import { appendText, readBy, usePictureReading } from "./pictureText";
+import { appendText, usePictureReading } from "./pictureText";
 import {
   bytesOf,
   PictureField,
@@ -118,6 +119,7 @@ export function NotesArea({
    */
   newFromSource?: { draft: SourceNoteDraft; onCancel: () => void };
 }) {
+  const { t } = useT();
   const [place, setPlace] = useState<Place>(
     newFromSource
       ? { screen: "new", imported: newFromSource.draft }
@@ -164,7 +166,7 @@ export function NotesArea({
         key={noteId}
         noteId={noteId}
         justCreated={place.justCreated}
-        backLabel={openNote?.noteId === noteId ? openNote.backLabel : "Back to notes"}
+        backLabel={openNote?.noteId === noteId ? openNote.backLabel : t("notes.backNotes")}
         onBack={() =>
           openNote?.noteId === noteId
             ? openNote.onBack()
@@ -176,7 +178,7 @@ export function NotesArea({
           setPlace({
             screen: "library",
             focus: { to: "notice" },
-            notice: "Note deleted. It's kept in Deleted notes, where you can restore it.",
+            notice: t("notes.deletedNotice"),
           })
         }
         onOpenDeck={onOpenDeck}
@@ -198,14 +200,14 @@ export function NotesArea({
           setPlace({
             screen: "library",
             focus: { to: "notice" },
-            notice: `${title} restored. It's back in your notes.`,
+            notice: t("notes.restored", { title }),
           })
         }
         onStale={() =>
           setPlace({
             screen: "library",
             focus: { to: "notice" },
-            notice: "That note wasn't deleted after all. Here's your library as it is now.",
+            notice: t("notes.stale"),
           })
         }
       />
@@ -276,6 +278,7 @@ function NoteLibrary({
   onRead: (noteId: number) => void;
   onBack: () => void;
 }) {
+  const { t } = useT();
   const [state, setState] = useState<LibraryState>({ status: "loading" });
   // Bumping this re-runs the load effect (Retry, or after a restore).
   const [attempt, setAttempt] = useState(0);
@@ -310,7 +313,7 @@ function NoteLibrary({
   if (state.status === "loading") {
     return (
       <p className="loading" role="status">
-        Loading your notes…
+        {t("notes.loading")}
       </p>
     );
   }
@@ -320,10 +323,10 @@ function NoteLibrary({
       <Message focus tone="alert" text={state.message}>
         <div className="actions">
           <button type="button" className="button" onClick={() => reload(null)}>
-            Retry
+            {t("settings.retry")}
           </button>
           <button type="button" className="button" onClick={onBack}>
-            Back to Study Desk
+            {t("review.backDesk")}
           </button>
         </div>
       </Message>
@@ -343,11 +346,11 @@ function NoteLibrary({
       onOpen={onOpen}
       onRead={onRead}
       onBack={onBack}
-      onRestored={(title) => reload(`${title} restored. It's back in your notes.`)}
+      onRestored={(title) => reload(t("notes.restored", { title }))}
       onStale={() =>
         // Restoring failed because the note isn't deleted after all. Say so,
         // rather than reloading silently and leaving the press unexplained.
-        reload("That note wasn't deleted after all. Here's your library as it is now.")
+        reload(t("notes.stale"))
       }
     />
   );
@@ -380,6 +383,7 @@ function NoteList({
   onRestored: (title: string) => void;
   onStale: () => void;
 }) {
+  const { t } = useT();
   // A note that's gone from its list (it was deleted, or restored) falls back
   // to the screen, and so does a notice that isn't there.
   const focusNoteId =
@@ -510,17 +514,16 @@ function NoteList({
     >
       <button type="button" className="button button-quiet back-button" onClick={onBack}>
         <ArrowLeftIcon />
-        Back to Study Desk
+        {t("review.backDesk")}
       </button>
 
       <div className="page-header">
         <div className="page-heading">
           <h2 id="notes-heading" className="page-title">
-            Notes
+            {t("nav.notes")}
           </h2>
           <p className="page-intro">
-            Your own typed study notes, kept on this computer. The most recently edited note comes
-            first.
+            {t("notes.intro")}
           </p>
         </div>
         <div className="deck-actions page-actions">
@@ -533,7 +536,7 @@ function NoteList({
             onClick={chooseFile}
           >
             <UploadIcon />
-            Import file
+            {t("notes.import")}
           </button>
           <button
             ref={photoRef}
@@ -544,36 +547,32 @@ function NoteList({
             onClick={chooseNotePhoto}
           >
             <PictureIcon />
-            Note from a photo
+            {t("notes.fromPhoto")}
           </button>
           <button ref={newRef} type="button" className="button button-primary" onClick={onNew}>
             <PlusIcon />
-            New note
+            {t("notes.new")}
           </button>
         </div>
       </div>
       <p id="import-hint" className="field-hint">
-        Import a PDF, text, Markdown, Word, or PowerPoint file to make a note from its text. You
-        check the text before it's saved. The file itself is kept under Sources, so cards and
-        quizzes from the note can show the page they came from. A note from a photo, such as of
-        a page or a whiteboard, starts with the text Synapse recognises in it, for you to check. You
-        can also paste a picture here.
+        {t("notes.importHint")}
       </p>
       <div className="picture-text-row">
         <p className="form-status" role="status">
           {importing
-            ? "Choose a file. Synapse then reads its text…"
+            ? t("notes.choosingFile")
             : photoStep === "choosing"
-              ? "Choose a photo. Synapse then reads its text…"
+              ? t("notes.choosingPhoto")
               : photoStep === "keeping"
-                ? "Keeping the pasted picture…"
+                ? t("notes.keepingPhoto")
                 : photoStep === "reading"
-                  ? "Reading the text in the photo…"
+                  ? t("notes.readingPhoto")
                   : ""}
         </p>
         {photoStep === "reading" && (
           <button type="button" className="button button-small" onClick={photoReading.stop}>
-            Stop
+            {t("settings.stop")}
           </button>
         )}
       </div>
@@ -606,17 +605,17 @@ function NoteList({
       {notes.length === 0 ? (
         <p className="empty" role="status">
           {deleted.length === 0
-            ? "No notes yet. Choose New note to write one."
-            : "No notes in your library. Choose New note to write one, or restore a deleted note below."}
+            ? t("notes.empty")
+            : t("notes.emptyDeleted")}
         </p>
       ) : searching && search.found?.query === search.query.trim() && shown.length === 0 ? (
         <p className="empty">
           {tag === null
-            ? `No notes match “${search.found.query}”. Try other words, or clear the search to see every note.`
-            : `No notes tagged ${tag} match “${search.found.query}”. Try other words, or show every tag.`}
+            ? t("notes.noQuery", { query: search.found.query })
+            : t("notes.noTaggedQuery", { tag, query: search.found.query })}
         </p>
       ) : !searching && shown.length === 0 ? (
-        <p className="empty">No notes are tagged {tag} now. Choose another tag, or every tag.</p>
+        <p className="empty">{t("notes.noTagged", { tag: tag ?? "" })}</p>
       ) : (
         <ul className="card-list">
           {shown.map((note) => (
@@ -661,10 +660,11 @@ function NoteTagFilter({
   shown: number;
   onChange: (tag: string | null) => void;
 }) {
+  const { t, plural } = useT();
   return (
     <div className="field note-tag-filter">
       <label htmlFor="note-tag-filter" className="field-label">
-        Tag
+        {t("search.tag")}
       </label>
       <select
         id="note-tag-filter"
@@ -672,7 +672,7 @@ function NoteTagFilter({
         value={tag ?? ""}
         onChange={(event) => onChange(event.target.value === "" ? null : event.target.value)}
       >
-        <option value="">Every tag</option>
+        <option value="">{t("notes.everyTag")}</option>
         {tags.map((entry) => (
           <option key={entry.name} value={entry.name}>
             {`${entry.name} (${entry.count})`}
@@ -680,7 +680,7 @@ function NoteTagFilter({
         ))}
       </select>
       <p className="form-status" role="status">
-        {tag === null ? "" : `${counted(shown, "note")} shown.`}
+        {tag === null ? "" : plural(shown, "notes.shownOne", "notes.shownOther")}
       </p>
     </div>
   );
@@ -740,22 +740,23 @@ function useNoteSearch(): NoteSearch {
 }
 
 function NoteSearchField({ search }: { search: NoteSearch }) {
+  const { t, plural } = useT();
   const { query, found, error, setQuery } = search;
   const trimmed = query.trim();
   const inputRef = useRef<HTMLInputElement>(null);
 
   let status = "";
   if (trimmed !== "" && error === null) {
-    if (found?.query !== trimmed) status = "Searching…";
-    else if (found.notes.length === 0) status = "No notes match.";
+    if (found?.query !== trimmed) status = t("search.searching");
+    else if (found.notes.length === 0) status = t("notes.noMatches");
     else
-      status = `${counted(found.notes.length, "note")} ${found.notes.length === 1 ? "matches" : "match"}.`;
+      status = plural(found.notes.length, "notes.matchesOne", "notes.matchesOther");
   }
 
   return (
     <div className="field note-search">
       <label htmlFor="note-search" className="field-label">
-        Search notes
+        {t("notes.search")}
       </label>
       <div className="note-search-row">
         <input
@@ -784,13 +785,12 @@ function NoteSearchField({ search }: { search: NoteSearch }) {
               inputRef.current?.focus();
             }}
           >
-            Clear
+            {t("search.clear")}
           </button>
         )}
       </div>
       <p id="note-search-hint" className="field-hint">
-        Finds notes whose title or text contains what you type, ignoring capitals. Deleted notes
-        aren't searched.
+        {t("notes.searchHint")}
       </p>
       <p className="form-status" role="status">
         {status}
@@ -823,6 +823,7 @@ function DeletedNoteList({
   onRestored: (title: string) => void;
   onStale: () => void;
 }) {
+  const { t } = useT();
   return (
     <section className="cards section-quiet" aria-labelledby="deleted-notes-heading">
       <div className="section-heading">
@@ -830,13 +831,11 @@ function DeletedNoteList({
           <RestoreIcon />
         </span>
         <h3 id="deleted-notes-heading" className="section-title section-title-quiet">
-          Deleted notes
+          {t("notes.deleted")}
         </h3>
       </div>
       <p className="field-hint">
-        Kept for your history. A deleted note isn't in your library and can't be edited, but you can
-        read it, and restoring it brings it back with its text unchanged. Cards you wrote from a
-        note are never affected.
+        {t("notes.deletedHint")}
       </p>
       <ul className="card-list">
         {notes.map((note) => (
@@ -910,6 +909,7 @@ function DeletedNoteItem({
   onRestored: (title: string) => void;
   onStale: () => void;
 }) {
+  const { t } = useT();
   const { restoring, error, restore } = useRestoreNote(note, onRestored, onStale);
   const readRef = useFocusOnMount<HTMLButtonElement>(focusRead);
   const titleId = `deleted-note-${note.id}-title`;
@@ -923,9 +923,10 @@ function DeletedNoteItem({
           {note.title}
         </h4>
         <p className="item-meta">
-          {`Deleted ${formatDateTime(note.deletedAt)} · last edited ${formatDateTime(
-            note.updatedAt
-          )}`}
+          {t("notes.deletedEdited", {
+            deleted: formatDateTime(note.deletedAt),
+            edited: formatDateTime(note.updatedAt),
+          })}
         </p>
       </div>
       <div className="deck-actions item-actions">
@@ -939,7 +940,7 @@ function DeletedNoteItem({
             if (!restoring) onRead();
           }}
         >
-          Read note
+          {t("notes.read")}
         </button>
         <button
           type="button"
@@ -949,11 +950,11 @@ function DeletedNoteItem({
           onClick={restore}
         >
           <RestoreIcon />
-          Restore note
+          {t("notes.restore")}
         </button>
       </div>
       <p className="form-status" role="status">
-        {restoring ? "Restoring…" : ""}
+        {restoring ? t("bulk.restoring") : ""}
       </p>
       {error && (
         <p className="message-error" role="alert">
@@ -973,6 +974,7 @@ function NoteItem({
   focusOpen: boolean;
   onOpen: () => void;
 }) {
+  const { t } = useT();
   const openRef = useFocusOnMount<HTMLButtonElement>(focusOpen);
   const titleId = `note-${note.id}-title`;
 
@@ -989,8 +991,8 @@ function NoteItem({
           </h3>
           <p className="item-meta">
             {note.updatedAt === note.createdAt
-              ? `Created ${formatDateTime(note.createdAt)}`
-              : `Edited ${formatDateTime(note.updatedAt)}`}
+              ? t("notes.created", { date: formatDateTime(note.createdAt) })
+              : t("notes.edited", { date: formatDateTime(note.updatedAt) })}
           </p>
           <TagChips tags={note.tags} />
         </div>
@@ -1002,7 +1004,7 @@ function NoteItem({
         aria-describedby={titleId}
         onClick={onOpen}
       >
-        Open note
+        {t("search.openNote")}
         <ArrowRightIcon />
       </button>
     </article>
@@ -1060,13 +1062,14 @@ function NoteScreen({
   onOpenDeck: (deckId: number) => void;
   onOpenSource: (sourceId: number) => void;
 }) {
+  const { t, plural } = useT();
   const [state, setState] = useState<NoteState>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
   // The note itself, or a form in its place.
   const [mode, setMode] = useState<"view" | "edit" | "card" | "suggest" | "quiz" | "tutor">("view");
   const [view, setView] = useState<NoteViewState>({
     key: 0,
-    notice: justCreated ? "Note saved." : null,
+    notice: justCreated ? t("notes.saved") : null,
     focus: justCreated ? "notice" : "screen",
     cardDeck: null,
   });
@@ -1093,7 +1096,7 @@ function NoteScreen({
   if (state.status === "loading") {
     return (
       <p className="loading" role="status">
-        Loading the note…
+        {t("notes.loadingNote")}
       </p>
     );
   }
@@ -1111,7 +1114,7 @@ function NoteScreen({
               setAttempt((n) => n + 1);
             }}
           >
-            Retry
+            {t("settings.retry")}
           </button>
           <button type="button" className="button" onClick={onBack}>
             {backLabel}
@@ -1128,7 +1131,7 @@ function NoteScreen({
         onCancel={() => showView(null, "edit")}
         onSaved={(note) => {
           setState({ status: "ready", note });
-          showView("Note updated.", "notice");
+          showView(t("notes.updated"), "notice");
         }}
       />
     );
@@ -1140,7 +1143,7 @@ function NoteScreen({
         note={state.note}
         onCancel={() => showView(null, "card")}
         onCreated={(deck) =>
-          showView(`Card added to ${deck.name}. It's due for review now.`, "notice", {
+          showView(t("notes.cardAdded", { name: deck.name }), "notice", {
             id: deck.id,
             name: deck.name,
           })
@@ -1156,9 +1159,7 @@ function NoteScreen({
         onCancel={() => showView(null, "suggest")}
         onSaved={(deck, count) =>
           showView(
-            count === 1
-              ? `1 card added to ${deck.name}. It's due for review now.`
-              : `${count} cards added to ${deck.name}. They're due for review now.`,
+            plural(count, "notes.cardsAddedOne", "notes.cardsAddedOther", { name: deck.name }),
             "notice",
             { id: deck.id, name: deck.name }
           )
@@ -1174,9 +1175,7 @@ function NoteScreen({
         onCancel={() => showView(null, "quiz")}
         onSaved={(deck, count) =>
           showView(
-            count === 1
-              ? `1 card added to ${deck.name}. It's due for review now.`
-              : `${count} cards added to ${deck.name}. They're due for review now.`,
+            plural(count, "notes.cardsAddedOne", "notes.cardsAddedOther", { name: deck.name }),
             "notice",
             { id: deck.id, name: deck.name }
           )
@@ -1191,7 +1190,7 @@ function NoteScreen({
         note={state.note}
         onCancel={() => showView(null, "tutor")}
         onSaved={(saved) =>
-          showView(`Summary saved as a new note: ${saved.title}. It's in your notes library.`, "notice")
+          showView(t("notes.summarySaved", { title: saved.title }), "notice")
         }
       />
     );
@@ -1249,6 +1248,7 @@ function NoteView({
   backLabel: string;
   onBack: () => void;
 }) {
+  const { t } = useT();
   const screenRef = useFocusOnMount<HTMLElement>(focus === "screen");
   const noticeRef = useFocusOnMount<HTMLParagraphElement>(focus === "notice");
   const editRef = useFocusOnMount<HTMLButtonElement>(focus === "edit");
@@ -1268,7 +1268,7 @@ function NoteView({
   const openedRef = useRef(false);
 
   // As on the deck screen: focus moves to the question when it opens, so it
-  // is read out and a repeated Enter can't delete, and back to "Delete note"
+  // is read out and a repeated Enter can't delete, and back to t("notes.delete")
   // if the note is kept.
   useEffect(() => {
     if (confirming) {
@@ -1321,8 +1321,8 @@ function NoteView({
             {note.title}
           </h2>
           <p className="item-meta">
-            {`Created ${formatDateTime(note.createdAt)}`}
-            {edited && ` · Edited ${formatDateTime(note.updatedAt)}`}
+            {t("notes.created", { date: formatDateTime(note.createdAt) })}
+            {edited && t("notes.editedSuffix", { date: formatDateTime(note.updatedAt) })}
           </p>
           <TagChips tags={note.tags} />
           <NoteSourceLine noteId={note.id} onOpenSource={onOpenSource} />
@@ -1341,7 +1341,7 @@ function NoteView({
               aria-describedby="note-notice"
               onClick={() => onOpenDeck(cardDeck.id)}
             >
-              {`Open ${cardDeck.name}`}
+              {t("notes.openDeck", { name: cardDeck.name })}
               <ArrowRightIcon />
             </button>
           </div>
@@ -1352,9 +1352,7 @@ function NoteView({
         {confirming ? (
           <div className="confirm">
             <p ref={questionRef} className="confirm-question" tabIndex={-1}>
-              Delete this note? It will leave your notes and can't be opened or edited. Its text is
-              kept under Deleted notes, where you can restore it. Cards you wrote from it aren't
-              changed.
+              {t("notes.deleteConfirm")}
             </p>
             <div className="deck-actions">
               <button
@@ -1364,7 +1362,7 @@ function NoteView({
                 aria-disabled={deleting}
                 onClick={confirmDelete}
               >
-                Delete note
+                {t("notes.delete")}
               </button>
               <button
                 type="button"
@@ -1374,11 +1372,11 @@ function NoteView({
                   if (!deleting) setConfirming(false);
                 }}
               >
-                Keep note
+                {t("notes.keep")}
               </button>
             </div>
             <p className="form-status" role="status">
-              {deleting ? "Deleting…" : ""}
+              {deleting ? t("bulk.deleting") : ""}
             </p>
           </div>
         ) : (
@@ -1391,7 +1389,7 @@ function NoteView({
               onClick={onEdit}
             >
               <PencilIcon />
-              Edit note
+              {t("notes.edit")}
             </button>
             <button
               ref={cardRef}
@@ -1401,7 +1399,7 @@ function NoteView({
               onClick={onCreateCard}
             >
               <PlusIcon />
-              Create card from note
+              {t("notes.createCard")}
             </button>
             <button
               ref={suggestRef}
@@ -1411,7 +1409,7 @@ function NoteView({
               onClick={onSuggest}
             >
               <SparkleIcon />
-              Suggest cards
+              {t("notes.suggest")}
             </button>
             <button
               ref={quizRef}
@@ -1421,7 +1419,7 @@ function NoteView({
               onClick={onQuiz}
             >
               <SparkleIcon />
-              Quiz me
+              {t("notes.quiz")}
             </button>
             <button
               ref={tutorRef}
@@ -1431,7 +1429,7 @@ function NoteView({
               onClick={onTutor}
             >
               <SparkleIcon />
-              Summarise
+              {t("notes.summarise")}
             </button>
             <button
               ref={deleteRef}
@@ -1441,7 +1439,7 @@ function NoteView({
               onClick={() => setConfirming(true)}
             >
               <TrashIcon />
-              Delete note
+              {t("notes.delete")}
             </button>
           </div>
         )}
@@ -1455,8 +1453,8 @@ function NoteView({
         <NoteReading body={note.body} />
         <PictureGallery
           pictures={note.pictures}
-          label="Picture in the note"
-          listLabel="Pictures in the note"
+          label={t("notes.picture")}
+          listLabel={t("notes.pictureList")}
           readText
         />
       </article>
@@ -1487,6 +1485,7 @@ function DeletedNoteScreen({
   /** It wasn't deleted after all (restored meanwhile). */
   onStale: () => void;
 }) {
+  const { t } = useT();
   const [state, setState] = useState<DeletedNoteState>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
 
@@ -1508,7 +1507,7 @@ function DeletedNoteScreen({
   if (state.status === "loading") {
     return (
       <p className="loading" role="status">
-        Loading the note…
+        {t("notes.loadingNote")}
       </p>
     );
   }
@@ -1525,10 +1524,10 @@ function DeletedNoteScreen({
               setAttempt((n) => n + 1);
             }}
           >
-            Retry
+            {t("settings.retry")}
           </button>
           <button type="button" className="button" onClick={onBack}>
-            Back to notes
+            {t("notes.backNotes")}
           </button>
         </div>
       </Message>
@@ -1556,6 +1555,7 @@ function DeletedNoteView({
   onRestored: (title: string) => void;
   onStale: () => void;
 }) {
+  const { t } = useT();
   const screenRef = useFocusOnMount<HTMLElement>(true);
   const { restoring, error, restore } = useRestoreNote(note, onRestored, onStale);
   const edited = note.updatedAt !== note.createdAt;
@@ -1569,7 +1569,7 @@ function DeletedNoteView({
     >
       <button type="button" className="button button-quiet back-button" onClick={onBack}>
         <ArrowLeftIcon />
-        Back to notes
+        {t("notes.backNotes")}
       </button>
 
       <article className="card">
@@ -1578,15 +1578,17 @@ function DeletedNoteView({
             {note.title}
           </h2>
           <p className="item-meta">
-            {`Deleted ${formatDateTime(note.deletedAt)} · created ${formatDateTime(note.createdAt)}`}
-            {edited && ` · last edited ${formatDateTime(note.updatedAt)}`}
+            {t("notes.deletedCreated", {
+              deleted: formatDateTime(note.deletedAt),
+              created: formatDateTime(note.createdAt),
+            })}
+            {edited && t("notes.lastEditedSuffix", { date: formatDateTime(note.updatedAt) })}
           </p>
           <TagChips tags={note.tags} />
         </div>
 
         <p id="deleted-note-hint" className="field-hint">
-          This note is deleted, so it can only be read. Restore it to edit it, write cards from it,
-          or be quizzed on it. Its text comes back unchanged.
+          {t("notes.deletedReadHint")}
         </p>
         <div className="deck-actions note-toolbar">
           <button
@@ -1597,11 +1599,11 @@ function DeletedNoteView({
             onClick={restore}
           >
             <RestoreIcon />
-            Restore note
+            {t("notes.restore")}
           </button>
         </div>
         <p className="form-status" role="status">
-          {restoring ? "Restoring…" : ""}
+          {restoring ? t("bulk.restoring") : ""}
         </p>
         {error && (
           <p className="message-error" role="alert">
@@ -1613,8 +1615,8 @@ function DeletedNoteView({
         {/* Reading a picture's text saves nothing, so a deleted note offers it too. */}
         <PictureGallery
           pictures={note.pictures}
-          label="Picture in the note"
-          listLabel="Pictures in the note"
+          label={t("notes.picture")}
+          listLabel={t("notes.pictureList")}
           readText
         />
       </article>
@@ -1633,6 +1635,7 @@ function NoteSourceLine({
   noteId: number;
   onOpenSource: (sourceId: number) => void;
 }) {
+  const { t } = useT();
   const [found, setFound] = useState<
     { status: "active"; sourceId: number; title: string } | { status: "deleted" } | null
   >(null);
@@ -1664,19 +1667,19 @@ function NoteSourceLine({
   if (found.status === "deleted") {
     return (
       <p className="item-meta note-source">
-        Written from a source that's been deleted. Restore it under Sources to see its pages again.
+        {t("notes.sourceDeleted")}
       </p>
     );
   }
   return (
     <p className="item-meta note-source">
-      {`Written from ${found.title}. `}
+      {t("notes.writtenFrom", { title: found.title })}
       <button
         type="button"
         className="button-link"
         onClick={() => onOpenSource(found.sourceId)}
       >
-        Open source
+        {t("notes.openSource")}
       </button>
     </p>
   );
@@ -1709,6 +1712,7 @@ function rememberFormatted(formatted: boolean) {
  * with no Markdown in it is shown as plain text, as it was typed.
  */
 function NoteReading({ body }: { body: string }) {
+  const { t } = useT();
   // Parsed once, both to decide whether to offer formatting and to show it.
   const blocks = useMemo(() => parseMarkdown(body), [body]);
   const formattable = useMemo(() => hasFormatting(blocks), [blocks]);
@@ -1729,14 +1733,14 @@ function NoteReading({ body }: { body: string }) {
 
   return (
     <div className="note-reading">
-      <div className="note-view-switch" role="group" aria-label="Show the note">
+      <div className="note-view-switch" role="group" aria-label={t("notes.show")}>
         <button
           type="button"
           className="button button-small"
           aria-pressed={formatted}
           onClick={() => show(true)}
         >
-          Formatted
+          {t("notes.formatted")}
         </button>
         <button
           type="button"
@@ -1744,7 +1748,7 @@ function NoteReading({ body }: { body: string }) {
           aria-pressed={!formatted}
           onClick={() => show(false)}
         >
-          Plain text
+          {t("notes.plain")}
         </button>
       </div>
       {formatted ? <MarkdownView blocks={blocks} /> : <p className="note-body">{body}</p>}
@@ -1771,6 +1775,7 @@ function NoteForm({
   onCancel: () => void;
   onSaved: (note: Note) => void;
 }) {
+  const { t } = useT();
   const [title, setTitle] = useState(imported?.title ?? note?.title ?? "");
   const [body, setBody] = useState(
     imported?.body ?? note?.body ?? photo?.recognition?.text.trim() ?? ""
@@ -1822,20 +1827,20 @@ function NoteForm({
     >
       <h2 id="note-form-heading" className="form-title">
         {note
-          ? "Edit note"
+          ? t("notes.edit")
           : imported
-            ? `New note from ${imported.fileName}`
+            ? t("notes.newFrom", { name: imported.fileName })
             : photo
-              ? "New note from a photo"
-              : "New note"}
+              ? t("notes.newPhoto")
+              : t("notes.new")}
       </h2>
       {imported && <ImportSummary imported={imported} length={[...body].length} />}
       {photo && <PhotoSummary photo={photo} />}
 
       <TextField
         id="note-title"
-        label="Title"
-        hint="Required. Up to 200 characters."
+        label={t("exams.title")}
+        hint={t("notes.titleHint")}
         value={title}
         error={fieldError("title")}
         required
@@ -1847,8 +1852,8 @@ function NoteForm({
       />
       <TextField
         id="note-body"
-        label="Note"
-        hint="Plain text; Markdown, such as # headings, **bold** and - lists, is shown formatted when you read the note. Required. Up to 100,000 characters. Line breaks and indentation inside the note are kept; spaces and blank lines at the very start and end are removed."
+        label={t("notes.body")}
+        hint={t("notes.bodyHint")}
         value={body}
         error={fieldError("body")}
         required
@@ -1861,16 +1866,16 @@ function NoteForm({
       />
       <PictureField
         id="note-pictures"
-        label="Pictures"
-        hint="Optional. Up to 20 PNG, JPEG, GIF or WebP pictures of up to 20 MB each, shown under the note in this order."
+        label={t("notes.pictures")}
+        hint={t("notes.picturesHint")}
         pictures={pictures}
         onChange={changePictures}
         adder={adder}
         error={fieldError("pictures")}
         disabled={saving}
         addText={{
-          label: "Add to note",
-          done: "Added to the end of the note.",
+          label: t("notes.addText"),
+          done: t("notes.addedText"),
           onAdd: (text) => {
             setBody((current) => appendText(current, text));
             edited("body");
@@ -1879,7 +1884,7 @@ function NoteForm({
       />
       <TagField
         id="note-tags"
-        hint="Optional. Words to find the note by, such as bio or exam-june: a space or comma ends each one. Up to 20, each up to 60 characters; :: makes one tag sit under another, as in bio::cells."
+        hint={t("notes.tagsHint")}
         tags={tags}
         onChange={(next) => {
           setTags(next);
@@ -1890,7 +1895,7 @@ function NoteForm({
       />
 
       <FormActions
-        saveLabel={note ? "Save changes" : "Save note"}
+        saveLabel={note ? t("occlusion.saveChanges") : t("notes.save")}
         saving={saving}
         error={formError}
         onCancel={onCancel}
@@ -1914,6 +1919,7 @@ export type PhotoDraft = {
  * goes to it, so it's read out first.
  */
 function PhotoSummary({ photo }: { photo: PhotoDraft }) {
+  const { t } = useT();
   const summaryRef = useFocusOnMount<HTMLParagraphElement>(true);
   const { recognition } = photo;
   const found = recognition !== null && recognition.text.trim() !== "";
@@ -1921,16 +1927,20 @@ function PhotoSummary({ photo }: { photo: PhotoDraft }) {
     <>
       <p ref={summaryRef} className="notice" role="status" tabIndex={-1}>
         {found
-          ? "The note below is the text Synapse recognised in the photo, which is attached. Recognised text can have mistakes: check it against the photo and correct it, then give the note a title and save it."
+          ? t("notes.photoFound")
           : recognition !== null
-            ? "No text found in the photo. It's attached below: write the note yourself, and give it a title."
+            ? t("notes.photoEmpty")
             : photo.problem
-              ? `${photo.problem} The photo is attached below: write the note yourself, and give it a title.`
-              : "Reading stopped before any text was found. The photo is attached below: write the note yourself, and give it a title."}
+              ? t("notes.photoProblem", { problem: photo.problem })
+              : t("notes.photoStopped")}
       </p>
       {found && (
         <p className="field-hint">
-          {`${readBy(recognition)} To read it with another reader, such as a vision model in Ollama for accents and handwriting, use Text in picture under the photo.`}
+          {t("notes.photoReader", {
+            reader: recognition.engine === "ocrs"
+              ? t("notes.readerBuiltIn")
+              : t("notes.readerOllama", { model: String(recognition.model) }),
+          })}
         </p>
       )}
     </>
@@ -1940,15 +1950,13 @@ function PhotoSummary({ photo }: { photo: PhotoDraft }) {
 /** The most characters a note's text can hold: `NOTE_BODY_MAX_CHARS` in `notes.rs`. */
 const NOTE_BODY_MAX_CHARS = 100_000;
 
-/** "1 page", "12 slides". */
-function counted(count: number, thing: string): string {
-  return count === 1 ? `1 ${thing}` : `${count} ${thing}s`;
-}
-
-/** "2", "2 and 7", "2, 5, and 7". */
-function listed(numbers: number[]): string {
-  if (numbers.length <= 2) return numbers.join(" and ");
-  return `${numbers.slice(0, -1).join(", ")}, and ${numbers[numbers.length - 1]}`;
+/** Page numbers joined in the current language. */
+function listed(numbers: number[], t: ReturnType<typeof useT>["t"]): string {
+  if (numbers.length < 2) return numbers.join("");
+  return t(numbers.length === 2 ? "occlusion.list" : "notes.listMany", {
+    first: numbers.slice(0, -1).join(", "),
+    last: numbers[numbers.length - 1],
+  });
 }
 
 /**
@@ -1958,11 +1966,17 @@ function listed(numbers: number[]): string {
  * cards from whole. Focus goes to it, so it's read out first.
  */
 function ImportSummary({ imported, length }: { imported: SourceNoteDraft; length: number }) {
+  const { t, plural } = useT();
+  const { lang } = useLang();
   const summaryRef = useFocusOnMount<HTMLParagraphElement>(true);
   const parts =
     imported.pages === null
       ? ""
-      : ` (${counted(imported.pages, imported.kind === "powerPoint" ? "slide" : "page")})`;
+      : ` (${plural(
+          imported.pages,
+          imported.kind === "powerPoint" ? "notes.slideOne" : "notes.pageOne",
+          imported.kind === "powerPoint" ? "notes.slideOther" : "notes.pageOther",
+        )})`;
   const missing = imported.pagesWithoutText;
   const recognised = imported.recognisedPages;
 
@@ -1970,40 +1984,40 @@ function ImportSummary({ imported, length }: { imported: SourceNoteDraft; length
     <>
       <p ref={summaryRef} className="notice" role="status" tabIndex={-1}>
         {imported.justKept
-          ? `Synapse kept ${imported.fileName} under Sources and read its text${parts}. Check it and edit it as you like, then save it as a note. The source itself doesn't change.`
-          : `This is the text of ${imported.fileName}${parts}, kept under Sources. Check it and edit it as you like, then save it as a note. The source itself doesn't change.`}
+          ? t("notes.importKept", { name: imported.fileName, parts })
+          : t("notes.importExisting", { name: imported.fileName, parts })}
       </p>
       {recognised.length > 0 && (
         <p className="import-warning">
-          {`${
-            recognised.length > 12
-              ? `${recognised.length} pages were`
-              : `${recognised.length === 1 ? "Page" : "Pages"} ${listed(recognised)} ${recognised.length === 1 ? "was" : "were"}`
-          } scanned, so their text was recognised from the picture. Recognised text can hold mistakes, and the built-in reader doesn't read accents (è comes out as e). Check it against the original before you save.`}
+          {plural(recognised.length, "notes.scannedWarningOne", "notes.scannedWarningOther", {
+            pages: recognised.length > 12
+              ? t("notes.scannedMany", { count: recognised.length })
+              : plural(recognised.length, "notes.scannedOne", "notes.scannedOther", { pages: listed(recognised, t) }),
+          })}
         </p>
       )}
       {missing.length > 0 && (
         <p className="import-warning">
-          {`${
-            missing.length > 12
-              ? `${missing.length} pages`
-              : `${missing.length === 1 ? "Page" : "Pages"} ${listed(missing)}`
-          } had no text Synapse could read. They may be scanned images, so check whether anything is missing.`}
+          {t("notes.missingWarning", {
+            pages: missing.length > 12
+              ? plural(missing.length, "notes.pageOne", "notes.pageOther")
+              : plural(missing.length, "notes.missingOne", "notes.missingOther", { pages: listed(missing, t) }),
+          })}
         </p>
       )}
       {(imported.imagesLeftOut ?? 0) > 0 && (
         <p className="import-warning">
-          {`${counted(imported.imagesLeftOut ?? 0, "picture")} on the page ${imported.imagesLeftOut === 1 ? "was" : "were"} left out: Synapse reads a saved page's text only, and loads nothing from the web.`}
+          {plural(imported.imagesLeftOut ?? 0, "notes.imagesLeftOutOne", "notes.imagesLeftOutOther")}
         </p>
       )}
       {length > NOTE_BODY_MAX_CHARS && (
         <p className="import-warning">
-          {`This text is ${length.toLocaleString("en-US")} characters long, but a note can hold 100,000. Shorten it before you save it, for example by keeping one chapter.`}
+          {t("notes.tooLong", { length: length.toLocaleString(lang === "it" ? "it-IT" : "en-US") })}
         </p>
       )}
       {length > SUGGESTION_NOTE_MAX_CHARS && length <= NOTE_BODY_MAX_CHARS && (
         <p className="field-hint">
-          {`At ${length.toLocaleString("en-US")} characters, this is more than a model reads at once, so Suggest cards will offer the note in parts of up to 12,000 characters.`}
+          {t("notes.suggestParts", { length: length.toLocaleString(lang === "it" ? "it-IT" : "en-US") })}
         </p>
       )}
     </>
@@ -2025,6 +2039,7 @@ function CardFromNote({
   onCancel: () => void;
   onCreated: (deck: DeckDetail) => void;
 }) {
+  const { t } = useT();
   const [choices, setChoices] = useState<DeckChoices>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
 
@@ -2041,7 +2056,7 @@ function CardFromNote({
   if (choices.status === "loading") {
     return (
       <p className="loading" role="status">
-        Loading your decks…
+        {t("desk.loading")}
       </p>
     );
   }
@@ -2058,10 +2073,10 @@ function CardFromNote({
               setAttempt((n) => n + 1);
             }}
           >
-            Retry
+            {t("settings.retry")}
           </button>
           <button type="button" className="button" onClick={onCancel}>
-            Back to note
+            {t("notes.backNote")}
           </button>
         </div>
       </Message>
@@ -2073,10 +2088,10 @@ function CardFromNote({
       <Message
         focus
         tone="status"
-        text="You don't have a deck to add cards to yet. Create one on the Study Desk first; the Sample deck can't take new cards."
+        text={t("notes.noDeck")}
       >
         <button type="button" className="button" onClick={onCancel}>
-          Back to note
+          {t("notes.backNote")}
         </button>
       </Message>
     );
@@ -2107,6 +2122,7 @@ function CardFromNoteForm({
   /** Reloading the choices found none left, so there's nothing to save into. */
   onNoDecks: () => void;
 }) {
+  const { t } = useT();
   const [decks, setDecks] = useState(initialDecks);
   // An explicit choice: no deck is picked until the user picks one.
   const [deckId, setDeckId] = useState("");
@@ -2137,7 +2153,7 @@ function CardFromNoteForm({
         // Nothing to send yet; shown under the deck list like any field error.
         const unchosen: CommandError = {
           kind: "invalid",
-          message: "Choose a deck for this card.",
+          message: t("notes.chooseDeck"),
           field: "deck",
         };
         throw unchosen;
@@ -2162,29 +2178,28 @@ function CardFromNoteForm({
   return (
     <form className="card" aria-labelledby="note-card-heading" noValidate onSubmit={submit}>
       <h2 id="note-card-heading" className="form-title">
-        {`Create a card from ${note.title}`}
+        {t("notes.cardFrom", { title: note.title })}
       </h2>
 
       {/* Focusable so keyboard users can scroll a long note. */}
       <section className="note-context" tabIndex={0} aria-labelledby="note-context-label">
         <p id="note-context-label" className="side-label">
-          Your note
+          {t("notes.yourNote")}
         </p>
         <p className="note-body">{note.body}</p>
       </section>
       <p id="note-card-hint" className="field-hint">
-        Write the question and answer yourself. The note stays exactly as it is, and the card
-        isn't linked to it.
+        {t("notes.cardHint")}
       </p>
 
       <SelectField
         id="note-card-deck"
-        label="Deck"
-        hint="The card is added to this deck and is due for review straight away."
+        label={t("search.deck")}
+        hint={t("notes.deckHint")}
         describedBy="note-card-hint"
         value={deckId}
         options={decks.map((deck) => ({ value: String(deck.id), label: deck.name }))}
-        placeholder="Choose a deck"
+        placeholder={t("exams.chooseDeck")}
         error={fieldError("deck")}
         required
         autoFocus
@@ -2195,8 +2210,8 @@ function CardFromNoteForm({
       />
       <TextField
         id="note-card-front"
-        label="Front"
-        hint="The question. Required. Up to 2,000 characters."
+        label={t("csv.front")}
+        hint={t("deck.frontHint")}
         value={front}
         error={fieldError("front")}
         required
@@ -2208,8 +2223,8 @@ function CardFromNoteForm({
       />
       <TextField
         id="note-card-back"
-        label="Back"
-        hint="The answer. Required. Up to 2,000 characters."
+        label={t("csv.back")}
+        hint={t("deck.backHint")}
         value={back}
         error={fieldError("back")}
         required
@@ -2220,7 +2235,7 @@ function CardFromNoteForm({
         }}
       />
 
-      <FormActions saveLabel="Save card" saving={saving} error={formError} onCancel={onCancel} />
+      <FormActions saveLabel={t("deck.saveCard")} saving={saving} error={formError} onCancel={onCancel} />
     </form>
   );
 }

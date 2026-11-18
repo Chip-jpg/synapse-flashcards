@@ -1,3 +1,4 @@
+import { useT } from "./i18n";
 import { createContext, useContext, useId, useState } from "react";
 import type { Block, Inline } from "./markdown";
 
@@ -39,6 +40,7 @@ function ParagraphView({ content }: { content: Inline[] }) {
 const ParagraphIdContext = createContext<string>("");
 
 function TimestampButton({ seconds, label }: { seconds: number; label: string }) {
+  const { t } = useT();
   const paragraph = useContext(ParagraphIdContext);
   const { activate } = useContext(TimestampContext);
   return (
@@ -46,8 +48,8 @@ function TimestampButton({ seconds, label }: { seconds: number; label: string })
       type="button"
       className="markdown-timestamp"
       data-seconds={seconds}
-      title={`Copy ${label} and mark this paragraph`}
-      aria-label={`Time ${label}: copy it`}
+      title={t("notes.copyTime", { time: label })}
+      aria-label={t("notes.timeLabel", { time: label })}
       onClick={() => {
         activate(paragraph);
         // Not every webview offers the clipboard; marking the paragraph is
@@ -65,6 +67,7 @@ function renderBlocks(blocks: Block[]) {
 }
 
 function BlockView({ block }: { block: Block }) {
+  const { t } = useT();
   switch (block.type) {
     case "heading": {
       // The note's title is the page's h2, so its headings start below it.
@@ -88,7 +91,7 @@ function BlockView({ block }: { block: Block }) {
             <span
               className="markdown-check"
               role="img"
-              aria-label={item.task ? "Done" : "Not done"}
+              aria-label={t(item.task ? "notes.done" : "notes.notDone")}
             >
               {item.task ? "☑" : "☐"}
             </span>
@@ -140,6 +143,7 @@ function renderInline(nodes: Inline[]) {
 }
 
 function InlineView({ node }: { node: Inline }) {
+  const { t } = useT();
   switch (node.type) {
     case "text":
       return node.text;
@@ -170,7 +174,9 @@ function InlineView({ node }: { node: Inline }) {
     case "image":
       return (
         <span className="markdown-image">
-          {node.alt === "" ? "Picture" : `Picture: ${node.alt}`}
+          {node.alt === ""
+            ? t("occlusion.picture")
+            : t("notes.markdownPictureAlt", { alt: node.alt })}
           {node.url !== "" && <span className="markdown-url">{` (${node.url})`}</span>}
         </span>
       );
