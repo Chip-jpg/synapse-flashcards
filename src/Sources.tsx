@@ -1,3 +1,4 @@
+import { useT, translate } from "./i18n";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   deleteSource,
@@ -132,24 +133,22 @@ export function draftFromPages(source: Source, pages: SourcePage[]): SourceNoteD
   };
 }
 
-/** "1 page", "12 slides". */
-function counted(count: number, thing: string): string {
-  return count === 1 ? `1 ${thing}` : `${count} ${thing}s`;
-}
-
 /** "840 KB", "2.3 MB": a file's size, as file windows show it. */
-export function formatSize(bytes: number): string {
-  if (bytes < 1000) return `${bytes} bytes`;
+export function formatSize(
+  bytes: number,
+  t: ReturnType<typeof useT>["t"] = (key, params) => translate("en", key, params),
+): string {
+  if (bytes < 1000) return t("sources.bytes", { count: bytes });
   if (bytes < 1_000_000) return `${Math.round(bytes / 1000)} KB`;
   return `${(bytes / 1_000_000).toFixed(1)} MB`;
 }
 
 /** "PDF · 12 pages · 2.3 MB": what a source is, in one line. */
-function describe(source: Source): string {
-  const parts: string[] = [KIND_NAMES[source.kind]];
-  if (source.kind === "pdf") parts.push(counted(source.pageCount, "page"));
-  if (source.kind === "powerPoint") parts.push(counted(source.pageCount, "slide"));
-  parts.push(formatSize(source.asset.size));
+function describe(source: Source, t: ReturnType<typeof useT>["t"]): string {
+  const parts: string[] = [t(KIND_NAMES[source.kind])];
+  if (source.kind === "pdf") parts.push(t(source.pageCount === 1 ? "notes.pageOne" : "notes.pageOther", { count: source.pageCount }));
+  if (source.kind === "powerPoint") parts.push(t(source.pageCount === 1 ? "notes.slideOne" : "notes.slideOther", { count: source.pageCount }));
+  parts.push(formatSize(source.asset.size, t));
   return parts.join(" · ");
 }
 
@@ -188,6 +187,7 @@ export function SourcesArea({
   /** Writes a new note from a source, starting from `draft`. */
   onMakeNote: (draft: SourceNoteDraft) => void;
 }) {
+  const { t } = useT();
   const [place, setPlace] = useState<Place>(
     openSource
       ? { screen: "source", sourceId: openSource.sourceId, notice: openSource.notice }
@@ -225,8 +225,8 @@ export function SourcesArea({
           screen: "source",
           sourceId: kept.source.id,
           notice: looksScanned(kept)
-            ? `Kept ${kept.source.fileName}, as it was. None of its pages has text Synapse could read, so it looks like a scan. Choose Read scanned pages to read the text in its pictures, then make a note from it.`
-            : `Kept ${kept.source.fileName}. Its text is below, page by page, and the original file is kept as it was. Make a note from it to edit the text and study it.`,
+            ? t("sources.keptScan", { name: kept.source.fileName })
+            : t("sources.kept", { name: kept.source.fileName }),
         })
       }
       onOpen={(sourceId) => setPlace({ screen: "source", sourceId, notice: null })}
@@ -276,6 +276,7 @@ function SourceLibrary({
   onOpenFound: (sourceId: number, page: number | null) => void;
   onBack: () => void;
 }) {
+  const { t } = useT();
   const [state, setState] = useState<LibraryState>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
   // `key` changes with every reload, so the list remounts and its focus
@@ -306,7 +307,7 @@ function SourceLibrary({
   if (state.status === "loading") {
     return (
       <p className="loading" role="status">
-        Loading your sources…
+        {t("sources.loading")}
       </p>
     );
   }
@@ -316,10 +317,10 @@ function SourceLibrary({
       <Message focus tone="alert" text={state.message}>
         <div className="actions">
           <button type="button" className="button" onClick={() => reload(null)}>
-            Retry
+            {t("stats.retry")}
           </button>
           <button type="button" className="button" onClick={onBack}>
-            Back to Study Desk
+            {t("review.backDesk")}
           </button>
         </div>
       </Message>
@@ -338,9 +339,9 @@ function SourceLibrary({
       search={search}
       onOpenFound={onOpenFound}
       onBack={onBack}
-      onRestored={(title) => reload(`${title} restored. It's back in your sources.`)}
+      onRestored={(title) => reload(t("sources.restored", { title }))}
       onStale={() =>
-        reload("That source wasn't deleted after all. Here are your sources as they are now.")
+        reload(t("sources.stale"))
       }
     />
   );
@@ -371,6 +372,7 @@ function SourceList({
   onRestored: (title: string) => void;
   onStale: () => void;
 }) {
+  const { t } = useT();
   const searching = search.query.trim() !== "";
   const answered = searching && search.found?.query === search.query.trim();
   const shown = answered ? (search.found?.found.sources.map((hit) => hit.source) ?? []) : sources;
@@ -416,17 +418,16 @@ function SourceList({
     <section ref={screenRef} className="notes" tabIndex={-1} aria-labelledby="sources-heading">
       <button type="button" className="button button-quiet back-button" onClick={onBack}>
         <ArrowLeftIcon />
-        Back to Study Desk
+        {t("review.backDesk")}
       </button>
 
       <div className="page-header">
         <div className="page-heading">
           <h2 id="sources-heading" className="page-title">
-            Sources
+            {t("app.sources")}
           </h2>
           <p className="page-intro">
-            The documents you imported, kept as they were: the original file and the text of each
-            page. Notes you write from a source are yours to edit; the source itself never changes.
+            {t("sources.intro")}
           </p>
         </div>
         <div className="deck-actions page-actions">
@@ -439,16 +440,15 @@ function SourceList({
             onClick={add}
           >
             <UploadIcon />
-            Add source
+            {t("sources.add")}
           </button>
         </div>
       </div>
       <p id="add-source-hint" className="field-hint">
-        Add a PDF, text, Markdown, Word, or PowerPoint file, up to 50 MB. Synapse keeps a copy of it
-        and reads the text of each page. Importing a file under Notes keeps it here too.
+        {t("sources.addHint")}
       </p>
       <p className="form-status" role="status">
-        {adding ? "Choose a file. Synapse then keeps it and reads its text…" : ""}
+        {adding ? t("sources.choosing") : ""}
       </p>
       {addError && (
         <p className="message-error" role="alert">
@@ -468,7 +468,7 @@ function SourceList({
         search.found && (
           <SourceResults
             found={search.found.found}
-            describe={describe}
+            describe={(source) => describe(source, t)}
             focusSourceId={focusSourceId}
             onOpen={onOpenFound}
           />
@@ -476,8 +476,8 @@ function SourceList({
       ) : sources.length === 0 ? (
         <p className="empty" role="status">
           {deleted.length === 0
-            ? "No sources yet. Choose Add source, or import a file under Notes, to keep one."
-            : "No sources kept. Choose Add source to keep one, or restore a deleted source below."}
+            ? t("sources.empty")
+            : t("sources.emptyDeleted")}
         </p>
       ) : (
         <ul className="card-list">
@@ -500,12 +500,11 @@ function SourceList({
               <RestoreIcon />
             </span>
             <h3 id="deleted-sources-heading" className="section-title section-title-quiet">
-              Deleted sources
+              {t("sources.deleted")}
             </h3>
           </div>
           <p className="field-hint">
-            Kept with their files and pages. A deleted source can't be opened, but restoring it
-            brings it back exactly as it was. Notes written from a source are never affected.
+            {t("sources.deletedHint")}
           </p>
           <ul className="card-list">
             {deleted.map((source) => (
@@ -529,6 +528,7 @@ function SourceItem({
   focusOpen: boolean;
   onOpen: () => void;
 }) {
+  const { t } = useT();
   const openRef = useFocusOnMount<HTMLButtonElement>(focusOpen);
   const titleId = `source-${source.id}-title`;
 
@@ -543,7 +543,7 @@ function SourceItem({
             {source.title}
           </h3>
           <p className="item-meta">
-            {`${describe(source)} · Added ${formatDateTime(source.createdAt)}`}
+            {`${describe(source, t)} · ${t("sources.added", { date: formatDateTime(source.createdAt) })}`}
           </p>
         </div>
       </div>
@@ -554,7 +554,7 @@ function SourceItem({
         aria-describedby={titleId}
         onClick={onOpen}
       >
-        Open source
+        {t("notes.openSource")}
         <ArrowRightIcon />
       </button>
     </article>
@@ -571,6 +571,7 @@ function DeletedSourceItem({
   onRestored: (title: string) => void;
   onStale: () => void;
 }) {
+  const { t } = useT();
   const [restoring, setRestoring] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const restoringRef = useRef(false);
@@ -606,7 +607,7 @@ function DeletedSourceItem({
           {source.title}
         </h4>
         <p className="item-meta">
-          {`${describe(source)} · Deleted ${formatDateTime(source.deletedAt ?? source.updatedAt)}`}
+          {`${describe(source, t)} · ${t("deck.deletedAt", { date: formatDateTime(source.deletedAt ?? source.updatedAt) })}`}
         </p>
       </div>
       <div className="deck-actions item-actions">
@@ -618,11 +619,11 @@ function DeletedSourceItem({
           onClick={restore}
         >
           <RestoreIcon />
-          Restore source
+          {t("sources.restore")}
         </button>
       </div>
       <p className="form-status" role="status">
-        {restoring ? "Restoring…" : ""}
+        {restoring ? t("bulk.restoring") : ""}
       </p>
       {error && (
         <p className="message-error" role="alert">
@@ -689,6 +690,7 @@ function SourceScreen({
   onOpenNote: (noteId: number) => void;
   onMakeNote: (draft: SourceNoteDraft) => void;
 }) {
+  const { t } = useT();
   const [state, setState] = useState<SourceState>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
   const [mode, setMode] = useState<Mode>("view");
@@ -717,7 +719,7 @@ function SourceScreen({
   if (state.status === "loading") {
     return (
       <p className="loading" role="status">
-        Loading the source…
+        {t("sources.loadingSource")}
       </p>
     );
   }
@@ -734,10 +736,10 @@ function SourceScreen({
               setAttempt((n) => n + 1);
             }}
           >
-            Retry
+            {t("stats.retry")}
           </button>
           <button type="button" className="button" onClick={onBack}>
-            Back to sources
+            {t("sources.back")}
           </button>
         </div>
       </Message>
@@ -766,7 +768,7 @@ function SourceScreen({
     setSkipped((now) => withSkipped(now, result));
     const next = await loadSource(sourceId, readWith.reader);
     setState(next);
-    if (next.status === "ready") setRun({ single, summary: readingSummary(result, next.pages) });
+    if (next.status === "ready") setRun({ single, summary: readingSummary(result, next.pages, t) });
   }
 
   const reading = reader.reading.status === "reading" ? reader.reading : null;
@@ -776,7 +778,7 @@ function SourceScreen({
     <section className="deck-detail note-detail source-detail" aria-labelledby="source-heading">
       <button type="button" className="button button-quiet back-button" onClick={onBack}>
         <ArrowLeftIcon />
-        Back to sources
+        {t("sources.back")}
       </button>
 
       <article className="card">
@@ -786,7 +788,7 @@ function SourceScreen({
             onCancel={() => setMode("view")}
             onSaved={(renamed) => {
               setState({ ...state, source: renamed });
-              setNotice("Source renamed.");
+              setNotice(t("sources.renamed"));
               setMode("view");
             }}
           />
@@ -861,6 +863,7 @@ function SourceHeader({
   onMakeNote: () => void;
   onDeleted: (notice: string) => void;
 }) {
+  const { t } = useT();
   const headingRef = useFocusOnMount<HTMLHeadingElement>(notice === null);
   const noticeRef = useFocusOnMount<HTMLParagraphElement>(notice !== null);
   const [busy, setBusy] = useState<"open" | "save" | "delete" | null>(null);
@@ -894,7 +897,7 @@ function SourceHeader({
     } catch (err) {
       const failure = toCommandError(err);
       if (kind === "delete" && failure.kind === "stale") {
-        onDeleted("That source was already deleted. It's kept in Deleted sources.");
+        onDeleted(t("sources.alreadyDeleted"));
         return;
       }
       setError(failure.message);
@@ -906,20 +909,20 @@ function SourceHeader({
   const openOriginal = () =>
     run("open", async () => {
       await openSourceOriginal(source.id);
-      return `Opened a copy of ${source.fileName}. Changes you make to it there don't change the source.`;
+      return t("sources.opened", { name: source.fileName });
     });
 
   const saveCopy = () =>
     run("save", async () => {
       const outcome = await saveSourceCopy(source.id);
-      return outcome.status === "saved" ? `Saved a copy as ${outcome.fileName}.` : null;
+      return outcome.status === "saved" ? t("sources.savedCopy", { name: outcome.fileName }) : null;
     });
 
   const confirmDelete = () =>
     run("delete", async () => {
       await deleteSource(source.id);
       onDeleted(
-        `${source.title} deleted. It's kept in Deleted sources, with its file, where you can restore it.`,
+        t("sources.deletedNotice", { title: source.title }),
       );
       return null;
     });
@@ -931,7 +934,7 @@ function SourceHeader({
           {source.title}
         </h2>
         <p className="item-meta">
-          {`${source.fileName} · ${describe(source)} · Added ${formatDateTime(source.createdAt)}`}
+          {`${source.fileName} · ${describe(source, t)} · ${t("sources.added", { date: formatDateTime(source.createdAt) })}`}
         </p>
       </div>
 
@@ -944,9 +947,7 @@ function SourceHeader({
       {confirming ? (
         <div className="confirm">
           <p ref={questionRef} className="confirm-question" tabIndex={-1}>
-            Delete this source? It will leave your sources and can't be opened. Its file and pages
-            are kept under Deleted sources, where you can restore it. Notes written from it aren't
-            changed, but their cards and quizzes stop showing which page they came from.
+            {t("sources.deleteConfirm")}
           </p>
           <div className="deck-actions">
             <button
@@ -956,7 +957,7 @@ function SourceHeader({
               aria-disabled={busy !== null}
               onClick={confirmDelete}
             >
-              Delete source
+              {t("sources.delete")}
             </button>
             <button
               type="button"
@@ -966,7 +967,7 @@ function SourceHeader({
                 if (busy === null) onConfirm(false);
               }}
             >
-              Keep source
+              {t("sources.keep")}
             </button>
           </div>
         </div>
@@ -979,7 +980,7 @@ function SourceHeader({
             onClick={onMakeNote}
           >
             <PlusIcon />
-            Make a note
+            {t("sources.makeNote")}
           </button>
           <button
             type="button"
@@ -989,7 +990,7 @@ function SourceHeader({
             onClick={openOriginal}
           >
             <FileIcon />
-            Open original
+            {t("sources.original")}
           </button>
           <button
             type="button"
@@ -999,7 +1000,7 @@ function SourceHeader({
             onClick={saveCopy}
           >
             <DownloadIcon />
-            Save a copy
+            {t("sources.copy")}
           </button>
           <button
             type="button"
@@ -1008,7 +1009,7 @@ function SourceHeader({
             onClick={onRename}
           >
             <PencilIcon />
-            Rename
+            {t("sources.rename")}
           </button>
           <button
             ref={deleteRef}
@@ -1018,18 +1019,18 @@ function SourceHeader({
             onClick={() => onConfirm(true)}
           >
             <TrashIcon />
-            Delete source
+            {t("sources.delete")}
           </button>
         </div>
       )}
 
       <p className="form-status" role="status">
         {busy === "open"
-          ? "Opening the original…"
+          ? t("sources.opening")
           : busy === "save"
-            ? "Choose where to save the copy…"
+            ? t("sources.savingCopy")
             : busy === "delete"
-              ? "Deleting…"
+              ? t("bulk.deleting")
               : (status ?? "")}
       </p>
       {error && (
@@ -1051,6 +1052,7 @@ function RenameSource({
   onCancel: () => void;
   onSaved: (source: Source) => void;
 }) {
+  const { t } = useT();
   const [title, setTitle] = useState(source.title);
   useUnsavedChanges(title !== source.title);
   const { saving, submit, fieldError, formError, edited } = useFormSave(
@@ -1062,12 +1064,12 @@ function RenameSource({
   return (
     <form aria-labelledby="rename-source-heading" noValidate onSubmit={submit}>
       <h2 id="rename-source-heading" className="form-title">
-        Rename source
+        {t("sources.renameSource")}
       </h2>
       <TextField
         id="source-title"
-        label="Title"
-        hint="Required. Up to 200 characters. The file and its pages don't change."
+        label={t("exams.title")}
+        hint={t("sources.titleHint")}
         value={title}
         error={fieldError("title")}
         required
@@ -1077,7 +1079,7 @@ function RenameSource({
           edited("title");
         }}
       />
-      <FormActions saveLabel="Save title" saving={saving} error={formError} onCancel={onCancel} />
+      <FormActions saveLabel={t("sources.saveTitle")} saving={saving} error={formError} onCancel={onCancel} />
     </form>
   );
 }
@@ -1089,15 +1091,15 @@ function SourceNotes({
   notes: NoteSummary[];
   onOpenNote: (noteId: number) => void;
 }) {
+  const { t } = useT();
   return (
     <section className="source-notes" aria-labelledby="source-notes-heading">
       <h3 id="source-notes-heading" className="section-title">
-        Notes from this source
+        {t("sources.notes")}
       </h3>
       {notes.length === 0 ? (
         <p className="field-hint">
-          No notes written from it yet. Make a note to study it: cards and quizzes from that note
-          then say which page they came from.
+          {t("sources.notesEmpty")}
         </p>
       ) : (
         <ul className="card-list">
@@ -1116,8 +1118,8 @@ function SourceNotes({
                       </h4>
                       <p className="item-meta">
                         {note.updatedAt === note.createdAt
-                          ? `Created ${formatDateTime(note.createdAt)}`
-                          : `Edited ${formatDateTime(note.updatedAt)}`}
+                          ? t("notes.created", { date: formatDateTime(note.createdAt) })
+                          : t("notes.edited", { date: formatDateTime(note.updatedAt) })}
                       </p>
                     </div>
                   </div>
@@ -1127,7 +1129,7 @@ function SourceNotes({
                     aria-describedby={titleId}
                     onClick={() => onOpenNote(note.id)}
                   >
-                    Open note
+                    {t("search.openNote")}
                     <ArrowRightIcon />
                   </button>
                 </article>
@@ -1168,12 +1170,13 @@ function ScannedPanel({
   onRead: () => void;
   onStop: () => void;
 }) {
+  const { t } = useT();
   if (scanned === 0 && toRead === 0 && !progress && !summary && !error) return null;
 
   return (
     <section className="scanned-pages" aria-labelledby="scanned-pages-heading">
       <h3 id="scanned-pages-heading" className="section-title">
-        Scanned pages
+        {t("sources.scanned")}
       </h3>
       {progress ? (
         <ReadingProgress reading={progress} single={null} onStop={onStop} />
@@ -1187,15 +1190,13 @@ function ScannedPanel({
           )}
           {toRead === 0 && scanned > 0 && (
             <p className="field-hint">
-              {`Every page without text has been read by the reader chosen. To read ${
-                scanned === 1 ? "it" : "them"
-              } again with another, such as a vision model in Ollama for accents and handwriting, choose it below.`}
+              {scanned === 1 ? t("sources.rereadOne") : t("sources.rereadOther")}
             </p>
           )}
           {scanned > 0 && <ReadWith id="scanned-read-with" state={readWith} disabled={busy} />}
           {toRead > 0 && (
             <>
-              <p className="field-hint">{scannedHint(toRead)}</p>
+              <p className="field-hint">{scannedHint(toRead, t)}</p>
               <div className="deck-actions">
                 <button
                   type="button"
@@ -1205,7 +1206,7 @@ function ScannedPanel({
                     if (!busy) onRead();
                   }}
                 >
-                  {`Read scanned pages (${toRead})`}
+                  {t("sources.readScanned", { count: toRead })}
                 </button>
               </div>
             </>
@@ -1260,13 +1261,14 @@ function PageViewer({
   onRead: (page: number) => void;
   onStop: () => void;
 }) {
+  const { t } = useT();
   const [index, setIndex] = useState(() =>
     Math.max(0, pages.findIndex((each) => each.number === found?.page)),
   );
   const [marking, setMarking] = useState(found !== null);
   const textRef = useRef<HTMLDivElement>(null);
   const slides = source.kind === "powerPoint";
-  const thing = slides ? "Slide" : "Page";
+  const thing = t(slides ? "pages.slide" : "pages.page");
   const page = pages[index];
   const paged = pages.length > 1;
   const marks = useSearchedPage(
@@ -1293,7 +1295,7 @@ function PageViewer({
     <section className="source-pages" aria-labelledby="source-page-heading">
       <div className="source-pages-bar">
         <h3 id="source-page-heading" className="section-title">
-          {paged ? `${thing} ${page.number} of ${pages.length}` : "Text"}
+          {paged ? t("pages.position", { thing, page: page.number, total: pages.length }) : t("deck.text")}
         </h3>
         {paged && (
           <div className="deck-actions">
@@ -1304,12 +1306,12 @@ function PageViewer({
               onClick={() => go(index - 1)}
             >
               <ArrowLeftIcon />
-              {`Previous ${thing.toLowerCase()}`}
+              {t("pages.previous", { thing: thing.toLowerCase() })}
             </button>
             <span className="source-page-jump">
               <select
                 className="field-input"
-                aria-label={`Go to ${thing.toLowerCase()}`}
+                aria-label={t("pages.go", { thing: thing.toLowerCase() })}
                 value={index}
                 onChange={(event) => go(Number(event.target.value))}
               >
@@ -1326,7 +1328,7 @@ function PageViewer({
               aria-disabled={index === pages.length - 1}
               onClick={() => go(index + 1)}
             >
-              {`Next ${thing.toLowerCase()}`}
+              {t("pages.next", { thing: thing.toLowerCase() })}
               <ArrowRightIcon />
             </button>
           </div>
@@ -1335,9 +1337,9 @@ function PageViewer({
 
       {marking && found && (
         <div className="source-search-marks">
-          <p className="field-hint">{`Words from your search “${found.query}” are marked.`}</p>
+          <p className="field-hint">{t("sources.marks", { query: found.query })}</p>
           <button type="button" className="button button-small" onClick={() => setMarking(false)}>
-            Hide marks
+            {t("sources.hideMarks")}
           </button>
         </div>
       )}
@@ -1373,13 +1375,13 @@ function PageViewer({
           </p>
         ) : recognised ? (
           <p className="empty">
-            {`Synapse read this page's picture but found no text in it. Open the original to see it.`}
+            {t("sources.readEmpty")}
           </p>
         ) : (
           <p className="empty">
             {readable
-              ? "Synapse found no text on this page. It may be a scanned image: read it to recognise its text, or open the original to see it."
-              : `Synapse found no text on this ${thing.toLowerCase()}. It may be a scanned image; open the original to see it.`}
+              ? t("sources.emptyPdf")
+              : t("pages.emptyOriginal", { thing: thing.toLowerCase() })}
           </p>
         )}
       </div>
@@ -1395,7 +1397,7 @@ function PageViewer({
               if (!reading) onRead(page.number);
             }}
           >
-            {recognised ? "Read this page again" : "Read this page"}
+            {recognised ? t("sources.readAgain") : t("sources.readPage")}
           </button>
         </div>
       )}
@@ -1495,6 +1497,7 @@ export function ReadScannedImport({
   onRead: (draft: SourceNoteDraft) => void;
   onCancel: () => void;
 }) {
+  const { t } = useT();
   const reader = useSourceReading();
   const readWith = useReader();
   const [scan, setScan] = useState<ScanStep>({ step: "checking" });
@@ -1545,7 +1548,7 @@ export function ReadScannedImport({
     }
     setScan({
       step: "after",
-      summary: readingSummary(result, next.pages),
+      summary: readingSummary(result, next.pages, t),
       draft,
       toRead: next.toRead.filter((page) => !skippedRef.current.includes(page)),
     });
@@ -1557,7 +1560,7 @@ export function ReadScannedImport({
   if (scan.step === "checking") {
     return (
       <p className="loading" role="status">
-        {`Opening ${kept.source.fileName}…`}
+        {t("sources.openingFile", { name: kept.source.fileName })}
       </p>
     );
   }
@@ -1565,12 +1568,10 @@ export function ReadScannedImport({
   return (
     <section className="card" aria-labelledby="read-scan-heading">
       <h2 id="read-scan-heading" className="form-title">
-        {`New note from ${kept.source.fileName}`}
+        {t("notes.newFrom", { name: kept.source.fileName })}
       </h2>
       <ScanIntro>
-        {`Synapse kept ${kept.source.fileName} under Sources, but none of its ${
-          pageCount === 1 ? "page has" : `${pageCount} pages have`
-        } text it could read: it looks like a scan. Synapse can read the text in the pages' pictures first, on this computer, so the note doesn't start empty. Recognised text can hold mistakes, and the built-in reader doesn't read accents (è comes out as e), so check it before you save.`}
+        {pageCount === 1 ? t("sources.scanIntroOne", { name: kept.source.fileName, count: pageCount }) : t("sources.scanIntroOther", { name: kept.source.fileName, count: pageCount })}
       </ScanIntro>
 
       {reading ? (
@@ -1593,8 +1594,8 @@ export function ReadScannedImport({
             {left.length > 0 && (
               <button type="button" className="button button-primary" onClick={read}>
                 {scan.step === "after"
-                  ? `Carry on reading (${left.length})`
-                  : `Read scanned pages (${left.length})`}
+                  ? t("sources.carryOn", { count: left.length })
+                  : t("sources.readScanned", { count: left.length })}
               </button>
             )}
             <button
@@ -1604,10 +1605,10 @@ export function ReadScannedImport({
                 onRead(found && scan.step === "after" ? scan.draft : draftFromImport(kept))
               }
             >
-              {found ? "Write the note with what was read" : "Write the note myself"}
+              {found ? t("sources.writeRead") : t("sources.writeMyself")}
             </button>
             <button type="button" className="button" onClick={onCancel}>
-              Cancel
+              {t("common.cancel")}
             </button>
           </div>
         </>

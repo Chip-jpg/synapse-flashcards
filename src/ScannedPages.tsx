@@ -1,3 +1,4 @@
+import { useT, translate, type MessageKey } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import {
   stopRecognition,
@@ -12,27 +13,24 @@ import { BUILT_IN, readSourcePages, type Reader } from "./ReadWith";
 import { formatDateTime, useFocusOnMount } from "./ui";
 
 /** Why a page was skipped, said plainly. */
-const PROBLEMS: Record<PageProblem, string> = {
-  noPicture: "no picture to read",
-  unreadablePicture: "its picture is stored in a form Synapse can't read, such as JPEG 2000",
-  tooLarge: "its picture is too large to read",
-  noSuchPage: "the PDF has no such page",
+const PROBLEMS: Record<PageProblem, MessageKey> = {
+  noPicture: "pages.problemNoPicture",
+  unreadablePicture: "pages.problemUnreadablePicture",
+  tooLarge: "pages.problemTooLarge",
+  noSuchPage: "pages.problemNoSuchPage",
 };
 
-/** "1 page", "12 pages". */
-function counted(count: number, thing: string): string {
-  return count === 1 ? `1 ${thing}` : `${count} ${thing}s`;
-}
-
 /** "2", "2 and 7", "2, 5, and 7". */
-function listed(numbers: number[]): string {
-  if (numbers.length <= 2) return numbers.join(" and ");
-  return `${numbers.slice(0, -1).join(", ")}, and ${numbers[numbers.length - 1]}`;
+function listed(numbers: number[], t: ReturnType<typeof useT>["t"]): string {
+  if (numbers.length < 2) return numbers.join("");
+  return t(numbers.length === 2 ? "occlusion.list" : "notes.listMany", {
+    first: numbers.slice(0, -1).join(", "), last: numbers[numbers.length - 1],
+  });
 }
 
 /** "page 3", "pages 3 and 7". */
-function pagesNamed(numbers: number[]): string {
-  return `${numbers.length === 1 ? "page" : "pages"} ${listed(numbers)}`;
+function pagesNamed(numbers: number[], t: ReturnType<typeof useT>["t"]): string {
+  return t(numbers.length === 1 ? "pages.namedOne" : "pages.namedOther", { pages: listed(numbers, t) });
 }
 
 /** The text a page gives a note: what extraction read, or else what was recognised. */
@@ -46,10 +44,10 @@ export function isRecognised(page: SourcePage): boolean {
 }
 
 /** Who read some text: Synapse's own engine, or a model in Ollama. */
-export function readBy(recognised: RecognisedText): string {
+export function readBy(recognised: RecognisedText, t: ReturnType<typeof useT>["t"] = (key, params) => translate("en", key, params)): string {
   return recognised.engine === "ocrs"
-    ? "Synapse's built-in reader"
-    : `${recognised.model}, a vision model in Ollama`;
+    ? t("pages.builtIn")
+    : t("pages.vision", { model: recognised.model });
 }
 
 /**
@@ -60,6 +58,7 @@ export function readBy(recognised: RecognisedText): string {
 export function readingSummary(
   result: SourceRecognition & Partial<Pick<ModelSourceRecognition, "agreement">>,
   pages: SourcePage[],
+  t: ReturnType<typeof useT>["t"] = (key, params) => translate("en", key, params),
 ): string {
   const read = [...result.read].sort((a, b) => a - b);
   const empty = read.filter((number) => {
@@ -71,22 +70,22 @@ export function readingSummary(
   if (result.stopped) {
     parts.push(
       read.length === 0
-        ? "Stopped before any page was read."
-        : `Stopped after reading ${counted(read.length, "page")}. Those pages are kept.`,
+        ? t("pages.stoppedBefore")
+        : t(read.length === 1 ? "pages.stoppedOne" : "pages.stoppedOther", { count: read.length }),
     );
   } else if (read.length === 0) {
-    parts.push("No page was read.");
+    parts.push(t("pages.noneRead"));
   } else if (read.length === 1) {
     parts.push(
       empty.length === 0
-        ? `Read page ${read[0]}.`
-        : `Read page ${read[0]}, but no text was found on it.`,
+        ? t("pages.readSingle", { page: read[0] })
+        : t("pages.readSingleEmpty", { page: read[0] }),
     );
   } else {
-    parts.push(`Read ${read.length} pages.`);
+    parts.push(t("pages.readMany", { count: read.length }));
   }
   if (empty.length > 0 && (result.stopped || read.length > 1)) {
-    parts.push(`No text was found on ${pagesNamed(empty)}.`);
+    parts.push(t("pages.noText", { pages: pagesNamed(empty, t) }));
   }
 
   const byProblem = new Map<PageProblem, number[]>();
@@ -94,7 +93,7 @@ export function readingSummary(
     byProblem.set(problem, [...(byProblem.get(problem) ?? []), page]);
   }
   for (const [problem, numbers] of byProblem) {
-    parts.push(`Skipped ${pagesNamed(numbers.sort((a, b) => a - b))}: ${PROBLEMS[problem]}.`);
+    parts.push(t("pages.skipped", { pages: pagesNamed(numbers.sort((a, b) => a - b), t), problem: t(PROBLEMS[problem]) }));
   }
 
   // A vision model can misread or make up text: where it and the built-in
@@ -105,7 +104,7 @@ export function readingSummary(
     .sort((a, b) => a - b);
   if (doubtful.length > 0) {
     parts.push(
-      `On ${pagesNamed(doubtful)}, the model's text shares under half the words the built-in reader found: check ${doubtful.length === 1 ? "it" : "them"} against the original.`,
+      doubtful.length === 1 ? t("pages.doubtfulOne", { pages: pagesNamed(doubtful, t) }) : t("pages.doubtfulOther", { pages: pagesNamed(doubtful, t) }),
     );
   }
   return parts.join(" ");
@@ -193,6 +192,7 @@ export function ReadingProgress({
   single: number | null;
   onStop: () => void;
 }) {
+  const { t } = useT();
   const statusRef = useFocusOnMount<HTMLParagraphElement>(true);
   const at = Math.min(reading.done + 1, reading.total);
 
@@ -200,17 +200,17 @@ export function ReadingProgress({
     <div className="confirm confirm-calm reading-progress">
       <p ref={statusRef} className="confirm-question" role="status" tabIndex={-1}>
         {reading.stopping
-          ? "Stopping… The pages read so far are kept."
+          ? t("pages.stopping")
           : single !== null
-            ? `Reading page ${single}…`
-            : `Reading page ${at} of ${reading.total}…`}
+            ? t("pages.readingSingle", { page: single })
+            : t("pages.reading", { page: at, total: reading.total })}
       </p>
       {single === null && (
         <progress
           className="progress-bar"
           value={reading.done}
           max={reading.total}
-          aria-label={`${reading.done} of ${reading.total} pages read`}
+          aria-label={t("pages.progress", { done: reading.done, total: reading.total })}
         />
       )}
       <div className="deck-actions">
@@ -222,7 +222,7 @@ export function ReadingProgress({
             if (!reading.stopping) onStop();
           }}
         >
-          Stop
+          {t("settings.stop")}
         </button>
       </div>
     </div>
@@ -231,19 +231,17 @@ export function ReadingProgress({
 
 /** A plain warning above recognised text: who read it, when, and that it may be wrong. */
 export function RecognisedLabel({ recognised }: { recognised: RecognisedText }) {
+  const { t } = useT();
   return (
     <p className="import-warning recognised-label">
-      <strong>Recognised text, check for mistakes.</strong>{" "}
-      {`This page has no text of its own, so ${readBy(recognised)} read it from the page's picture on ${formatDateTime(recognised.createdAt)}.`}
-      {recognised.engine === "ocrs" && " It may miss some accents: è comes out as e."}
+      <strong>{t("pages.recognisedWarning")}</strong>{" "}
+      {t("pages.recognisedInfo", { reader: readBy(recognised, t), date: formatDateTime(recognised.createdAt) })}
+      {recognised.engine === "ocrs" && t("pages.accents")}
     </p>
   );
 }
 
 /** What an offer to read scanned pages says: how many, and what to expect. */
-export function scannedHint(count: number): string {
-  const one = count === 1;
-  return `${counted(count, "page")} of this PDF ${one ? "has" : "have"} no text Synapse could read: ${
-    one ? "it may be a scan" : "they may be scans"
-  }. Synapse can read the text in ${one ? "its picture" : "their pictures"}, on this computer. Recognised text can hold mistakes, and the built-in reader may miss some accents (è comes out as e), so check it.`;
+export function scannedHint(count: number, t: ReturnType<typeof useT>["t"] = (key, params) => translate("en", key, params)): string {
+  return t(count === 1 ? "pages.scannedHintOne" : "pages.scannedHintOther", { count });
 }
